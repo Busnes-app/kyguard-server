@@ -16,12 +16,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Busnes-app/ky-primitives/password"
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
 	"github.com/Busnes-app/kyguard-server/internal/api"
 	"github.com/Busnes-app/kyguard-server/internal/backup"
 	"github.com/Busnes-app/kyguard-server/internal/config"
-	"github.com/Busnes-app/kyguard-server/internal/crypto"
 	"github.com/Busnes-app/kyguard-server/internal/store"
 	"github.com/Busnes-app/kyguard-server/internal/worker"
 )
@@ -40,8 +38,8 @@ func main() {
 		case "accept-replica-config":
 			runAcceptReplicaConfig()
 			return
-		case "init-admin":
-			runInitAdmin(os.Args[2:])
+		case "break-glass":
+			runBreakGlass(os.Args[2:])
 			return
 		case "backup-drill":
 			runBackupDrill(os.Args[2:])
@@ -63,6 +61,8 @@ func main() {
 		case "version":
 			fmt.Println("kyguard-server v0.1.0 (KyGuard PAM Control Plane)")
 			return
+		default:
+			log.Fatalf("unknown command %q", os.Args[1]) // never start the server on a typo
 		}
 	}
 
@@ -109,14 +109,12 @@ func runServer() {
 	runConfiguredServer(cfg)
 }
 
-// bootstrap runs once per start under the shared "bootstrap" lock: the first admin on an empty
-// database, then the replica configuration check on PostgreSQL.
+// bootstrap runs once per start under the shared "bootstrap" lock: the replica configuration
+// check on PostgreSQL. There is no first admin: break-glass accounts are created on the host
+// (spec §7.4).
 func bootstrap(ctx context.Context, cfg *config.Config, st store.Store) error {
 	for {
 		won, err := st.Coordination().WithLock(ctx, "bootstrap", func(ctx context.Context) error {
-			if err := ensureBootstrapAdmin(ctx, st); err != nil {
-				return err
-			}
 			if st.Driver() != "postgres" {
 				return nil
 			}
@@ -156,36 +154,6 @@ func prepareStart(ctx context.Context, cfg *config.Config, st store.Store) error
 	}
 	if err != nil {
 		return fmt.Errorf("recovery key: %w (recovery.pub must be the key pinned in the database; remove a stale file to have it rewritten; for the replica overlay see the app-volume repair in docs/REPLICAS.md)", err)
-	}
-	return nil
-}
-
-// ensureBootstrapAdmin creates the default admin if the database has no users.
-func ensureBootstrapAdmin(ctx context.Context, st store.Store) error {
-	count, err := st.Users().CountUsers(ctx)
-	if err != nil || count != 0 {
-		return err
-	}
-	adminPass := os.Getenv("KY_ADMIN_PASSWORD")
-	if adminPass == "" {
-		adminPass = crypto.RandomHex(12)
-		log.Printf("[SECURITY] Initial bootstrap: Created admin account. Username: admin | Password: %s", adminPass)
-	}
-	hash, err := password.Hash(adminPass)
-	if err != nil {
-		return fmt.Errorf("hash bootstrap password: %w", err)
-	}
-	if err := st.Users().CreateUser(ctx, &store.User{
-		ID:                 fmt.Sprintf("usr_%s", crypto.RandomHex(12)),
-		Username:           "admin",
-		DisplayName:        "Administrator",
-		PasswordHash:       hash,
-		Role:               "admin",
-		Status:             "active",
-		SSOProvider:        "local",
-		MustChangePassword: true,
-	}); err != nil {
-		return fmt.Errorf("create bootstrap admin: %w", err)
 	}
 	return nil
 }
@@ -393,76 +361,6 @@ func runDeposit() {
 	if res.Receipt != nil {
 		log.Printf("✓ Capsule %s deposited at %s; digest %s", res.Manifest.CapsuleID, res.Receipt.DepositedAt.Format(time.RFC3339), res.Receipt.Digest)
 	}
-}
-
-func runInitAdmin(args []string) {
-	fs := flag.NewFlagSet("init-admin", flag.ExitOnError)
-	username := fs.String("username", "admin", "Admin username")
-	passwordFlag := fs.String("password", "", "Admin password (minimum 12 characters)")
-	promote := fs.Bool("promote", false, "Allow resetting an existing account that is not an active local administrator, making it one")
-	_ = fs.Parse(args)
-
-	if *passwordFlag == "" || len(*passwordFlag) < 12 {
-		log.Fatal("Error: -password is required and must be at least 12 characters")
-	}
-
-	cfg, err := config.LoadFromEnv()
-	if err != nil {
-		log.Fatalf("Failed to load configuration: %v", err)
-	}
-	ctx := context.Background()
-	st, err := store.Open(ctx, cfg.Database)
-	if err != nil {
-		log.Fatalf("DB error: %v", err)
-	}
-	defer st.Close()
-
-	msg, err := initAdmin(ctx, st, *username, *passwordFlag, *promote, os.Stderr)
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Print(msg)
-}
-
-// initAdmin creates or resets a local administrator. It never silently grants admin: an
-// existing account that is not an active administrator needs promote, and non-local accounts
-// are refused. The previous role and status are printed to out before anything changes.
-func initAdmin(ctx context.Context, st store.Store, username, pass string, promote bool, out io.Writer) (string, error) {
-	hash, err := password.Hash(pass)
-	if err != nil {
-		return "", fmt.Errorf("password hashing error: %w", err)
-	}
-	existing, err := st.Users().GetUserByUsername(ctx, username)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return "", fmt.Errorf("DB error: %w", err)
-	}
-	if existing != nil {
-		fmt.Fprintf(out, "Existing account %q: role=%s status=%s provider=%s\n", existing.Username, existing.Role, existing.Status, existing.SSOProvider)
-		if existing.SSOProvider != "local" {
-			return "", fmt.Errorf("refusing: %q is a %s account; init-admin manages local accounts only", existing.Username, existing.SSOProvider)
-		}
-		if !promote && (existing.Role != "admin" || existing.Status != "active") {
-			return "", fmt.Errorf("refusing: %q is not an active administrator; check the username, or rerun with -promote to make it one", existing.Username)
-		}
-		if err := st.Users().ResetAdminPassword(ctx, existing.ID, hash); err != nil {
-			return "", fmt.Errorf("failed to update admin: %w", err)
-		}
-		return fmt.Sprintf("✓ Admin user %q password successfully reset", existing.Username), nil
-	}
-	user := &store.User{
-		ID:                 fmt.Sprintf("usr_%s", crypto.RandomHex(12)),
-		Username:           username,
-		DisplayName:        "Administrator",
-		PasswordHash:       hash,
-		Role:               "admin",
-		Status:             "active",
-		SSOProvider:        "local",
-		MustChangePassword: true,
-	}
-	if err := st.Users().CreateUser(ctx, user); err != nil {
-		return "", fmt.Errorf("failed to create admin: %w", err)
-	}
-	return fmt.Sprintf("✓ Admin user %q created successfully", username), nil
 }
 
 // collectFiles is what every CLI seal uses; the sealed-only members are safe here and nowhere else.

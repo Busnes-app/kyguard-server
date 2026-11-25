@@ -14,18 +14,19 @@ it('requires matching passwords and submits with CSRF before returning to login'
   fireEvent.change(screen.getByLabelText('Current password'), { target: { value: 'TemporaryPassword123!' } });
   fireEvent.change(screen.getByLabelText('New password'), { target: { value: 'ReplacementPassword456!' } });
   fireEvent.change(screen.getByLabelText('Confirm new password'), { target: { value: 'DifferentPassword789!' } });
+  fireEvent.change(screen.getByLabelText('Authenticator code'), { target: { value: '123456' } });
   fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
   expect(screen.getByRole('alert').textContent).toContain('do not match'); expect(fetcher).not.toHaveBeenCalled();
   fireEvent.change(screen.getByLabelText('Confirm new password'), { target: { value: 'ReplacementPassword456!' } });
   fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
   await waitFor(() => expect(done).toHaveBeenCalledOnce());
-  expect(fetcher).toHaveBeenCalledWith('/api/auth/change-password', expect.objectContaining({ method: 'POST', body: JSON.stringify({ current_password: 'TemporaryPassword123!', new_password: 'ReplacementPassword456!' }) }));
+  expect(fetcher).toHaveBeenCalledWith('/api/auth/change-password', expect.objectContaining({ method: 'POST', body: JSON.stringify({ current_password: 'TemporaryPassword123!', new_password: 'ReplacementPassword456!', totp_code: '123456' }) }));
 });
 
 it('keeps the restricted form available after a server rejection', async () => {
   const done = vi.fn(); vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'Current password is incorrect' }), { status: 401 })));
   render(<ChangePassword onComplete={done} onLogout={vi.fn()} />);
-  for (const [label, value] of [['Current password', 'TemporaryPassword123!'], ['New password', 'ReplacementPassword456!'], ['Confirm new password', 'ReplacementPassword456!']]) {
+  for (const [label, value] of [['Current password', 'TemporaryPassword123!'], ['New password', 'ReplacementPassword456!'], ['Confirm new password', 'ReplacementPassword456!'], ['Authenticator code', '123456']]) {
     fireEvent.change(screen.getByLabelText(label), { target: { value } });
   }
   fireEvent.click(screen.getByRole('button', { name: 'Change password' }));
@@ -46,11 +47,11 @@ it('routes a restricted signed-in user to replacement instead of the dashboard',
   expect(screen.queryByText('Overview')).toBeNull();
 });
 
-it('lets a local user change their password from the header and cancel back', async () => {
+it('lets a break-glass user change their password from the header and cancel back', async () => {
   const { App } = await import('../App');
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
     String(input) === '/api/auth/me'
-      ? { authenticated: true, user: { username: 'ann', role: 'user', sso_provider: 'local' } }
+      ? { authenticated: true, user: { username: 'ann', role: 'admin', sso_provider: 'local', account_type: 'break_glass' }, break_glass: { reason: 'outage', expires_at: '2026-11-25T12:00:00Z' } }
       : { app_name: 'Test Server', theme: 'patina' },
   ), { status: 200 })));
   render(<App />);
@@ -64,7 +65,7 @@ it('offers no password change to a federated user', async () => {
   const { App } = await import('../App');
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
     String(input) === '/api/auth/me'
-      ? { authenticated: true, user: { username: 'sso', role: 'user', sso_provider: 'kysignon' } }
+      ? { authenticated: true, user: { username: 'sso', role: 'user', sso_provider: 'kysignon', account_type: 'sso' } }
       : { app_name: 'Test Server', theme: 'patina' },
   ), { status: 200 })));
   render(<App />);
