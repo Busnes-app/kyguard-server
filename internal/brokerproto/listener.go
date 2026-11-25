@@ -197,7 +197,7 @@ func (l *Listener) handleChannel(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	c.SetReadLimit(1 << 20)
+	c.SetReadLimit(MaxFrame)
 	id := pqcrypto.UUID(b.ID)
 	l.mu.Lock()
 	if l.conns == nil {

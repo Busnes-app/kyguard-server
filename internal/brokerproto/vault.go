@@ -32,7 +32,9 @@ func (l *Listener) handle(ctx context.Context, b *store.Broker, m Message) (any,
 		var err error
 		switch m.Type {
 		case MsgSync:
-			out, err = l.sync(ctx, tr, b)
+			out, err = l.sync(ctx, tr, b, m.Body)
+		case MsgSyncAccount:
+			out, err = l.syncAccount(ctx, tr, b, m.Body)
 		case MsgReserve:
 			out, err = l.reserve(ctx, tr, b, m.Body)
 		case MsgEnvelope:
@@ -64,42 +66,74 @@ func (l *Listener) account(ctx context.Context, tr *pqcrypto.Trust, b *store.Bro
 	return a, p, nil
 }
 
-func (l *Listener) sync(ctx context.Context, tr *pqcrypto.Trust, b *store.Broker) (*SyncReply, error) {
-	ms, err := l.Store.Guard().Manifests(ctx, 0)
+func (l *Listener) sync(ctx context.Context, tr *pqcrypto.Trust, b *store.Broker, body json.RawMessage) (*SyncReply, error) {
+	var req SyncRequest
+	if err := decode(body, &req); err != nil {
+		return nil, err
+	}
+	ms, err := l.Store.Guard().Manifests(ctx, int64(max(req.ManifestsAfter, 0)))
 	if err != nil {
 		return nil, err
 	}
-	out := &SyncReply{Manifests: []pqcrypto.B64{}, Accounts: []AccountState{}}
-	for _, m := range ms {
+	out := &SyncReply{Manifests: []pqcrypto.B64{}, Accounts: []pqcrypto.UUID{}}
+	for i, m := range ms {
+		if i == SyncPage {
+			return out, nil
+		}
 		out.Manifests = append(out.Manifests, m.Manifest)
 	}
+	out.Done = true
 	accts, err := l.Store.Vault().PoolAccounts(ctx, b.PoolID)
 	if err != nil {
 		return nil, err
 	}
 	for _, a := range accts {
-		if _, _, err := l.account(ctx, tr, b, pqcrypto.UUID(a.ID)); err != nil {
-			continue // not under a managed policy of this pool yet
+		if _, _, err := l.account(ctx, tr, b, pqcrypto.UUID(a.ID)); err == nil {
+			out.Accounts = append(out.Accounts, pqcrypto.UUID(a.ID))
 		}
-		st := AccountState{AccountID: pqcrypto.UUID(a.ID), HighestVersion: pqcrypto.Counter(a.HighestSecretVersion), Chains: []ChainState{}}
-		p, _ := tr.Policy(pqcrypto.UUID(a.ID))
-		if raw, err := l.Store.Vault().TargetDescriptor(ctx, string(p.TargetDescriptorDigest)); err == nil {
-			st.Descriptor = raw
-		}
-		chains, err := l.Store.Vault().Chains(ctx, a.ID)
-		if err != nil {
-			return nil, err
-		}
-		for _, c := range chains {
-			cs := ChainState{Envelope: c.Envelope.Envelope, Receipts: []pqcrypto.B64{}}
-			for _, r := range c.Receipts {
-				cs.Receipts = append(cs.Receipts, r.Receipt)
-			}
-			st.Chains = append(st.Chains, cs)
-		}
-		out.Accounts = append(out.Accounts, st)
 	}
 	return out, nil
+}
+
+func (l *Listener) syncAccount(ctx context.Context, tr *pqcrypto.Trust, b *store.Broker, body json.RawMessage) (*AccountState, error) {
+	var req SyncAccountRequest
+	if err := decode(body, &req); err != nil {
+		return nil, err
+	}
+	a, p, err := l.account(ctx, tr, b, req.AccountID)
+	if err != nil {
+		return nil, err
+	}
+	st := &AccountState{AccountID: req.AccountID, HighestVersion: pqcrypto.Counter(a.HighestSecretVersion), Chains: []ChainState{}}
+	if raw, err := l.Store.Vault().TargetDescriptor(ctx, string(p.TargetDescriptorDigest)); err == nil {
+		st.Descriptor = raw
+	}
+	chains, err := l.Store.Vault().Chains(ctx, a.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range chains {
+		if c.Envelope.SecretVersion <= uint64(req.AfterVersion) && c.Envelope.EnvelopeID != a.CurrentEnvelopeID && terminated(c) {
+			continue
+		}
+		cs := ChainState{Envelope: c.Envelope.Envelope, Receipts: []pqcrypto.B64{}}
+		for _, r := range c.Receipts {
+			cs.Receipts = append(cs.Receipts, r.Receipt)
+		}
+		st.Chains = append(st.Chains, cs)
+	}
+	return st, nil
+}
+
+// terminated reports a chain that can take no new receipt but rewrap_user after release.
+func terminated(c *store.StoredChain) bool {
+	for _, r := range c.Receipts {
+		switch r.ReceiptType {
+		case pqcrypto.ReceiptAbort, pqcrypto.ReceiptRelease, pqcrypto.ReceiptVaultCommit:
+			return true
+		}
+	}
+	return false
 }
 
 func decode(body json.RawMessage, v any) error {

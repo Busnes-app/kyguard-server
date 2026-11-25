@@ -141,11 +141,18 @@ func TestRotationRoundTripOnTheControlPlane(t *testing.T) {
 		t.Fatalf("chains after re-send: %+v", chains)
 	}
 	var s brokerproto.SyncReply
-	if err := f.call(brokerproto.MsgSync, struct{}{}, &s); err != nil {
+	if err := f.call(brokerproto.MsgSync, brokerproto.SyncRequest{}, &s); err != nil {
 		t.Fatal(err)
 	}
-	if len(s.Accounts) != 1 || len(s.Accounts[0].Chains) != 1 || len(s.Accounts[0].Chains[0].Receipts) != 2 || len(s.Accounts[0].Descriptor) == 0 || s.Accounts[0].HighestVersion != 1 {
-		t.Fatalf("sync %+v", s.Accounts)
+	if !s.Done || len(s.Accounts) != 1 || s.Accounts[0] != f.acct() {
+		t.Fatalf("sync %+v", s)
+	}
+	var st brokerproto.AccountState
+	if err := f.call(brokerproto.MsgSyncAccount, brokerproto.SyncAccountRequest{AccountID: f.acct()}, &st); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Chains) != 1 || len(st.Chains[0].Receipts) != 2 || len(st.Descriptor) == 0 || st.HighestVersion != 1 {
+		t.Fatalf("account %+v", st)
 	}
 	// The next reservation gets a fresh version.
 	if v2, err := f.reserve(pqtest.UUID(), 0); err != nil || v2 != 2 {
@@ -248,7 +255,61 @@ func TestChannelScopesWorkToTheActiveBrokersPool(t *testing.T) {
 	}
 	// Revoked mid-connection: the next request is refused.
 	f.cp.AdmitPool(2, f.b.Member(pqcrypto.StatusRevoked))
-	if err := f.call(brokerproto.MsgSync, struct{}{}, nil); !remote(err, "broker is not the active member of its pool") {
+	if err := f.call(brokerproto.MsgSync, brokerproto.SyncRequest{}, nil); !remote(err, "broker is not the active member of its pool") {
 		t.Fatalf("revoked: %v", err)
+	}
+}
+
+// Sync is paged and per account, so a long history never outgrows one frame (PR Reviewer
+// Guide on #10): manifests come SyncPage at a time, and an account sends only chains above
+// the broker's version plus its current and unterminated ones.
+func TestSyncIsPaged(t *testing.T) {
+	f := newVault(t)
+	for range brokerproto.SyncPage {
+		f.cp.Account(nil)
+	}
+	after, pages, accounts := 0, 0, 0
+	for {
+		var s brokerproto.SyncReply
+		if err := f.call(brokerproto.MsgSync, brokerproto.SyncRequest{ManifestsAfter: after}, &s); err != nil {
+			t.Fatal(err)
+		}
+		pages++
+		after += len(s.Manifests)
+		if len(s.Manifests) > brokerproto.SyncPage {
+			t.Fatalf("page of %d", len(s.Manifests))
+		}
+		if s.Done {
+			accounts = len(s.Accounts)
+			break
+		}
+	}
+	if pages < 2 || accounts != brokerproto.SyncPage+1 {
+		t.Fatalf("pages=%d accounts=%d", pages, accounts)
+	}
+	// v1 aborted, v2 current: a broker at version 2 gets only the current chain.
+	op1 := pqtest.UUID()
+	v1, _ := f.reserve(op1, 0)
+	e1, raw1 := f.envelope(v1)
+	f.call(brokerproto.MsgEnvelope, brokerproto.EnvelopeRequest{OperationID: op1, Envelope: raw1}, nil)
+	ab, _ := f.receipt(e1, 1, pqcrypto.ZeroHex, pqcrypto.ReceiptAbort, pqcrypto.ReasonRefused, op1)
+	f.call(brokerproto.MsgReceipts, brokerproto.ReceiptsRequest{OperationID: op1, AccountID: f.acct(), Receipts: []pqcrypto.B64{ab}}, nil)
+	op2 := pqtest.UUID()
+	v2, _ := f.reserve(op2, 0)
+	e2, raw2 := f.envelope(v2)
+	f.call(brokerproto.MsgEnvelope, brokerproto.EnvelopeRequest{OperationID: op2, Envelope: raw2}, nil)
+	c1, h1 := f.receipt(e2, 1, pqcrypto.ZeroHex, pqcrypto.ReceiptCommitTarget, "", op2)
+	c2, _ := f.receipt(e2, 2, h1, pqcrypto.ReceiptRelease, "", op2)
+	if err := f.call(brokerproto.MsgReceipts, brokerproto.ReceiptsRequest{OperationID: op2, AccountID: f.acct(), Receipts: []pqcrypto.B64{c1, c2}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for after, want := range map[pqcrypto.Counter]int{0: 2, 2: 1} {
+		var st brokerproto.AccountState
+		if err := f.call(brokerproto.MsgSyncAccount, brokerproto.SyncAccountRequest{AccountID: f.acct(), AfterVersion: after}, &st); err != nil {
+			t.Fatal(err)
+		}
+		if len(st.Chains) != want {
+			t.Fatalf("after %d: %d chains, want %d", after, len(st.Chains), want)
+		}
 	}
 }

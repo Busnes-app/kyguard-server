@@ -36,6 +36,10 @@ Owns `/broker/v1/*`. It is never mounted on the main mux. Signed-object rules ar
   (`Trust.Append`, `New: true`, the request's operation) before storing it, and derives the
   current envelope, run state and lock release from the verified receipts alone, never
   from the broker's word. Refusals are stable codes (`locked`, `conflict`, pqcrypto codes).
+- Frames are at most `MaxFrame` (4 MiB) on both ends. `sync` pages manifests `SyncPage` at a
+  time and lists the pool's accounts on the last page; `sync_account` returns one account's
+  chains above the broker's version plus its current and unterminated ones. Never return a
+  whole history in one frame.
 - `CreateCA` never replaces existing files; `LoadCA` refuses a key that is not the
   certificate's.
 
