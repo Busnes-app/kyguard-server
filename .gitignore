@@ -1,6 +1,7 @@
 # Binaries
 /kyguard-server
 /kyguard-cli
+/kyguard-broker
 /server
 *.exe
 *.dll
