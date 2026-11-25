@@ -32,7 +32,10 @@ the wire and TLS are `internal/brokerproto`'s.
   success quarantines. There is no timer abort and no abort after `ack_received`.
 - `Recover` (startup, every reconnect): no `ack_received` → `abort` (`restart_before_send`);
   `ack_received` → `write_outcome_unknown` and the one probe; a recorded probe without a
-  result → quarantine; journaled receipts not acknowledged → re-sent. It never writes.
+  result → quarantine; journaled receipts not acknowledged → re-sent; a health report
+  that failed (`Account.Unreported`) → re-sent. It never writes.
+- A run with unacknowledged receipts is never replaced: `start` re-sends them first and
+  returns `ErrBlocked` if that fails (DECISIONS 63).
 - `Sync` accepts manifests only through `Trust.Accept` (rollback and forks alerted, never
   applied), descriptors only if their policy pins the digest, and chains only if they
   verify and extend the broker's copy.

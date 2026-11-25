@@ -187,6 +187,13 @@ contradicts itself. Each names its section. The most secure reading wins.
     a one-chain page always fits a frame and every continuation advances. A `sync` page reads
     at most `SyncPage` manifests. A `receipts` request reads only the chains its receipts
     name.
+63. §4.2, §4.3 rule 7 (undelivered results). A run whose journaled receipts the Control
+    Plane has not acknowledged is never replaced: the next rotation attempt first re-sends
+    them and, if that fails, is refused as blocked, so an abort's operation ID and the
+    reservation it releases are never lost.
+64. §8.1, §4.3 rule 6 (health delivery). A health report that fails is journaled as
+    unreported and sent again by every `Recover` (startup and reconnect) until one is
+    acknowledged, so a quarantine is never left unknown to the Control Plane.
 70. §4.1 (pushes). A Control Plane push that finds the broker's 16-slot queue full is
     dropped and logged, never waited for, so results for pending calls keep flowing. A
     dropped push is a lost relay: nothing was persisted, and the CLI retries or the

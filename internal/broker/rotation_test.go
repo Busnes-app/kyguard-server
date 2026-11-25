@@ -3,6 +3,7 @@ package broker_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -464,5 +465,70 @@ func TestRecoveryProbesTheOriginalTarget(t *testing.T) {
 	}
 	if len(r.target.hosts) != 1 || r.target.hosts[0] != "db1.example.test" {
 		t.Fatalf("probed %v", r.target.hosts)
+	}
+}
+
+// An aborted run whose receipts were not delivered is not replaced by the next rotation: the
+// next attempt delivers the abort first, or stays blocked (PR Reviewer Guide on #11).
+func TestUndeliveredAbortIsSentBeforeTheNextRun(t *testing.T) {
+	r := newRig(t)
+	r.target.refuseBeforeCommit = true
+	w := &wrapCP{ControlPlane: r.cpw, receiptsErr: errors.New("control plane unreachable")}
+	r.cpw = w
+	m := r.machine()
+	defer m.J.Close()
+	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); err == nil {
+		t.Fatal("delivery did not fail")
+	}
+	r.target.refuseBeforeCommit = false
+	first := r.account(m).Run
+	if first.State != broker.StateAborted || first.Sent {
+		t.Fatalf("first run %+v", first)
+	}
+	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); !errors.Is(err, broker.ErrBlocked) {
+		t.Fatalf("undelivered abort: %v", err)
+	}
+	if a := r.account(m); a.Run.OperationID != first.OperationID || a.Run.Sent || r.cpLock() != string(first.OperationID) {
+		t.Fatalf("pending abort lost: run %+v lock %s", a.Run, r.cpLock())
+	}
+	w.receiptsErr = nil
+	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); err != nil {
+		t.Fatal(err)
+	}
+	// The second run could reserve only because the abort released the first one's lock.
+	a := r.account(m)
+	if a.Run.State != broker.StateReleaseAuthorized || a.Run.Attempt != 1 || r.cpLock() != "" {
+		t.Fatalf("second run %+v lock %s", a.Run, r.cpLock())
+	}
+	if !slices.ContainsFunc(a.Chains, func(c broker.ChainCopy) bool { return slices.Equal(c.Envelope, first.NewEnvelope) }) {
+		t.Fatal("the delivered abort did not join the broker's copy")
+	}
+}
+
+// Health whose report failed is sent again on reconnect (PR Reviewer Guide on #11).
+func TestUndeliveredHealthIsResentOnRecover(t *testing.T) {
+	r := newRig(t)
+	r.target.ambiguous = errors.New("connection reset") // not applied: the probe fails
+	w := &wrapCP{ControlPlane: r.cpw, statusErr: errors.New("control plane unreachable")}
+	r.cpw = w
+	m := r.machine()
+	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); err != nil {
+		t.Fatal(err)
+	}
+	if a := r.account(m); !a.Quarantined || !a.Unreported || r.cpAccount().Health == broker.HealthQuarantined {
+		t.Fatalf("quarantined=%v unreported=%v cp health=%s", a.Quarantined, a.Unreported, r.cpAccount().Health)
+	}
+	m.J.Close()
+	w.statusErr = nil
+	m2 := r.machine()
+	defer m2.J.Close()
+	if err := m2.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if h := r.cpAccount().Health; h != broker.HealthQuarantined {
+		t.Fatalf("control plane health %s", h)
+	}
+	if r.account(m2).Unreported {
+		t.Fatal("still unreported after delivery")
 	}
 }

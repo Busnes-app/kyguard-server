@@ -235,8 +235,16 @@ type wrapCP struct {
 	reserve func(ctx context.Context, account, op pqcrypto.UUID, reported pqcrypto.Counter) (pqcrypto.Counter, error)
 	sync    func(ctx context.Context, req brokerproto.SyncRequest) (*brokerproto.SyncReply, error)
 	account func(ctx context.Context, id pqcrypto.UUID, after pqcrypto.Counter, more bool) (*brokerproto.AccountState, error)
-	// receiptsErr fails every receipts delivery while set.
+	// receiptsErr fails every receipts delivery while set; statusErr every status report.
 	receiptsErr error
+	statusErr   error
+}
+
+func (w *wrapCP) Status(ctx context.Context, s brokerproto.StatusRequest) error {
+	if w.statusErr != nil {
+		return w.statusErr
+	}
+	return w.ControlPlane.Status(ctx, s)
 }
 
 func (w *wrapCP) Receipts(ctx context.Context, op, account pqcrypto.UUID, rs []pqcrypto.B64) error {

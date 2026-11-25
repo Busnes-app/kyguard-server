@@ -214,6 +214,13 @@ func (m *Machine) Rotate(ctx context.Context, account pqcrypto.UUID, occurrence 
 }
 
 func (m *Machine) start(ctx context.Context, a *Account, rc *rotationContext, op pqcrypto.UUID, occurrence, attempt pqcrypto.Counter, due time.Time) error {
+	// A run whose journaled receipts the Control Plane has not acknowledged is delivered
+	// before a new run replaces it; otherwise its operation ID and lock would be lost.
+	if r := a.Run; r != nil && len(r.Receipts) > 0 && !r.Sent {
+		if err := m.send(ctx, a); err != nil {
+			return fmt.Errorf("%w: earlier results not delivered: %w", ErrBlocked, err)
+		}
+	}
 	version, err := m.CP.Reserve(ctx, a.ID, op, a.HighestVersion)
 	if err != nil {
 		return err
@@ -520,20 +527,29 @@ func (m *Machine) quarantine(ctx context.Context, a *Account, health, reason str
 	return nil
 }
 
-// report tells the Control Plane the account's health; it is resent on the next sync.
+// report tells the Control Plane the account's health. A failed delivery is journaled as
+// Unreported and the health is sent again by the next Recover.
 func (m *Machine) report(ctx context.Context, a *Account, runState string) {
 	s := brokerproto.StatusRequest{AccountID: a.ID, Health: a.Health, Reason: a.HealthReason}
 	if runState != "" && a.Run != nil {
 		s.OperationID, s.RunState = a.Run.OperationID, runState
 	}
-	if err := m.CP.Status(ctx, s); err != nil {
+	err := m.CP.Status(ctx, s)
+	if err != nil {
 		log.Printf("[BROKER] status for %s not delivered: %v", a.ID, err)
+	}
+	if unreported := err != nil; unreported != a.Unreported {
+		a.Unreported = unreported
+		if err := m.J.Save(a); err != nil {
+			log.Printf("[BROKER] status flag for %s not journaled: %v", a.ID, err)
+		}
 	}
 }
 
-// Recover settles every journaled run after a restart (§4.3 rule 3) and re-sends results the
-// Control Plane has not acknowledged. It never sends a second write: an intent with
-// ack_received gets only the one probe, and a recorded probe without a result quarantines.
+// Recover settles every journaled run after a restart (§4.3 rule 3) and re-sends results and
+// health the Control Plane has not acknowledged. It never sends a second write: an intent
+// with ack_received gets only the one probe, and a recorded probe without a result
+// quarantines.
 func (m *Machine) Recover(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -543,6 +559,9 @@ func (m *Machine) Recover(ctx context.Context) error {
 	}
 	var errs []error
 	for _, a := range accts {
+		if a.Unreported {
+			m.report(ctx, a, "")
+		}
 		if err := m.recover(ctx, a); err != nil {
 			errs = append(errs, fmt.Errorf("account %s: %w", a.ID, err))
 		}

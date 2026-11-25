@@ -47,6 +47,8 @@ type Account struct {
 	Health         string           `json:"health"`
 	HealthReason   string           `json:"health_reason,omitempty"`
 	Quarantined    bool             `json:"quarantined"`
+	// Unreported is set while the last health report was not delivered (resent by Recover).
+	Unreported bool `json:"unreported,omitempty"`
 	// Schedule floor inputs (§3.4).
 	PolicyEpoch       pqcrypto.Counter `json:"policy_epoch"`
 	PolicyPersistedAt time.Time        `json:"policy_persisted_at"`
