@@ -304,7 +304,8 @@ func (m *Machine) endDelivery(ctx context.Context, a *Account, reason string, qu
 	a.Lease.State, a.Lease.CloseReason, a.Lease.Mirrored, a.Lease.Delivery = LeaseClosed, reason, false, nil
 	if quarantine {
 		log.Printf("[BROKER] ALERT: account %s quarantined: the current credential was denied at checkout", a.ID)
-		a.Quarantined, a.Health, a.HealthReason = true, HealthAuthFailed, "checkout verification with the current credential was denied"
+		a.Quarantined = true
+		setHealth(a, HealthAuthFailed, "checkout verification with the current credential was denied")
 	}
 	if err := m.J.Save(a); err != nil {
 		return err
@@ -459,7 +460,7 @@ func (m *Machine) sealedForTarget(ctx context.Context, a *Account, chain *pqcryp
 		return nil
 	}
 	if a.Health != HealthNeedsEnrollment {
-		a.Health, a.HealthReason = HealthNeedsEnrollment, "the target descriptor changed"
+		setHealth(a, HealthNeedsEnrollment, "the target descriptor changed")
 		if err := m.J.Save(a); err != nil {
 			return err
 		}
