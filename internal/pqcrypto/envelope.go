@@ -100,6 +100,11 @@ func (t *Trust) VerifyEnvelope(raw []byte, c EnvelopeContext) (*VerifiedEnvelope
 	if pol == nil || pol.AccountID != e.Scope.ID || pol.Epoch != e.Epoch || pol.AccountKind != e.EnvelopeKind {
 		return nil, ErrStale
 	}
+	// New work is authorized against the current policy (§3.5): a new envelope is sealed
+	// under it, so its pool, enrollers and users decide.
+	if cur, cd := t.Policy(e.Scope.ID); c.New && (cur == nil || cd.Hex() != e.PolicyDigest) {
+		return nil, ErrStale
+	}
 	if len(e.Signatures) != 1 {
 		return nil, ErrSignature
 	}

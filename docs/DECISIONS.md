@@ -62,7 +62,12 @@ contradicts itself. Each names its section. The most secure reading wins.
 18. §3.5 (history versus new work). A historical envelope may name any recovery epoch from 1
     up to the persisted one; a new envelope must name the persisted one. A historical
     receipt's epoch is at least its envelope's; a new receipt's epoch is the current policy
-    epoch. A sealing context resolves only to a policy accepted in order.
+    epoch. A sealing context resolves only to a policy accepted in order. New work is
+    authorized by the current policy: a new envelope must be sealed under it, and a new
+    receipt's broker must belong to its pool and its users to its lists, so a broker of a
+    pool the account has left is refused. History is judged by the policy at the receipt's
+    epoch if it was accepted, otherwise by the sealing policy, so removing a user never
+    breaks replay of a valid chain.
 19. §3.5 (abort reasons). `refused` and `restart_before_send` appear only at seq 1 of a
     broker-sealed rotation envelope, `enrollment_failed` only at seq 1 of a user-signed
     enrollment candidate, and `superseded_by_reenrollment` at the next seq of any unterminated

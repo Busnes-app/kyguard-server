@@ -14,7 +14,8 @@ func init() {
 	generators["pop.json"] = genPoP
 	generators["envelope.json"] = genEnvelope
 	generators["receipt.json"] = genReceipt
-	contractFiles = append(contractFiles, "tx.json", "pop.json", "envelope.json", "receipt.json")
+	generators["reassigned.json"] = genReassigned
+	contractFiles = append(contractFiles, "tx.json", "pop.json", "envelope.json", "receipt.json", "reassigned.json")
 }
 
 const (
@@ -338,5 +339,66 @@ func genReceipt(t *testing.T) any {
 		vec(t, "remote chain extends the local copy", "extends", "", nil, ext([][]byte{ctRaw}, [][]byte{ctRaw, relRaw}), ok),
 		vec(t, "remote chain truncated", "extends", "", nil, ext([][]byte{ctRaw, relRaw}, [][]byte{ctRaw}), "invalid_receipt_chain"),
 		vec(t, "remote chain diverges", "extends", "", nil, ext([][]byte{ctRaw}, [][]byte{refused}), "invalid_receipt_chain"),
+	}
+}
+
+const wPool2 = "0190b2a4-2222-7222-8222-000000000002"
+
+// moved returns the manifests that move wAcctE to a second pool served by another broker:
+// that pool's manifest and the account's policy epoch 2. It also returns the new policy.
+func (w *world) moved() ([]json.RawMessage, *PolicyManifest) {
+	b := &wBroker{"4c2f0e1a-9b8d-4c6e-a7f3-2d1b0c9e8f0b", mustSigningKey(w.t, "broker-pool2"), mustXWing(w.t, "broker-pool2"), hexOf("cert-pool2")}
+	p2 := &BrokerPoolManifest{Header: w.hdr(TypePool, ScopePool, wPool2, 1, RoleCustodian), PoolID: wPool2,
+		Members: []BrokerMember{w.member(b, StatusActive)}, DecommissionedBrokerIDs: []Decommission{}}
+	pol := w.managedPolicy(wAcctE, 2, ModeEphemeral)
+	pol.PoolID = wPool2
+	return []json.RawMessage{w.signed(p2, RoleCustodian, w.cust[0], w.cust[1]), w.signed(pol, RoleCustodian, w.cust[0], w.cust[1])}, pol
+}
+
+// genReassigned covers new work after an account moves pools and history after a policy
+// removes a user (review findings on #5).
+func genReassigned(t *testing.T) any {
+	w := newWorld(t)
+	ka := w.brkA.sig
+	alice, dave := w.users["alice"], w.users["dave"]
+	prior, pol2 := w.moved()
+	rot := w.envelope(wAcctE, wEnv1, 6, true, []*wBroker{w.brkA}, nil)
+	rotRaw := w.signed(rot, RoleBroker, ka)
+	ct, ctRaw := w.receipt(rot, 1, ZeroHex, ReceiptCommitTarget, "", ka, RoleBroker, nil)
+	// A new release by the former pool's broker, at the current policy epoch.
+	rel := &EnvelopeReceipt{Header: w.hdr(TypeReceipt, ScopeAccount, wAcctE, 2, RoleBroker), EnvelopeID: rot.EnvelopeID,
+		EnvelopeKind: rot.EnvelopeKind, SecretVersion: rot.SecretVersion, ReceiptSeq: 2, PrevReceiptHash: headOf(t, ct),
+		ReceiptType: ReceiptRelease, OperationID: "0190b2a4-9999-7999-8999-000000000001", ExtraRecipients: []Recipient{}, IssuedAt: NewTime(wT0)}
+	relRaw := w.signed(rel, RoleBroker, ka)
+	// A new envelope under the current policy, sealed and signed by the former broker.
+	old := w.pol[wAcctE]
+	w.pol[wAcctE] = pol2
+	under2 := w.signed(w.envelope(wAcctE, wEnv2, 7, true, []*wBroker{w.brkA}, nil), RoleBroker, ka)
+	w.pol[wAcctE] = old
+
+	vault := w.envelope(wAcctV, wEnv1, 1, true, nil, []*wPrincipal{alice, dave})
+	vaultRaw := w.userSigned(vault, "alice")
+	vc, vcRaw := w.receipt(vault, 1, ZeroHex, ReceiptVaultCommit, "", alice.sig, RoleUser, nil)
+	_, rewrap := w.receipt(vault, 2, headOf(t, vc), ReceiptRewrapUser, "", dave.sig, RoleUser, []Recipient{w.wrapFor(vault, dave)})
+	pv := *w.pol[wAcctV]
+	pv.Signatures, pv.Epoch, pv.AllowedUserPrincipalIDs = nil, 2, []UUID{alice.id}
+	noDave := []json.RawMessage{w.signed(&pv, RoleCustodian, w.cust[0], w.cust[1])}
+
+	withPrior := func(p objParams, pr []json.RawMessage) objParams { p.Prior = pr; return p }
+	rp := func(env []byte, new bool, prior ...[]byte) objParams {
+		p := objParams{Envelope: env, New: new}
+		for _, x := range prior {
+			p.Receipts = append(p.Receipts, x)
+		}
+		return p
+	}
+	return []objVector{
+		vec(t, "new envelope under the superseded policy", "envelope", "", rotRaw, withPrior(objParams{New: true}, prior), "stale_reference"),
+		vec(t, "new envelope by the former pool's broker under the current policy", "envelope", "", under2, withPrior(objParams{New: true}, prior), "unknown_signing_key"),
+		vec(t, "history from the former pool still verifies", "envelope", TypeEnvelope, rotRaw, withPrior(objParams{}, prior), ok),
+		vec(t, "historical receipt from the former pool", "receipt", TypeReceipt, ctRaw, withPrior(rp(rotRaw, false), prior), ok),
+		vec(t, "new receipt by the former pool's broker", "receipt", "", relRaw, withPrior(rp(rotRaw, true, ctRaw), prior), "unknown_signing_key"),
+		vec(t, "historical rewrap by a user the policy later removed", "receipt", TypeReceipt, rewrap, withPrior(rp(vaultRaw, false, vcRaw), noDave), ok),
+		vec(t, "new rewrap by a user the policy removed", "receipt", "", rewrap, withPrior(rp(vaultRaw, true, vcRaw), noDave), "stale_reference"),
 	}
 }

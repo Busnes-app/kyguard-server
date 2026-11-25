@@ -114,6 +114,14 @@ func (t *Trust) Append(c *Chain, raw []byte, rc ReceiptContext) (*EnvelopeReceip
 	if cur == nil || r.Epoch < e.Epoch || (rc.New && r.Epoch != cur.Epoch) {
 		return nil, ErrStale
 	}
+	// auth decides who may sign and receive: the current policy for a new append; for
+	// history, the policy at the receipt's epoch if it was accepted, else the sealing one.
+	auth := cur
+	if !rc.New {
+		if auth = t.policyAt(e.Scope.ID, r.Epoch); auth == nil {
+			auth = e.Policy
+		}
+	}
 	if (r.Reason != "") != (r.ReceiptType == ReceiptAbort) {
 		return nil, ErrReceipt
 	}
@@ -121,7 +129,7 @@ func (t *Trust) Append(c *Chain, raw []byte, rc ReceiptContext) (*EnvelopeReceip
 	// Signer.
 	var signer UUID
 	if r.SignerRole == RoleBroker {
-		signer, err = t.verifyBrokerSig(d, r.Signatures, e.Policy.PoolID, rc.New)
+		signer, err = t.verifyBrokerSig(d, r.Signatures, auth.PoolID, rc.New)
 	} else {
 		signer, err = t.verifyUserSig(d, r.Signatures, rc.New)
 	}
@@ -162,7 +170,7 @@ func (t *Trust) Append(c *Chain, raw []byte, rc ReceiptContext) (*EnvelopeReceip
 		if managed && (!broker || e.RotationEnvelope()) {
 			return nil, ErrReceipt // managed: the pool broker, on an enrollment candidate
 		}
-		if !managed && (broker || signer != e.Signer || !contains(cur.AllowedUserPrincipalIDs, signer)) {
+		if !managed && (broker || signer != e.Signer || !contains(auth.AllowedUserPrincipalIDs, signer)) {
 			return nil, ErrReceipt // vaulted: the sealing user, still allowed
 		}
 	case ReceiptRelease:
@@ -170,8 +178,8 @@ func (t *Trust) Append(c *Chain, raw []byte, rc ReceiptContext) (*EnvelopeReceip
 			return nil, ErrReceipt
 		}
 		var want []UUID
-		if e.Policy.CheckoutMode == ModeStanding && e.Policy.AutoStandingRelease != nil && *e.Policy.AutoStandingRelease {
-			want = e.Policy.StandingRecipientPrincipalIDs
+		if auth.CheckoutMode == ModeStanding && auth.AutoStandingRelease != nil && *auth.AutoStandingRelease {
+			want = auth.StandingRecipientPrincipalIDs
 		}
 		if err := t.checkExtra(r.ExtraRecipients, want, rc.New); err != nil {
 			return nil, err
@@ -199,11 +207,11 @@ func (t *Trust) Append(c *Chain, raw []byte, rc ReceiptContext) (*EnvelopeReceip
 				}
 			}
 		} else {
-			if broker || !c.users[signer] || !contains(cur.AllowedUserPrincipalIDs, signer) {
+			if broker || !c.users[signer] || !contains(auth.AllowedUserPrincipalIDs, signer) {
 				return nil, ErrReceipt
 			}
 			for _, p := range want {
-				if !contains(cur.AllowedUserPrincipalIDs, p) {
+				if !contains(auth.AllowedUserPrincipalIDs, p) {
 					return nil, ErrNotAllowed
 				}
 			}
