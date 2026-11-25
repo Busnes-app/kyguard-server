@@ -13,6 +13,7 @@ import (
 
 	"github.com/Busnes-app/kyguard-server/internal/broker"
 	"github.com/Busnes-app/kyguard-server/internal/connectors/adldaps"
+	"github.com/Busnes-app/kyguard-server/internal/connectors/sshpasswd"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
 )
 
@@ -28,7 +29,8 @@ func main() {
 		dir = defaultDir
 	}
 	app := &broker.App{Dir: dir, Out: os.Stdout, Nudges: make(chan struct{}, 1), Connectors: map[string]broker.Connector{
-		pqcrypto.ConnectorADLDAPS: &adldaps.Connector{},
+		pqcrypto.ConnectorADLDAPS:   &adldaps.Connector{},
+		pqcrypto.ConnectorSSHPasswd: &sshpasswd.Connector{},
 	}}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

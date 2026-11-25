@@ -188,3 +188,11 @@ contradicts itself. Each names its section. The most secure reading wins.
     deterministic authentication failure; 19 (constraint violation: policy, history,
     minimum age) and 53 (unwilling to perform) on the `unicodePwd` modify are deterministic
     refusals. Any other error after the commit point is ambiguous.
+50. §4.4 (SSH prompts). The connector runs `LC_ALL=C passwd` so the linux-pam prompts are the
+    English set; it answers only "Current password" / "(current) UNIX password", then
+    "New password" / "Enter new UNIX password", then "Retype new password". A repeated new
+    password prompt after the commit point is a refusal (linux-pam rejected it and wrote
+    nothing); success needs "password updated successfully" and exit status 0. An
+    unrecognized prompt is detected by the absence of a known one within the timeout.
+51. §4.4 (SSH baseline). SSH verification is the fresh login alone; the baseline is the
+    `chage -l` last-change date when the account may read it and empty otherwise.
