@@ -72,6 +72,21 @@ func TestAttributeValuesFollowTheirDefinition(t *testing.T) {
 	if err := inv.SetValue(ctx, tier.ID, "ac", "gold", SourceAdmin, nil); err != nil {
 		t.Fatal(err)
 	}
+	if err := inv.CreateAccount(ctx, &InventoryAccount{Account: Account{ID: "ac3", AssetID: "as", Name: "other", AccountKind: "vaulted"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := inv.SetValue(ctx, tier.ID, "ac3", "silver", SourceAdmin, nil); err != nil {
+		t.Fatal(err)
+	}
+	if one, err := inv.EntityValues(ctx, EntityAccount, "ac"); err != nil || len(one) != 1 || one["tier"] != "gold" {
+		t.Fatalf("entity values %v %v", one, err)
+	}
+	if none, err := inv.EntityValues(ctx, EntityUser, "ac"); err != nil || none == nil || len(none) != 0 {
+		t.Fatalf("values of another entity type %v %v", none, err)
+	}
+	if err := inv.SetValue(ctx, tier.ID, "ac3", "", SourceAdmin, nil); err != nil {
+		t.Fatal(err)
+	}
 	tier.EnumValues = []string{"silver"}
 	if err := inv.UpdateDefinition(ctx, tier, nil); !errors.Is(err, ErrConflict) {
 		t.Fatalf("removed an enum value in use: %v", err)
