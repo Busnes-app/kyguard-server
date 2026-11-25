@@ -654,3 +654,22 @@ func TestUndrainedPushesNeverBlockResults(t *testing.T) {
 		t.Fatalf("%d pushes queued", n)
 	}
 }
+
+// A push relayed by a replica that does not hold the broker's channel is queued and
+// delivered by the one that does (PR Reviewer Guide on #15).
+func TestRelayReachesTheBrokerThroughAnyReplica(t *testing.T) {
+	f := newVault(t)
+	other := &brokerproto.Listener{Store: f.cp.Store, Trust: f.cp.L.Trust} // holds no channel
+	ctx := context.Background()
+	if err := other.Relay(ctx, f.b.ID, brokerproto.Message{V: 1, Type: brokerproto.MsgNudge}, time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case m := <-f.b.Conn.Pushes:
+		if m.Type != brokerproto.MsgNudge {
+			t.Fatalf("push %+v", m)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a queued push never reached the broker")
+	}
+}

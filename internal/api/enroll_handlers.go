@@ -161,10 +161,9 @@ func (s *Server) handleSubmitEnrollment(w http.ResponseWriter, r *http.Request) 
 		s.writeError(w, http.StatusConflict, "a different transaction holds this request id")
 		return
 	}
-	l := s.BrokerListener()
 	body, _ := json.Marshal(req)
-	if l == nil || l.Send(r.Context(), broker, brokerproto.Message{V: 1, Type: brokerproto.MsgEnroll, Body: body}) != nil {
-		s.writeError(w, http.StatusServiceUnavailable, "the broker is not connected; submit again")
+	if err := s.relay(r.Context(), broker, brokerproto.Message{V: 1, Type: brokerproto.MsgEnroll, Body: body}, tx.ExpiresAt.Time); err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, "could not relay to the broker; submit again")
 		return
 	}
 	s.writeJSON(w, http.StatusAccepted, map[string]string{"state": "relayed"})

@@ -383,3 +383,30 @@ func TestChainsAndDescriptorsAreCapped(t *testing.T) {
 		t.Fatalf("receipt over the chain cap: %v", err)
 	}
 }
+
+// Queued pushes are taken once, oldest first, per broker, and expire (PR Reviewer Guide on
+// #15).
+func TestQueuedPushesAreTakenOnce(t *testing.T) {
+	v, _ := vaultAccount(t)
+	ctx := context.Background()
+	now := time.Now()
+	for i, p := range []*Push{{BrokerID: "b1", Type: "a"}, {BrokerID: "b2", Type: "x"}, {BrokerID: "b1", Type: "b"}, {BrokerID: "b1", Type: "old"}} {
+		p.Body, p.ExpiresAt = []byte(fmt.Sprint(i)), now.Add(time.Minute)
+		if p.Type == "old" {
+			p.ExpiresAt = now.Add(-time.Second)
+		}
+		if err := v.QueuePush(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ps, err := v.TakePushes(ctx, "b1", 10, now)
+	if err != nil || len(ps) != 2 || ps[0].Type != "a" || ps[1].Type != "b" || string(ps[1].Body) != "2" {
+		t.Fatalf("take: %+v %v", ps, err)
+	}
+	if ps, _ := v.TakePushes(ctx, "b1", 10, now); len(ps) != 0 {
+		t.Fatalf("taken twice: %+v", ps)
+	}
+	if ps, _ := v.TakePushes(ctx, "b2", 10, now); len(ps) != 1 {
+		t.Fatalf("other broker: %+v", ps)
+	}
+}

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -89,6 +90,11 @@ type VaultStore interface {
 	EnrollmentState(ctx context.Context, accountID, op string) (string, error)
 	// PutTx stores a relayed transaction once.
 	PutTx(ctx context.Context, requestID, accountID, actionType, digest string, raw []byte) error
+	// QueuePush stores a Control Plane push for a broker until expires, for whichever
+	// replica holds the broker's channel; TakePushes removes and returns, oldest first, at
+	// most limit unexpired pushes for the broker. A push is taken once.
+	QueuePush(ctx context.Context, p *Push) error
+	TakePushes(ctx context.Context, brokerID string, limit int, now time.Time) ([]*Push, error)
 	SetHealth(ctx context.Context, accountID, health, reason string) error
 	// Lock returns the operation holding the account's lock, or "".
 	Lock(ctx context.Context, accountID string) (op string, version uint64, err error)
@@ -676,6 +682,52 @@ func (v vaultStore) ExpireEnrollments(ctx context.Context, now time.Time) (int, 
 		}
 	}
 	return len(accts), nil
+}
+
+// Push is one queued Control Plane push.
+type Push struct {
+	BrokerID  string
+	Type      string
+	Body      []byte
+	ExpiresAt time.Time
+}
+
+func (v vaultStore) QueuePush(ctx context.Context, p *Push) error {
+	_, err := v.s.db.ExecContext(ctx, v.s.rebind(`INSERT INTO broker_outbox (broker_id, type, body, expires_at) VALUES (?, ?, ?, ?)`),
+		p.BrokerID, p.Type, string(p.Body), p.ExpiresAt.UTC())
+	return err
+}
+
+func (v vaultStore) TakePushes(ctx context.Context, brokerID string, limit int, now time.Time) ([]*Push, error) {
+	var out []*Push
+	err := v.s.inTx(ctx, func(tx *sql.Tx) error {
+		out = nil
+		if _, err := tx.ExecContext(ctx, v.s.rebind(`DELETE FROM broker_outbox WHERE expires_at <= ?`), now.UTC()); err != nil {
+			return err
+		}
+		// One DELETE ... RETURNING: concurrent takers never both get a row.
+		rows, err := tx.QueryContext(ctx, v.s.rebind(`DELETE FROM broker_outbox WHERE id IN (SELECT id FROM broker_outbox WHERE broker_id = ? ORDER BY id LIMIT ?)
+ RETURNING id, type, body, expires_at`), brokerID, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		ids := map[*Push]int64{}
+		for rows.Next() {
+			var p Push
+			var id int64
+			var body string
+			if err := rows.Scan(&id, &p.Type, &body, &p.ExpiresAt); err != nil {
+				return err
+			}
+			p.BrokerID, p.Body = brokerID, []byte(body)
+			ids[&p] = id
+			out = append(out, &p)
+		}
+		slices.SortFunc(out, func(a, b *Push) int { return cmp.Compare(ids[a], ids[b]) })
+		return rows.Err()
+	})
+	return out, err
 }
 
 func (v vaultStore) PutTx(ctx context.Context, requestID, accountID, actionType, digest string, raw []byte) error {

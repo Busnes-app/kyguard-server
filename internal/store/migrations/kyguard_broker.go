@@ -134,7 +134,15 @@ CREATE TABLE access_transactions (
     digest TEXT NOT NULL UNIQUE,
     tx TEXT NOT NULL,
     created_at {{ts}} NOT NULL
-);`))
+);
+CREATE TABLE broker_outbox (
+    id {{serial}},
+    broker_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    body TEXT NOT NULL,
+    expires_at {{ts}} NOT NULL
+);
+CREATE INDEX broker_outbox_broker ON broker_outbox (broker_id, id);`))
 }
 
 // dialects builds one migration from shared DDL; {{ts}} is the timestamp type.
@@ -142,7 +150,7 @@ func dialects(version int, name, ddl string) Migration {
 	return Migration{
 		Version:  version,
 		Name:     name,
-		SQLite:   strings.ReplaceAll(ddl, "{{ts}}", "DATETIME"),
-		Postgres: strings.ReplaceAll(ddl, "{{ts}}", "TIMESTAMPTZ"),
+		SQLite:   strings.NewReplacer("{{ts}}", "DATETIME", "{{serial}}", "INTEGER PRIMARY KEY AUTOINCREMENT").Replace(ddl),
+		Postgres: strings.NewReplacer("{{ts}}", "TIMESTAMPTZ", "{{serial}}", "BIGSERIAL PRIMARY KEY").Replace(ddl),
 	}
 }

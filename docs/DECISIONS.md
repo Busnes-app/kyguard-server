@@ -273,3 +273,10 @@ contradicts itself. Each names its section. The most secure reading wins.
     change and the target's minimum password age at every pre-rotation login, through the
     connector's `AgeReporter`, so the schedule stop and refusal retries use the target's
     real values; a connector that cannot read them leaves the journaled values unchanged.
+75. §4.1 (relay across replicas). A Control Plane push to a broker (an enrollment now, the
+    checkout relays later) goes straight down the channel when the receiving replica holds
+    it, and otherwise into the shared `broker_outbox` table (migration 102, unmerged),
+    which the replica holding the broker's channel drains every second with one
+    `DELETE ... RETURNING`, so each queued push is taken once. A queued push expires with
+    its transaction. The submission answers 202 either way; the CLI follows the
+    enrollment's state.
