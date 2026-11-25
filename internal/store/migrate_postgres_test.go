@@ -22,7 +22,7 @@ func TestPostgresMigrationPreservesAndVerifiesDeployment(t *testing.T) {
 	}
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "source.db")
-	src, err := store.Open(ctx, config.DatabaseConfig{Driver: "sqlite", DSN: path})
+	src, err := store.Open(ctx, config.DatabaseConfig{Driver: "sqlite", DSN: path, AuditKey: testdb.AuditKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,8 +93,14 @@ func TestPostgresMigrationPreservesAndVerifiesDeployment(t *testing.T) {
 	if groups, err := dst.Groups().GetUserGroups(ctx, "u1"); err != nil || len(groups) != 1 {
 		t.Fatalf("lost memberships: %v %v", groups, err)
 	}
+	if err := dst.Audit().VerifyAuditChain(ctx); err != nil {
+		t.Fatalf("the migrated chain does not verify: %v", err)
+	}
 	if err := dst.Audit().LogAudit(ctx, &store.AuditRecord{Action: "test.after"}); err != nil {
 		t.Fatalf("audit sequence not advanced: %v", err)
+	}
+	if err := dst.Audit().VerifyAuditChain(ctx); err != nil {
+		t.Fatalf("an append after migration broke the chain: %v", err)
 	}
 	if _, err := store.MigrateToPostgres(ctx, path, target, false); err == nil {
 		t.Fatal("overwrote populated target")
@@ -114,7 +120,7 @@ func TestPostgresMigrationRollbackAndUnknownData(t *testing.T) {
 	}
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "source.db")
-	src, err := store.Open(ctx, config.DatabaseConfig{Driver: "sqlite", DSN: path})
+	src, err := store.Open(ctx, config.DatabaseConfig{Driver: "sqlite", DSN: path, AuditKey: testdb.AuditKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +181,7 @@ func TestMigrationRefusesOldPopulatedTargetBeforeAnyDDL(t *testing.T) {
 	}
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "source.db")
-	src, err := store.Open(ctx, config.DatabaseConfig{Driver: "sqlite", DSN: path})
+	src, err := store.Open(ctx, config.DatabaseConfig{Driver: "sqlite", DSN: path, AuditKey: testdb.AuditKey})
 	if err != nil {
 		t.Fatal(err)
 	}
