@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,9 +12,9 @@ import (
 	"github.com/Busnes-app/kyguard-server/internal/store"
 )
 
-// handleChangePassword changes a local account's password, voluntary or a mandatory
-// replacement. All sessions
-// are revoked atomically with the password update; the user signs in again afterward.
+// handleChangePassword changes a break-glass account's password, which needs the current
+// password and a TOTP code (spec §7.5). All sessions are revoked atomically with the password
+// update; the user signs in again afterward.
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -24,7 +25,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusUnauthorized, "Authentication required")
 		return
 	}
-	if user.SSOProvider != "local" {
+	if user.AccountType != store.AccountBreakGlass {
 		s.writeError(w, http.StatusConflict, "This account signs in through its identity provider and has no local password")
 		return
 	}
@@ -35,12 +36,13 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		CurrentPassword string `json:"current_password"`
 		NewPassword     string `json:"new_password"`
+		TOTPCode        string `json:"totp_code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	if len(req.NewPassword) > 1024 { // the current one is verified at any length: init-admin sets no cap
+	if len(req.NewPassword) > 1024 { // the current one is verified at any length
 		s.writeError(w, http.StatusBadRequest, "Password is too long")
 		return
 	}
@@ -57,12 +59,28 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusUnauthorized, "Current password is incorrect")
 		return
 	}
+	// Checked only after the password, like sign-in, so a password guess never spends codes.
+	factorID, err := s.factors.Check(r.Context(), user.ID, "", req.TOTPCode)
+	if err != nil {
+		if errors.Is(err, auth.ErrCodeRejected) {
+			if err := detachedWrite(r, func(ctx context.Context) error {
+				return s.store.Audit().LogAudit(ctx, &store.AuditRecord{UserID: user.ID, Action: "auth.totp_failed", Resource: "password", Details: "severity=critical", IPAddress: s.requestIP(r)})
+			}); err != nil {
+				s.writeError(w, http.StatusServiceUnavailable, "Audit unavailable")
+				return
+			}
+			s.writeError(w, http.StatusUnauthorized, "Authenticator code is incorrect")
+			return
+		}
+		s.writeError(w, http.StatusServiceUnavailable, "Authentication temporarily unavailable")
+		return
+	}
 	hash, err := password.Hash(req.NewPassword)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to secure password")
 		return
 	}
-	if err := s.store.Users().CompletePasswordChange(r.Context(), user.ID, user.PasswordHash, hash, s.requestIP(r)); err != nil {
+	if err := s.store.Users().CompletePasswordChange(r.Context(), user.ID, user.PasswordHash, hash, s.requestIP(r), factorID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			s.writeError(w, http.StatusConflict, "Account changed; sign in again")
 			return

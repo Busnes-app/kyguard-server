@@ -303,6 +303,9 @@ func TestRefusedCleanupRetriesAndManualRotationRearms(t *testing.T) {
 	if l := c.account(c.m).Lease; !l.NextAttemptAt.Equal(c.now) || l.RequestID != co.RequestID {
 		t.Fatalf("not re-armed: %+v", l)
 	}
+	if _, res := c.delivery(mr.RequestID); res != "ok" {
+		t.Fatalf("re-arm result %q", res)
+	}
 	c.target.refuseAfterCommit = false
 	c.m.Tick(ctx)
 	if l := c.account(c.m).Lease; l.State != broker.LeaseClosed {
@@ -323,6 +326,10 @@ func TestManualRotation(t *testing.T) {
 	want, _ := pqcrypto.RequestOpID(mr.RequestID, 0)
 	if a.Run.State != broker.StateReleaseAuthorized || a.Run.OperationID != want {
 		t.Fatalf("run %+v", a.Run)
+	}
+	// The CLI following the mailbox sees the rotation finish (Guide on #16).
+	if _, res := c.delivery(mr.RequestID); res != "ok" {
+		t.Fatalf("result %q", res)
 	}
 	if err := c.m.Tx(ctx, mr.Tx); !errors.Is(err, pqcrypto.ErrReplay) {
 		t.Fatalf("replay: %v", err)
