@@ -108,25 +108,33 @@ const (
 // MaxFrame is the largest channel frame either end reads.
 const MaxFrame = 4 << 20
 
-// SyncPage is how many manifests one sync reply carries.
-const SyncPage = 64
+// SyncPage is how many manifests one sync reply carries; SyncAccountsPage how many account
+// IDs. SyncBudget bounds the encoded chains of one sync_account reply, well under MaxFrame.
+const (
+	SyncPage         = 64
+	SyncAccountsPage = 4096
+)
 
-// SyncRequest asks for the verified manifests after the first ManifestsAfter, in
-// acceptance order.
+// SyncBudget is a variable only so tests can lower it.
+var SyncBudget = 2 << 20
+
+// SyncRequest pages through the verified manifests, then the pool's account IDs.
 type SyncRequest struct {
-	ManifestsAfter int `json:"manifests_after"`
+	ManifestsAfter int           `json:"manifests_after"`
+	AccountsAfter  pqcrypto.UUID `json:"accounts_after,omitzero"`
 }
 
-// SyncReply is one page of manifests; the last page (Done) also lists the accounts of the
-// broker's pool, which the broker then fetches one by one with MsgSyncAccount.
+// SyncReply is one page: manifests while any remain, then account IDs in order. Done is
+// set on the last page.
 type SyncReply struct {
 	Manifests []pqcrypto.B64  `json:"manifests"`
-	Done      bool            `json:"done"`
 	Accounts  []pqcrypto.UUID `json:"accounts"`
+	Done      bool            `json:"done"`
 }
 
-// SyncAccountRequest asks for one account: its chains above AfterVersion plus its current
-// and unterminated ones, so the reply stays small however long its history grows.
+// SyncAccountRequest asks for one account: its current and unterminated chains and, within
+// SyncBudget, the chains above AfterVersion in version order. More means call again with
+// AfterVersion set to the highest version received.
 type SyncAccountRequest struct {
 	AccountID    pqcrypto.UUID    `json:"account_id"`
 	AfterVersion pqcrypto.Counter `json:"after_version"`
@@ -138,6 +146,7 @@ type AccountState struct {
 	Descriptor     pqcrypto.B64     `json:"descriptor,omitzero"`
 	Chains         []ChainState     `json:"chains"`
 	HighestVersion pqcrypto.Counter `json:"highest_version"`
+	More           bool             `json:"more,omitzero"`
 }
 
 // ChainState is an envelope and its receipts in order.

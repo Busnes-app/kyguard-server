@@ -82,15 +82,26 @@ func (l *Listener) sync(ctx context.Context, tr *pqcrypto.Trust, b *store.Broker
 		}
 		out.Manifests = append(out.Manifests, m.Manifest)
 	}
-	out.Done = true
+	if len(out.Manifests) > 0 {
+		return out, nil // accounts come once every manifest is delivered
+	}
 	accts, err := l.Store.Vault().PoolAccounts(ctx, b.PoolID)
 	if err != nil {
 		return nil, err
 	}
+	out.Done = true
 	for _, a := range accts {
-		if _, _, err := l.account(ctx, tr, b, pqcrypto.UUID(a.ID)); err == nil {
-			out.Accounts = append(out.Accounts, pqcrypto.UUID(a.ID))
+		if req.AccountsAfter != "" && a.ID <= string(req.AccountsAfter) {
+			continue
 		}
+		if _, _, err := l.account(ctx, tr, b, pqcrypto.UUID(a.ID)); err != nil {
+			continue
+		}
+		if len(out.Accounts) == SyncAccountsPage {
+			out.Done = false
+			break
+		}
+		out.Accounts = append(out.Accounts, pqcrypto.UUID(a.ID))
 	}
 	return out, nil
 }
@@ -112,14 +123,23 @@ func (l *Listener) syncAccount(ctx context.Context, tr *pqcrypto.Trust, b *store
 	if err != nil {
 		return nil, err
 	}
-	for _, c := range chains {
-		if c.Envelope.SecretVersion <= uint64(req.AfterVersion) && c.Envelope.EnvelopeID != a.CurrentEnvelopeID && terminated(c) {
+	budget := SyncBudget
+	for _, c := range chains { // ascending secret_version
+		old := c.Envelope.SecretVersion <= uint64(req.AfterVersion)
+		if old && c.Envelope.EnvelopeID != a.CurrentEnvelopeID && terminated(c) {
 			continue
 		}
 		cs := ChainState{Envelope: c.Envelope.Envelope, Receipts: []pqcrypto.B64{}}
+		size := encoded(c.Envelope.Envelope)
 		for _, r := range c.Receipts {
 			cs.Receipts = append(cs.Receipts, r.Receipt)
+			size += encoded(r.Receipt)
 		}
+		if !old && size > budget && len(st.Chains) > 0 {
+			st.More = true
+			break
+		}
+		budget -= size
 		st.Chains = append(st.Chains, cs)
 	}
 	return st, nil
@@ -304,3 +324,6 @@ func (l *Listener) status(ctx context.Context, tr *pqcrypto.Trust, b *store.Brok
 	}
 	return nil
 }
+
+// encoded is the base64url size of b plus JSON framing.
+func encoded(b []byte) int { return (len(b)+2)/3*4 + 8 }

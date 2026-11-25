@@ -106,21 +106,21 @@ CREATE TABLE envelope_receipts (
 );
 CREATE TABLE rotation_locks (
     account_id TEXT PRIMARY KEY REFERENCES accounts(id),
-    operation_id TEXT NOT NULL UNIQUE,
+    operation_id TEXT NOT NULL,
     secret_version BIGINT NOT NULL CHECK (secret_version > 0),
     created_at {{ts}} NOT NULL
 );
 CREATE TABLE rotation_runs (
-    operation_id TEXT PRIMARY KEY,
+    operation_id TEXT NOT NULL,
     account_id TEXT NOT NULL REFERENCES accounts(id),
     broker_id TEXT NOT NULL,
     secret_version BIGINT NOT NULL CHECK (secret_version > 0),
     intent TEXT NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('mutating', 'write_outcome_unknown', 'target_verified', 'release_authorized', 'aborted')),
     created_at {{ts}} NOT NULL,
-    updated_at {{ts}} NOT NULL
-);
-CREATE INDEX idx_rotation_runs_account ON rotation_runs(account_id);`))
+    updated_at {{ts}} NOT NULL,
+    PRIMARY KEY (account_id, operation_id)
+);`))
 }
 
 // dialects builds one migration from shared DDL; {{ts}} is the timestamp type.

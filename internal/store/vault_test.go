@@ -76,3 +76,22 @@ func TestReceiptAppendCASInTheStore(t *testing.T) {
 		t.Fatalf("lock %q", op)
 	}
 }
+
+// Operation IDs are scoped to their account: the same ID on two accounts never conflicts
+// (security review of #10).
+func TestOperationIDsAreScopedToTheAccount(t *testing.T) {
+	v, a1 := vaultAccount(t)
+	ctx := context.Background()
+	if err := v.CreateAccount(ctx, &Account{ID: "ac2", AssetID: "as", Name: "other", AccountKind: "managed"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, acct := range []string{a1, "ac2"} {
+		ver, err := v.Reserve(ctx, acct, "same-op", 0)
+		if err != nil {
+			t.Fatalf("%s: %v", acct, err)
+		}
+		if err := v.RecordIntent(ctx, &RotationRun{OperationID: "same-op", AccountID: acct, BrokerID: "b", SecretVersion: ver, Intent: []byte("{\"a\":\"" + acct + "\"}")}); err != nil {
+			t.Fatalf("%s intent: %v", acct, err)
+		}
+	}
+}
