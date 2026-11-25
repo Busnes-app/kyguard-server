@@ -3,6 +3,7 @@ package broker_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -225,5 +226,26 @@ func TestIdentityOutlivesTheJournalMapping(t *testing.T) {
 	j.Close() // unmaps the file
 	if got := brokerproto.CertSHA256(id.Cert.Raw) + brokerproto.CertSHA256(id.CACert.Raw); got != want {
 		t.Fatal("identity certificates changed after the journal closed")
+	}
+}
+
+// A failed start-up sync or recovery is retried until it succeeds, and the retries stop
+// with the connection (Guide on #11, "Recovery retry").
+func TestStartUpIsRetriedUntilItSucceeds(t *testing.T) {
+	calls := 0
+	broker.Retry(context.Background(), time.Millisecond, func(context.Context) error {
+		if calls++; calls < 3 {
+			return errors.New("transient")
+		}
+		return nil
+	})
+	if calls != 3 {
+		t.Fatalf("%d attempts, want 3", calls)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	broker.Retry(ctx, time.Millisecond, func(context.Context) error { calls++; return errors.New("down") })
+	if calls != 3 {
+		t.Fatal("retried after the connection ended")
 	}
 }
