@@ -160,3 +160,13 @@ func TestMigration13DropsSessionsNoLogoutCouldEnd(t *testing.T) {
 		t.Fatalf("sessions after migration 13: %v, want only the local one", kept)
 	}
 }
+
+// Migrations run in registry order, and files append theirs in file-name order: a file that
+// sorts before another but holds lower versions must fail here, not reorder history.
+func TestRegistryIsAscending(t *testing.T) {
+	for i := 1; i < len(registry); i++ {
+		if registry[i].Version <= registry[i-1].Version {
+			t.Fatalf("migration %d (%s) follows %d (%s)", registry[i].Version, registry[i].Name, registry[i-1].Version, registry[i-1].Name)
+		}
+	}
+}

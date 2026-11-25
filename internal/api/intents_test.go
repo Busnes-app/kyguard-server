@@ -110,7 +110,7 @@ func TestLostPairingClaimEndsOutcomeUnknown(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("lost claim: %d %s", w.Code, w.Body)
 	}
-	if in, err := st.Intents().Get(context.Background(), begun[0]); err != nil || in.State != store.IntentUnknown || in.Kind != "pairing" {
+	if in, err := st.Intents().Get(context.Background(), begun[0]); err != nil || in.State != store.IntentUnknown || in.Kind != "recovery_pairing" {
 		t.Fatalf("intent %+v %v, want pairing outcome_unknown", in, err)
 	}
 	if got := newestAction(t, st); got != "backup.pair_failed" {

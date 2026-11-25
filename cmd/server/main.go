@@ -53,6 +53,11 @@ func main() {
 		case "restore":
 			runRestore(os.Args[2:])
 			return
+		case "init", "import-bundle":
+			if err := runGuardCommand(os.Args[1], os.Args[2:]); err != nil && !errors.Is(err, flag.ErrHelp) {
+				log.Fatal(err)
+			}
+			return
 		case "version":
 			fmt.Println("kyguard-server v0.1.0 (KyGuard PAM Control Plane)")
 			return
@@ -152,6 +157,9 @@ func prepareStart(ctx context.Context, cfg *config.Config, st store.Store) error
 	} else if n > 0 {
 		log.Printf("[BACKUP] removed %d snapshot scratch directories a stopped process left", n)
 	}
+	if err := checkBrokerCA(ctx, cfg, st); err != nil {
+		return err
+	}
 	err := backup.SyncRecoveryKey(ctx, cfg, st)
 	if errors.Is(err, backup.ErrRecoveryKeyUnavailable) {
 		log.Printf("[BACKUP] %s", recoveryclient.AuditSafe(err.Error()))
@@ -211,7 +219,14 @@ func runConfiguredServer(cfg *config.Config) {
 		}
 	}()
 
+	go settleLoop(ctx, st, time.Minute, pairingIntentGrace)
+	brokerServer, err := startBrokerListener(cfg, srv)
+	if err != nil {
+		log.Fatalf("broker listener: %v", err)
+	}
+
 	<-stop
+	stopBrokerListener(srv, brokerServer)
 	gracefulStop(srv, httpServer, stopBackups, cancel, backupDone, readinessDrainDelay)
 }
 

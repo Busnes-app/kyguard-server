@@ -129,7 +129,7 @@ func TestFailedCompletionAppendIsReplayedFromTheIntent(t *testing.T) {
 func TestSettledIntentStaysSettled(t *testing.T) {
 	st, _ := intentsStore(t)
 	ctx := context.Background()
-	id, err := st.Intents().Begin(ctx, "pairing", "https://recovery.test")
+	id, err := st.Intents().Begin(ctx, "recovery_pairing", "https://recovery.test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestConcurrentReconcilersSettleOnce(t *testing.T) {
 	ctx := context.Background()
 	const intents = 10
 	for range intents {
-		if _, err := st.Intents().Begin(ctx, "pairing", "https://recovery.test"); err != nil {
+		if _, err := st.Intents().Begin(ctx, "recovery_pairing", "https://recovery.test"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -198,7 +198,7 @@ func TestConcurrentReconcilersSettleOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := st.Intents().Reconcile(ctx, "pairing", 0); err != nil {
+			if _, err := st.Intents().Reconcile(ctx, "recovery_pairing", 0); err != nil {
 				t.Error(err)
 			}
 		}()
@@ -223,7 +223,7 @@ func TestReconcilerDoesNotStrandANoteWrittenAfterItsRead(t *testing.T) {
 	if err := st.Audit().LogAudit(ctx, &store.AuditRecord{Action: "seed"}); err != nil {
 		t.Fatal(err)
 	}
-	id, err := st.Intents().Begin(ctx, "pairing", "kyrecovery")
+	id, err := st.Intents().Begin(ctx, "recovery_pairing", "kyrecovery")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,10 +242,39 @@ func TestReconcilerDoesNotStrandANoteWrittenAfterItsRead(t *testing.T) {
 	if got := intentState(t, st, id); got != store.IntentPending {
 		t.Fatalf("intent is %s, want pending", got)
 	}
-	if n, err := st.Intents().Reconcile(ctx, "pairing", 0); err != nil || n != 1 {
+	if n, err := st.Intents().Reconcile(ctx, "recovery_pairing", 0); err != nil || n != 1 {
 		t.Fatalf("reconcile: %d %v", n, err)
 	}
 	if got := lastActions(t, st); len(got) != 1 || got[0] != "admin.backup_pair" {
 		t.Fatalf("records %v, want the noted admin.backup_pair", got)
+	}
+}
+
+// §9.3: the broker stack's pairing intents and KyRecovery's share one table; each reconciler
+// settles only its own kind.
+func TestRecoveryAndBrokerPairingIntentsStaySeparate(t *testing.T) {
+	st, exec := intentsStore(t)
+	ctx := context.Background()
+	mine, err := st.Intents().Begin(ctx, "recovery_pairing", "https://recovery.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().Add(-time.Hour)
+	exec(`INSERT INTO operation_intents (operation_id, kind, subject, state, created_at, updated_at) VALUES ('op_broker', 'pairing', 'brk_1', 'pending', ?, ?)`, old, old)
+	if _, err := st.Intents().Reconcile(ctx, "recovery_pairing", 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := intentState(t, st, "op_broker"); got != store.IntentPending {
+		t.Fatalf("the KyRecovery reconciler settled a broker pairing: %s", got)
+	}
+	exec(`UPDATE operation_intents SET state = 'pending', created_at = ? WHERE operation_id = ?`, old, mine)
+	if _, err := st.Guard().ExpirePendingIntents(ctx, "pairing", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if got := intentState(t, st, mine); got != store.IntentPending {
+		t.Fatalf("the broker sweep settled a KyRecovery pairing: %s", got)
+	}
+	if got := intentState(t, st, "op_broker"); got != store.IntentUnknown {
+		t.Fatalf("the broker sweep left its own intent %s", got)
 	}
 }

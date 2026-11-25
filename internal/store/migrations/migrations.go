@@ -494,33 +494,6 @@ CREATE TABLE audit_chain_head (
 );`,
 	},
 	{
-		// Intents for external effects (spec §9.3): a KyRecovery pairing claim, a recovery-key
-		// pin or a deposit commits one before it starts. The completion audit settles it in one
-		// transaction; outcome holds that record meanwhile, so a failed append is not lost.
-		Version: 16,
-		Name:    "kyguard_operation_intents",
-		SQLite: `CREATE TABLE operation_intents (
-    operation_id TEXT PRIMARY KEY,
-    kind TEXT NOT NULL CHECK (kind IN ('pairing', 'deposit', 'pin')),
-    subject TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('pending', 'complete', 'failed', 'outcome_unknown', 'superseded')),
-    outcome TEXT NOT NULL DEFAULT '',
-    created_at DATETIME NOT NULL,
-    updated_at DATETIME NOT NULL
-);
-CREATE INDEX idx_operation_intents_state ON operation_intents(kind, state);`,
-		Postgres: `CREATE TABLE operation_intents (
-    operation_id TEXT PRIMARY KEY,
-    kind TEXT NOT NULL CHECK (kind IN ('pairing', 'deposit', 'pin')),
-    subject TEXT NOT NULL,
-    state TEXT NOT NULL CHECK (state IN ('pending', 'complete', 'failed', 'outcome_unknown', 'superseded')),
-    outcome TEXT NOT NULL DEFAULT '',
-    created_at TIMESTAMPTZ NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL
-);
-CREATE INDEX idx_operation_intents_state ON operation_intents(kind, state);`,
-	},
-	{
 		// kyguard-cli login (spec §7.6): a one-time code, valid 60 seconds, bound to the verified
 		// login (issuer, sid, the ID token's iat, its MFA assertion) and the CLI's PKCE challenge.
 		Version: 17,

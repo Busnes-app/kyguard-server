@@ -433,6 +433,8 @@ normally go to stderr. Setup/operational failures return a nonzero exit status.
 | No subcommand | Load environment, open store, serve HTTP and run configured backup schedule. An empty database stays empty: there is no bootstrap admin | Startup/operation logs; listener defaults to `:8080` |
 | `migrate-postgres [--source PATH] [--check]` | Stopped SQLite source and empty PostgreSQL target from `KY_MIGRATE_POSTGRES_DSN`; the source directory must be writable (lock and private snapshot); verify a private snapshot and copy transactionally; check-only rolls back target rows. A source pin with no `recovery_public_key` record is recorded from the `recovery.pub` beside the source; a pin without that file is refused before anything is copied | JSON row counts and a cutover reminder on stdout; nonzero on failure |
 | `accept-replica-config` | PostgreSQL only (refused on SQLite); under the bootstrap lock, rewrite the shared-configuration fingerprint from this process's environment after a deliberate change; audited as `admin.replica_config_accepted` with the changed field names. A differing `KY_ENCRYPTION_KEY` is refused, never recorded | The changed field names on stdout; never values or fingerprints |
+| `init` | Create the internal broker CA (`<data-dir>/broker-ca.key`, 0600, and `broker-ca.crt`); refuses to replace an existing one. Creates no signing key (spec §3.2 rule 2) | `broker_ca_sha256` on stdout |
+| `import-bundle --bundle FILE --fingerprint HEX` | Verify the bootstrap bundle from `kyguard-cli init` against the fingerprint the custodians printed and store it once; a different bundle is refused; audited as `trust.bundle_imported` | `deployment_id` and `bootstrap_fingerprint` on stdout |
 | `version` | No inputs or data-directory access | Version text on stdout; use the source commit/image digest for exact build identity |
 | `break-glass create -username NAME` | Create a break-glass administrator with a generated 24-character password and a new TOTP secret; refused for a taken name, an invalid name or a sixth account. Audited `break_glass.created` (`severity=critical`) | The password and the `otpauth://` provisioning URI on stdout, once; nothing shows them again |
 | `break-glass reset-totp -username NAME` | Replace a break-glass account's TOTP secret and revoke its sessions; refused for any other account. Audited `break_glass.totp_reset` | The new provisioning URI on stdout, once |
@@ -470,6 +472,9 @@ reader in the binary. The shipped `docker-compose.yml` passes its `.env` to the 
 | `KY_MIGRATE_POSTGRES_DSN` | Empty | Target DSN read only by `migrate-postgres`; keep in a protected environment file |
 | `KY_DB_MAX_OPEN_CONNS` | `25` | Database pool maximum open connections; PostgreSQL requires at least 4 (worker lock, backup-run lock, snapshot transaction, one for requests and probes); lower refuses startup |
 | `KY_DB_MAX_IDLE_CONNS` | `5` | Database pool idle connections |
+| `KY_BROKER_LISTEN` | `:8443` | Address of the separate broker TLS listener (`/broker/v1/*`). TCP passthrough only: a proxy must never terminate its TLS |
+| `KY_BROKER_HOSTNAME` | Empty (listener off) | Hostname brokers dial; the only SAN of the listener certificate, issued from the broker CA at every start, and the host in pairing tokens |
+| `KY_MIN_BROKER_VERSION` | `0.1.0` | `min_broker_version`: the channel refuses older brokers with 426 |
 | `KY_SESSION_SECRET` | Fresh 32-byte random hex on development SQLite | Required in production and with PostgreSQL; same value on every replica. PoW signing secret; supplied values below 16 bytes fail startup |
 | `KY_ENCRYPTION_KEY` | Persistent `<data-dir>/encryption.key` | Exactly 32 bytes as hex or standard Base64; encrypts secrets/pairing token; preserve for restore |
 | `KY_COOKIE_SECURE` | true in production or when `KY_APP_URL` starts with `https://` | Secure flag and HSTS response header. `false` with an https `KY_APP_URL` stops startup: its cookies are `__Host-` cookies, which must be Secure |
@@ -512,6 +517,22 @@ setting `GODEBUG=fips140=on`. It is read by Go, not this environment loader.
 Selected mode requires HTTPS OIDC endpoints without redirects; the standard
 verifier still checks signatures, issuer, audience, expiry and nonce. In every
 mode, JWKS fetching refuses redirects and RSA members below 2048 bits.
+
+## Broker pools and listener
+
+Sources: [broker handlers](../internal/api/broker_handlers.go),
+[broker listener](../internal/brokerproto/listener.go). Spec §4.1.
+
+| Route | Authentication and input | Success |
+|---|---|---|
+| POST `/api/broker-pools` | Administrator; JSON `{"name":"dc1"}`; cookie CSRF applies | 201 pool `{id, name, created_at}`; 409 for a used name |
+| POST `/api/broker-pools/{id}/pairing-tokens` | Administrator; cookie CSRF applies; needs `kyguard-server init`, `KY_BROKER_HOSTNAME` and an imported bundle (503 otherwise) | 201 `{"token":"kgp1.…","expires_at"}`: one-time, 10 minutes, stored as a SHA-256 hash; encodes the listener URL, the secret and the broker CA SHA-256 |
+| POST `/api/manifests` | Any session; body is one Custodian-signed manifest (≤512 KiB) | 201 `{type, scope_id, epoch, digest}` when new, 200 when already held; 422 `{"code"}` for a manifest that fails verification, a lower epoch (`epoch_rollback`) or a same-epoch fork (`epoch_equivocation`, also audited as `trust.equivocation`); 503 before `import-bundle` |
+| POST `/broker/v1/pair` (broker listener) | No client certificate; JSON pairing request with the token secret, an Ed25519 CSR, both broker public keys and its version | 200 broker certificate (`urn:uuid:<broker_id>` URI SAN), CA certificate and bundle; 403 for an unknown, used or expired token. A response that cannot be written leaves the pairing intent `outcome_unknown` (audited); startup and a once-a-minute sweep settle intents pending over 2 minutes the same way |
+| GET `/broker/v1/channel` (broker listener) | Internal-CA client certificate of a broker listed `active` with that certificate's SHA-256 in its pool's current manifest; `KyGuard-Broker-Version` header | 101 WebSocket; 403 otherwise; 426 below `KY_MIN_BROKER_VERSION` |
+
+The listener is TLS 1.3 only with `X25519MLKEM768` preferred. Startup refuses a broker CA
+whose SHA-256 differs from the one any paired broker pinned.
 
 ## Replicas and database migration
 

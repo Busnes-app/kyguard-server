@@ -24,6 +24,7 @@ type Store interface {
 	Audit() AuditStore
 	Settings() SettingsStore
 	Coordination() CoordinationStore
+	Guard() GuardStore
 	MFA() MFAStore
 	Intents() IntentStore
 
@@ -169,7 +170,8 @@ const (
 	IntentSuperseded = "superseded"
 )
 
-// Intent is one external effect: kind is pairing, deposit or pin.
+// Intent is one external effect: kind is recovery_pairing, deposit or pin (broker pairing
+// intents, kind pairing, are the Guard store's).
 type Intent struct {
 	OperationID, Kind, Subject, State string
 	CreatedAt, UpdatedAt              time.Time

@@ -235,7 +235,7 @@ func TestBackupLoopReconcilesStalePairingAndPinIntents(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var ids []string
-	for _, kind := range []string{"pairing", "pin"} {
+	for _, kind := range []string{"recovery_pairing", "pin"} {
 		id, err := st.Intents().Begin(ctx, kind, "subject")
 		if err != nil {
 			t.Fatal(err)
