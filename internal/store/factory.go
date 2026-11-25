@@ -16,15 +16,29 @@ import (
 
 // Open initializes and returns the configured database store backend.
 func Open(ctx context.Context, cfg config.DatabaseConfig) (Store, error) {
+	var s Store
+	var err error
 	driver := strings.ToLower(cfg.Driver)
 	switch driver {
 	case "sqlite", "sqlite3", "":
-		return openSQLite(ctx, cfg.DSN)
+		s, err = openSQLite(ctx, cfg.DSN)
 	case "postgres", "postgresql", "pgx":
-		return openPostgres(ctx, cfg.DSN, cfg.MaxOpenConns, cfg.MaxIdleConns, cfg.ConnMaxLifetime)
+		s, err = openPostgres(ctx, cfg.DSN, cfg.MaxOpenConns, cfg.MaxIdleConns, cfg.ConnMaxLifetime)
 	default:
 		return nil, fmt.Errorf("unsupported database driver: %q (supported: sqlite, postgres)", cfg.Driver)
 	}
+	if err != nil {
+		return nil, err
+	}
+	s.(*SQLStore).auditKey = append([]byte(nil), cfg.AuditKey...)
+	return s, nil
+}
+
+func sqliteParam(dsn, param string) string {
+	if strings.Contains(dsn, "?") {
+		return dsn + "&" + param
+	}
+	return dsn + "?" + param
 }
 
 func openSQLite(ctx context.Context, dsn string) (Store, error) {
@@ -41,11 +55,13 @@ func openSQLite(ctx context.Context, dsn string) (Store, error) {
 	}
 
 	if !strings.Contains(dsn, "_pragma") {
-		delim := "?"
-		if strings.Contains(dsn, "?") {
-			delim = "&"
-		}
-		dsn = fmt.Sprintf("%s%s_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)", dsn, delim)
+		dsn = sqliteParam(dsn, "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)")
+	}
+	// Every write transaction takes the write lock at BEGIN, so audit chain appends (which
+	// read the head and then write) serialize (spec §9.3). Added even when the DSN carries
+	// its own pragmas.
+	if !strings.Contains(dsn, "_txlock=") {
+		dsn = sqliteParam(dsn, "_txlock=immediate")
 	}
 
 	db, err := sql.Open("sqlite", dsn)

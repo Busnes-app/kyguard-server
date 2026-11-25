@@ -56,3 +56,11 @@ contradicts itself. Each names its section. The most secure reading wins.
 16. §7.3 rule 6 (re-step-up). An active session refreshes its step-up with a code at
    `/api/auth/stepup/totp`, the same route a pending session uses. Break-glass sessions start
    stepped up at sign-in, so backup actions in their last 25 minutes need a fresh code too.
+17. §9.3 (stored values). Audit fields pass through `logging.AuditFields`, which bounds each
+   value to 256 bytes; the stored columns hold those rendered values, so nothing outside the hash
+   is stored.
+18. §9.3 (key plumbing). The chain key travels as `config.DatabaseConfig.AuditKey`; stores opened
+   without it (backup drill scratch copies, migration sources) can read but refuse audit writes.
+19. §9.3 (scope of this PR). `operation_intents` and startup reconciliation of external effects
+   (pairing claim, deposit, pin) are the next PR. Until then a failed audit write after a backup
+   run is logged loudly (`recordRun`) rather than retried.

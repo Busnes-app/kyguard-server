@@ -468,6 +468,31 @@ ALTER TABLE sessions ADD COLUMN pending_secret_enc TEXT NOT NULL DEFAULT '';`,
 		Postgres: `ALTER TABLE sessions ADD COLUMN mfa_asserted BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE sessions ADD COLUMN pending_secret_enc TEXT NOT NULL DEFAULT '';`,
 	},
+	{
+		// The audit chain (spec §9.3): each record carries its sequence number, the previous
+		// record's hash and its own HMAC hash; audit_chain_head is the anchor. The head is not
+		// seeded: an empty table means genesis, and migrate-postgres and snapshots copy it.
+		Version: 15,
+		Name:    "kyguard_audit_chain",
+		SQLite: `ALTER TABLE audit_records ADD COLUMN seq INTEGER;
+ALTER TABLE audit_records ADD COLUMN prev_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE audit_records ADD COLUMN hash TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX idx_audit_records_seq ON audit_records(seq);
+CREATE TABLE audit_chain_head (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    seq INTEGER NOT NULL,
+    head_hash TEXT NOT NULL
+);`,
+		Postgres: `ALTER TABLE audit_records ADD COLUMN seq BIGINT;
+ALTER TABLE audit_records ADD COLUMN prev_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE audit_records ADD COLUMN hash TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX idx_audit_records_seq ON audit_records(seq);
+CREATE TABLE audit_chain_head (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    seq BIGINT NOT NULL,
+    head_hash TEXT NOT NULL
+);`,
+	},
 }
 
 // EnsureUsernameIndex builds the case-insensitive unique index on usernames when existing

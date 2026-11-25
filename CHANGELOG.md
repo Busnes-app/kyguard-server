@@ -13,6 +13,11 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 
 ### Changes
 
+- Chained audit log (spec §9.3): every audit record carries `seq`, `prev_hash` and an HMAC
+  `hash` under a key derived from `data/encryption.key`, with the anchor in `audit_chain_head`
+  (migration 15). One writer appends inside the caller's transaction, so a failed audit write
+  rolls the change back; SQLite transactions now begin immediate. No audit result is
+  discarded any more.
 - Route registry (spec §7.5): every main-mux route is registered with a class through one
   function, and a test fails on any route outside it. Backup actions need a step-up within five
   minutes (a code at `/api/auth/stepup/totp` refreshes it). Administrators can reset an SSO
