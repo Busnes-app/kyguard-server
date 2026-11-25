@@ -25,6 +25,9 @@ the wire and TLS are `internal/brokerproto`'s.
 
 ## Verification
 - `go test -race ./internal/broker/... ./cmd/broker/...`
+  `TestDisableCoreDumpsUnderTheUnit` runs the startup step under the unit's real sandbox
+  through `systemd-run --user`; it skips without a user manager, so run it on a systemd host
+  whenever the unit's `[Service]` lines change.
 
 ## Child DOX Index
 None.
