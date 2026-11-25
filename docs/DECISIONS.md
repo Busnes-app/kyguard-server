@@ -110,3 +110,7 @@ contradicts itself. Each names its section. The most secure reading wins.
    redemption's pending session goes through `CreateSession`, which inserts, commits and then
    re-checks both fences against the original `iat`. After step-up, a bearer caller gets the new
    active token in the body; a cookie caller never does, so page script cannot read it.
+   A factor reset deletes the user's outstanding CLI codes first, in its transaction.
+   Redemption deletes the code and inserts the session in one transaction, so the code row
+   orders the two: a code redeemed first loses its session to the reset, and a code the reset
+   reached first redeems nothing.

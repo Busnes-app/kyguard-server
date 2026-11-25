@@ -775,21 +775,49 @@ func (s *sessionStore) CreateCLICode(ctx context.Context, c *CLICode, audit *Aud
 	return tx.Commit()
 }
 
-func (s *sessionStore) TakeCLICode(ctx context.Context, codeHash string) (*CLICode, error) {
+func (s *sessionStore) RedeemCLICode(ctx context.Context, codeHash string, accept func(*CLICode) (*Session, error)) error {
+	tx, err := s.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	c := CLICode{CodeHash: codeHash}
-	err := s.store.db.QueryRowContext(ctx, s.store.rebind(`DELETE FROM cli_login_codes WHERE code_hash = ? AND expires_at > ?
+	err = tx.QueryRowContext(ctx, s.store.rebind(`DELETE FROM cli_login_codes WHERE code_hash = ? AND expires_at > ?
 RETURNING user_id, sso_issuer, sso_sid, issued_at, mfa_asserted, challenge, expires_at`), codeHash, time.Now().UTC()).
 		Scan(&c.UserID, &c.SSOIssuer, &c.SSOSID, &c.IssuedAt, &c.MFAAsserted, &c.Challenge, &c.ExpiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		// An expired code is spent too: nothing may redeem it later.
-		_, _ = s.store.db.ExecContext(ctx, s.store.rebind(`DELETE FROM cli_login_codes WHERE code_hash = ?`), codeHash)
-		return nil, ErrNotFound
+		_, _ = tx.ExecContext(ctx, s.store.rebind(`DELETE FROM cli_login_codes WHERE code_hash = ?`), codeHash)
+		_ = tx.Commit()
+		return ErrNotFound
 	}
 	if err != nil {
-		return nil, err
+		return err
 	}
 	c.IssuedAt, c.ExpiresAt = c.IssuedAt.UTC(), c.ExpiresAt.UTC()
-	return &c, nil
+	sess, refused := accept(&c)
+	if refused == nil {
+		// The code row this transaction deleted is what orders it against a factor reset:
+		// DeleteFactor deletes the user's codes first, so it waits for this commit and then
+		// deletes the session too, or it ran first and the code is gone. The user lock here
+		// requires the account still active.
+		lock, err := tx.ExecContext(ctx, s.store.rebind(`UPDATE users SET id = id WHERE id = ? AND status = 'active'`), c.UserID)
+		if err != nil {
+			return err
+		}
+		if n, _ := lock.RowsAffected(); n != 1 {
+			refused = ErrNotFound
+		} else if err := s.insertSession(ctx, tx, sess); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil { // a refused attempt still spends the code
+		return err
+	}
+	if refused != nil {
+		return refused
+	}
+	return s.fenceCheck(ctx, sess)
 }
 
 // ---------------------------------------------------------------------
