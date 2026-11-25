@@ -295,3 +295,28 @@ func TestSnapshotLeavesAConnectionAtThePoolFloor(t *testing.T) {
 		})
 	}
 }
+
+// Acceptance 12: a PostgreSQL snapshot of a log that never had an audit record (no head row)
+// succeeds, and the copy verifies against the zero anchor and starts its chain at genesis.
+func TestSnapshotWithoutAnAuditHead(t *testing.T) {
+	st := postgresStore(t, 0)
+	path := filepath.Join(t.TempDir(), "ky_server.db")
+	if err := st.SnapshotToSQLite(context.Background(), path); err != nil {
+		t.Fatal(err)
+	}
+	cp, err := Open(context.Background(), config.DatabaseConfig{Driver: "sqlite", DSN: path, AuditKey: testdb.AuditKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cp.Close()
+	ctx := context.Background()
+	if err := cp.Audit().VerifyAuditChain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := cp.Audit().LogAudit(ctx, &AuditRecord{Action: "first"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cp.Audit().VerifyAuditChain(ctx); err != nil {
+		t.Fatal(err)
+	}
+}

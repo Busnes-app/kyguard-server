@@ -17,6 +17,7 @@ import (
 	"github.com/Busnes-app/kyguard-server/internal/backup"
 	"github.com/Busnes-app/kyguard-server/internal/config"
 	"github.com/Busnes-app/kyguard-server/internal/store"
+	"github.com/Busnes-app/kyguard-server/internal/testdb"
 )
 
 // A deployment key that cannot seal is a configuration fault, not a run that might succeed
@@ -157,6 +158,7 @@ func TestBackupLoopInterruptsAScheduledDepositOnCancel(t *testing.T) {
 	cfg.Database.DataDir = dir
 	cfg.Database.DSN = filepath.Join(dir, "ky_server.db") + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
 	cfg.Security.EncryptionKey = bytes.Repeat([]byte{1}, 32)
+	cfg.Database.AuditKey = testdb.AuditKey
 	cfg.Backup.DepositInterval = time.Hour
 	st, err := store.Open(context.Background(), cfg.Database)
 	if err != nil {
