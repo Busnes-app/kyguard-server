@@ -13,14 +13,12 @@ import (
 )
 
 func (s *Server) txRoutes() {
-	// TODO(hawthorn §7.5): classify + step-up.
-	s.mux.HandleFunc("POST /api/accounts/{id}/transactions", s.requireAuthenticated(s.handleSubmitTx))
-	// TODO(hawthorn §7.5): classify.
-	s.mux.HandleFunc("GET /api/transactions/{request}", s.requireAuthenticated(s.handleTxMailbox))
-	// TODO(hawthorn §7.5): classify.
-	s.mux.HandleFunc("POST /api/transactions/{request}/proof", s.requireAuthenticated(s.handleTxProof))
-	// TODO(hawthorn §7.5): classify.
-	s.mux.HandleFunc("POST /api/transactions/{request}/checkin", s.requireAuthenticated(s.handleTxCheckin))
+	// Submitting a transaction is a broker action: it needs a fresh step-up (§7.3 rule 6).
+	// The rest continue that transaction (decision 78).
+	s.route(ClassSession, "POST /api/accounts/{id}/transactions", http.HandlerFunc(s.handleSubmitTx), fresh(StepupWindow))
+	s.route(ClassSession, "GET /api/transactions/{request}", http.HandlerFunc(s.handleTxMailbox))
+	s.route(ClassSession, "POST /api/transactions/{request}/proof", http.HandlerFunc(s.handleTxProof))
+	s.route(ClassSession, "POST /api/transactions/{request}/checkin", http.HandlerFunc(s.handleTxCheckin))
 }
 
 // relayTx pushes one message to the account's active broker, through any replica
