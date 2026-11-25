@@ -27,6 +27,10 @@ type inproc struct {
 }
 
 func newInproc(t *testing.T, accept bool, hang bool, stallExec ...bool) *inproc {
+	return newInprocFlood(t, accept, hang, false, stallExec...)
+}
+
+func newInprocFlood(t *testing.T, accept bool, hang bool, flood bool, stallExec ...bool) *inproc {
 	t.Helper()
 	_, k, _ := ed25519.GenerateKey(rand.Reader)
 	signer, _ := ssh.NewSignerFromKey(k)
@@ -80,6 +84,17 @@ func newInproc(t *testing.T, accept bool, hang bool, stallExec ...bool) *inproc 
 								continue // never answer: the command never starts
 							}
 							r.Reply(true, nil) // accept exec and never answer it when hang
+							if flood && r.Type == "exec" {
+								go func() {
+									chunk := make([]byte, 32<<10)
+									for range 1024 { // 32 MiB unless the client hangs up
+										if _, err := ch.Write(chunk); err != nil {
+											return
+										}
+									}
+								}()
+								continue
+							}
 							if !hang {
 								ch.Close()
 							}
@@ -156,6 +171,28 @@ func TestChangeIsBoundedWhenTheCommandStalls(t *testing.T) {
 		sess.Close()
 		if err == nil || time.Since(start) > 3*time.Second {
 			t.Fatalf("cancel=%v: %v after %v", cancel, err, time.Since(start))
+		}
+	}
+}
+
+// Security review of #14: a target flooding output cannot grow the broker's buffers; the
+// connection closes at the cap, for passwd and for chage.
+func TestOutputIsCapped(t *testing.T) {
+	s := newInprocFlood(t, true, true, true)
+	for _, which := range []string{"passwd", "chage"} {
+		sess, err := s.connector(10*time.Second).Login(context.Background(), s.descriptor(), []byte("pw"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now()
+		if which == "passwd" {
+			err = sess.Change(context.Background(), []byte("pw"), []byte("new"), func() error { return nil })
+		} else {
+			_, _, err = sess.(broker.AgeReporter).PasswordAge(context.Background())
+		}
+		sess.Close()
+		if err == nil || time.Since(start) > 5*time.Second {
+			t.Fatalf("%s: %v after %v", which, err, time.Since(start))
 		}
 	}
 }
