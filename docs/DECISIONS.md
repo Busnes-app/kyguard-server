@@ -154,6 +154,21 @@ contradicts itself. Each names its section. The most secure reading wins.
 41. §4.1 (channel scope). Every channel request is re-authorized: the broker must be its
     pool's active member at that moment, and the account's current policy must be managed
     and name that pool.
+42. §4.2, §4.6 (abort reasons before the write). `refused` is used only for a deterministic
+    target refusal; every other attempt that ends with no write sent (no acknowledgement,
+    a connection or login failure before the commit point, an authentication failure that
+    also quarantines) uses `restart_before_send`, the reason whose meaning is "no write was
+    sent".
+43. §4.3 rule 5 (one probe). The verification of an acknowledged write and the probe of an
+    ambiguous one are the same single `P_new` login, journaled before it is sent; a failed
+    verification after an acknowledged write quarantines rather than trying again.
+44. §4.2 (prepared). `prepared` is journaled as soon as the version is reserved and `P_new`
+    is sealed, before the envelope is stored at the Control Plane and before the `P_old`
+    login, so a crash anywhere before the intent ends in a clean abort that also releases
+    the lock. The baseline travels in the intent.
+45. §3.7 (broker copy). The broker keeps every envelope and receipt chain it has seen, not
+    only the current one; sync adopts a Control Plane chain only if it extends the
+    broker's copy byte for byte.
 61. §4.1 (sync frame bound). `cptrust.Submit` refuses a manifest over 512 KiB
     (`MaxManifest`), so any stored manifest fits a 4 MiB channel frame base64url-encoded. A
     `sync` page carries at most 64 manifests whose encoded size stays within `SyncBudget`
