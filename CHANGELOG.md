@@ -25,6 +25,10 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 - KyGuard trust root and manifests (spec §3.2, §3.3, §3.7): the bootstrap bundle and its
   fingerprint, the five Custodian-signed manifests with M-of-N and the per-`(type, scope.id)`
   epoch and fork rules, and the target descriptor, as a verifier library with golden vectors.
+- KyGuard transactions, envelopes and receipts (spec §3.4, §3.5, §3.7): access transactions
+  with all four actions, approvals and possession proofs; secret envelopes with the signer,
+  recipient and escrow rules; receipt chains with compare-and-swap, the current-envelope rule
+  and the chain-extension check, with golden vectors.
 
 ### Upgrade impact
 

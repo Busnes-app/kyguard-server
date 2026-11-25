@@ -4,9 +4,10 @@
 KyGuard's wire format, crypto core and signed contracts, `docs/SPEC.md` §3. §3.1: strict
 JSON field types, RFC 8785 JCS (`canonical/`), the domain digest `D(obj)`,
 `HybridSig`/`HybridPub` (ML-DSA-65 + Ed25519), `sig_key_id`/`enc_key_id`, the payload and
-DEK-wrap AADs, the HPKE DEK wrap, the AES-256-GCM payload and `opid`. §3.2, §3.3, §3.7:
-the signed header (`header.go`), the bundle, manifests and target descriptor
-(`manifests.go`, `trust.go`). Used by the Control Plane, broker and CLI.
+DEK-wrap AADs, the HPKE DEK wrap, the AES-256-GCM payload and `opid`. §3.2–§3.5 and §3.7:
+the signed header, the bundle and manifests (`manifests.go`, `trust.go`), transactions and
+possession proofs (`tx.go`), envelopes (`envelope.go`) and receipts (`receipt.go`). Used by
+the Control Plane, broker and CLI.
 
 ## Ownership
 Owns every byte KyGuard signs, hashes or seals. The spec is normative; this package
@@ -22,7 +23,10 @@ implements it and `docs/DECISIONS.md` records where the spec left a choice.
 - Both signature halves are always checked; either failing rejects.
 - `Trust` is the only way a manifest becomes trusted: `NewTrust` against the pinned
   fingerprint, then `Accept` in order. It holds state in memory; callers persist
-  `Records()` and replay them.
+  `Records()` and replay them. Broker journal state (leases, rotations, quarantine) stays
+  out of this package; `VerifyTx`, `VerifyEnvelope` and `Append` take it as context.
+- `New: true` in `EnvelopeContext`/`ReceiptContext` means new work (active signer, active
+  recipients, persisted recovery epoch); `false` verifies history.
 - Every error a vector names is a stable `Error`/`canonical.Error` code. Never rename one.
 - Golden vectors live in `testdata/vectors/` and are written only by
   `go generate ./internal/pqcrypto` (deterministic: fixed seeds plus
