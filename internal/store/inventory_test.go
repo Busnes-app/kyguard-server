@@ -138,3 +138,41 @@ func TestReportFactsNewestRelease(t *testing.T) {
 		t.Fatalf("facts %+v %v, want %v", f["ac"], err, last)
 	}
 }
+
+// Spec §8.2, §9.3: a SCIM write and its synced attributes commit together. The second
+// attribute write fails here (its definition is gone), so the status change, the session
+// revocation and the first attribute must all roll back.
+func TestSCIMProfileAndAttributesAreAtomic(t *testing.T) {
+	s, inv := inventoryFor(t)
+	ctx := context.Background()
+	dept, err := inv.EnsureDefinition(ctx, &AttributeDefinition{ID: "dd", Entity: EntityUser, Key: "department", Label: "D", Type: AttrString, Source: SourceSCIM}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := inv.SetValue(ctx, dept.ID, "usr_a", "Ops", SourceSCIM, nil); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := s.Sessions().CreateSession(ctx, &Session{TokenHash: "tok", UserID: "usr_a", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}, ""); err != nil {
+		t.Fatal(err)
+	}
+	u, err := s.Users().GetUserByID(ctx, "usr_a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.Status = "inactive"
+	u.SCIMAttributes = map[string]string{"department": "Sales", "title": "CTO"} // no title definition
+	if err := s.Users().UpdateSCIMProfile(ctx, u, "user", "active", u.SSOSubject); err == nil {
+		t.Fatal("update with a failing attribute write succeeded")
+	}
+	after, _ := s.Users().GetUserByID(ctx, "usr_a")
+	if after.Status != "active" {
+		t.Fatalf("status changed: %s", after.Status)
+	}
+	if _, err := s.Sessions().GetSession(ctx, "tok"); err != nil {
+		t.Fatalf("session revoked: %v", err)
+	}
+	if vals, _ := inv.Values(ctx, EntityUser); vals["usr_a"]["department"] != "Ops" {
+		t.Fatalf("first attribute kept: %v", vals["usr_a"])
+	}
+}

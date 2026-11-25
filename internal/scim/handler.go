@@ -137,17 +137,11 @@ func (h *userResourceHandler) Create(r *http.Request, attrs protocol.ResourceAtt
 	if err := h.checkRole("", user.Role); err != nil {
 		return protocol.Resource{}, err
 	}
+	user.SCIMAttributes = fromResource(attrs).values() // written in the user's own transaction
 	if err := h.store.Users().CreateUser(r.Context(), user); err != nil {
 		return protocol.Resource{}, scimStoreError(err, user.ID)
 	}
 	_ = h.store.Audit().LogAudit(r.Context(), &store.AuditRecord{UserID: user.ID, Action: "scim.user.create", Resource: user.Username})
-	if err := syncAttributes(r.Context(), h.store, user.ID, fromResource(attrs)); err != nil {
-		// All or nothing, so the IdP's retry of the create starts clean.
-		if ferr := h.store.Inventory().ForgetUser(r.Context(), user.ID, &store.AuditRecord{UserID: user.ID, Action: "scim.user.forget", Resource: "user:" + user.ID}); ferr == nil {
-			_ = h.store.Users().DeleteUser(r.Context(), user.ID)
-		}
-		return protocol.Resource{}, err
-	}
 	return userResource(user), nil
 }
 
@@ -193,6 +187,7 @@ func (h *userResourceHandler) takeOver(r *http.Request, user *store.User, attrs 
 	defer h.mu.Unlock()
 	oldRole, oldStatus, subject := user.Role, user.Status, user.SSOSubject
 	replaceUser(user, attrs)
+	user.SCIMAttributes = fromResource(attrs).values()
 	user.SSOSubject = subject
 	if err := h.checkRole(oldRole, user.Role); err != nil {
 		return protocol.Resource{}, err
@@ -203,9 +198,6 @@ func (h *userResourceHandler) takeOver(r *http.Request, user *store.User, attrs 
 		return protocol.Resource{}, scimStoreError(err, user.ID)
 	}
 	_ = h.store.Audit().LogAudit(r.Context(), &store.AuditRecord{UserID: user.ID, Action: "scim.user.adopt", Resource: user.Username})
-	if err := syncAttributes(r.Context(), h.store, user.ID, fromResource(attrs)); err != nil {
-		return protocol.Resource{}, err
-	}
 	return userResource(user), nil
 }
 
@@ -294,14 +286,11 @@ func (h *userResourceHandler) Replace(r *http.Request, id string, attrs protocol
 	if err := prepare(r.Context(), h.store, fromResource(attrs)); err != nil {
 		return protocol.Resource{}, err
 	}
-	res, err := h.update(r, id, func(user *store.User) error {
+	return h.update(r, id, func(user *store.User) error {
 		replaceUser(user, attrs)
+		user.SCIMAttributes = fromResource(attrs).values()
 		return nil
 	})
-	if err == nil {
-		err = syncAttributes(r.Context(), h.store, id, fromResource(attrs))
-	}
-	return res, err
 }
 
 // replaceUser applies a PUT (or a take-over create) to user: an omitted roles keeps the role.
@@ -331,13 +320,10 @@ func (h *userResourceHandler) Patch(r *http.Request, id string, operations []pro
 	if err := prepare(r.Context(), h.store, fromPatch(operations)); err != nil {
 		return protocol.Resource{}, err
 	}
-	res, err := h.update(r, id, func(user *store.User) error {
+	return h.update(r, id, func(user *store.User) error {
+		user.SCIMAttributes = fromPatch(operations).values()
 		return applyUserPatch(user, operations)
 	})
-	if err == nil {
-		err = syncAttributes(r.Context(), h.store, id, fromPatch(operations))
-	}
-	return res, err
 }
 
 // applyUserPatch applies PATCH operations to user in order. A filtered emails/roles path

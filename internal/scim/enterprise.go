@@ -171,29 +171,14 @@ func prepare(ctx context.Context, st store.Store, ch attrChanges) error {
 	return nil
 }
 
-// syncAttributes writes the changes as SCIM-sourced user attributes. Each value is its own
-// audited transaction; a failure fails the SCIM request so the IdP retries.
-func syncAttributes(ctx context.Context, st store.Store, userID string, ch attrChanges) error {
-	inv := st.Inventory()
-	for _, key := range []string{"department", "manager", "title"} {
-		v, touched := ch[key]
-		if !touched {
-			continue
-		}
-		d, err := inv.EnsureDefinition(ctx, &store.AttributeDefinition{ID: uuid.Must(uuid.NewV7()).String(), Entity: store.EntityUser, Key: key,
-			Label: syncedKeys[key], Type: store.AttrString, Source: store.SourceSCIM},
-			&store.AuditRecord{UserID: userID, Action: "attribute.definition_created", Resource: "attribute:user." + key, Details: "source=scim"})
-		if err != nil {
-			return err
-		}
-		val := ""
+// values is the changes as the store applies them: the cleaned value, or "" to clear.
+func (ch attrChanges) values() map[string]string {
+	out := map[string]string{}
+	for k, v := range ch {
+		out[k] = ""
 		if v != nil {
-			val = clean(*v)
-		}
-		if err := inv.SetValue(ctx, d.ID, userID, val, store.SourceSCIM,
-			&store.AuditRecord{UserID: userID, Action: "scim.user.attribute", Resource: "user:" + userID, Details: "key=" + key}); err != nil {
-			return err
+			out[k] = clean(*v)
 		}
 	}
-	return nil
+	return out
 }

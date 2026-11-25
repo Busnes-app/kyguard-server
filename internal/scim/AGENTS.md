@@ -28,8 +28,9 @@ Owns local persistence adapters and bearer authentication; the library owns `/sc
   without the extension URI, `manager.value`, and path-less value maps). Values are trimmed,
   stripped of control characters and cut to 256 characters. `prepare` ensures the SCIM definitions before any
   user write, so a request whose attributes cannot be written changes nothing (create,
-  adoption, PUT, PATCH). A later failed attribute write still fails the request so the IdP
-  retries; on create it also removes the new user first, so the retry starts clean. Manager sub-attributes other than `value` are ignored. Delete first runs `Inventory().ForgetUser` (accounts
+  adoption, PUT, PATCH). The handler sets `User.SCIMAttributes`, and the store writes
+  them (with their audit rows) in the same transaction as the create, adoption or update,
+  so a failure at any point leaves the user, its sessions and its attributes unchanged. Manager sub-attributes other than `value` are ignored. Delete first runs `Inventory().ForgetUser` (accounts
   become unowned, values go), because `accounts.owner_user_id` references the user.
 - SCIM protocol models and parsing must come from `github.com/elimity-com/scim`; do not add parallel local request/response implementations.
 

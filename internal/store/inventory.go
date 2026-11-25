@@ -405,46 +405,76 @@ func (v inventoryStore) DeleteDefinition(ctx context.Context, id string, audit *
 }
 
 func (v inventoryStore) SetValue(ctx context.Context, definitionID, entityID, value, source string, audit *AuditRecord) error {
-	return v.s.inTx(ctx, func(tx *sql.Tx) error {
-		d, err := v.definition(ctx, tx, definitionID)
-		if errors.Is(err, ErrNotFound) {
-			return ErrInvalid
-		}
-		if err != nil {
-			return err
-		}
-		if d.Source != source || (value != "" && d.Type == AttrEnum && !slices.Contains(d.EnumValues, value)) {
-			return ErrInvalid
-		}
-		table := "accounts"
-		if d.Entity == EntityUser {
-			table = "users"
-		}
-		if ok, err := v.exists(ctx, tx, table, entityID); err != nil || !ok {
-			return errors.Join(err, ErrInvalid)
-		}
-		var prev string
-		err = tx.QueryRowContext(ctx, v.s.rebind(`SELECT value FROM attribute_values WHERE definition_id = ? AND entity_id = ?`), definitionID, entityID).Scan(&prev)
-		switch {
-		case errors.Is(err, sql.ErrNoRows):
-			if value == "" {
-				return nil
-			}
-			_, err = tx.ExecContext(ctx, v.s.rebind(`INSERT INTO attribute_values (definition_id, entity_id, value, updated_at) VALUES (?, ?, ?, ?)`), definitionID, entityID, value, time.Now().UTC())
-		case err != nil:
-			return err
-		case prev == value:
+	return v.s.inTx(ctx, func(tx *sql.Tx) error { return v.setValue(ctx, tx, definitionID, entityID, value, source, audit) })
+}
+
+// setValue is SetValue inside the caller's transaction.
+func (v inventoryStore) setValue(ctx context.Context, tx *sql.Tx, definitionID, entityID, value, source string, audit *AuditRecord) error {
+	d, err := v.definition(ctx, tx, definitionID)
+	if errors.Is(err, ErrNotFound) {
+		return ErrInvalid
+	}
+	if err != nil {
+		return err
+	}
+	if d.Source != source || (value != "" && d.Type == AttrEnum && !slices.Contains(d.EnumValues, value)) {
+		return ErrInvalid
+	}
+	table := "accounts"
+	if d.Entity == EntityUser {
+		table = "users"
+	}
+	if ok, err := v.exists(ctx, tx, table, entityID); err != nil || !ok {
+		return errors.Join(err, ErrInvalid)
+	}
+	var prev string
+	err = tx.QueryRowContext(ctx, v.s.rebind(`SELECT value FROM attribute_values WHERE definition_id = ? AND entity_id = ?`), definitionID, entityID).Scan(&prev)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		if value == "" {
 			return nil
-		case value == "":
-			_, err = tx.ExecContext(ctx, v.s.rebind(`DELETE FROM attribute_values WHERE definition_id = ? AND entity_id = ?`), definitionID, entityID)
-		default:
-			_, err = tx.ExecContext(ctx, v.s.rebind(`UPDATE attribute_values SET value = ?, updated_at = ? WHERE definition_id = ? AND entity_id = ?`), value, time.Now().UTC(), definitionID, entityID)
+		}
+		_, err = tx.ExecContext(ctx, v.s.rebind(`INSERT INTO attribute_values (definition_id, entity_id, value, updated_at) VALUES (?, ?, ?, ?)`), definitionID, entityID, value, time.Now().UTC())
+	case err != nil:
+		return err
+	case prev == value:
+		return nil
+	case value == "":
+		_, err = tx.ExecContext(ctx, v.s.rebind(`DELETE FROM attribute_values WHERE definition_id = ? AND entity_id = ?`), definitionID, entityID)
+	default:
+		_, err = tx.ExecContext(ctx, v.s.rebind(`UPDATE attribute_values SET value = ?, updated_at = ? WHERE definition_id = ? AND entity_id = ?`), value, time.Now().UTC(), definitionID, entityID)
+	}
+	if err != nil {
+		return err
+	}
+	return v.s.auditTx(ctx, tx, audit)
+}
+
+// applySCIMAttributes writes a SCIM user's synced attributes ("" clears one) inside the
+// transaction that writes the user, so the profile and its attributes commit together.
+// Each key's definition must already exist with source scim.
+func (s *SQLStore) applySCIMAttributes(ctx context.Context, tx *sql.Tx, userID string, attrs map[string]string) error {
+	v := inventoryStore{s}
+	keys := make([]string, 0, len(attrs))
+	for k := range attrs {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	for _, k := range keys {
+		var id string
+		err := tx.QueryRowContext(ctx, s.rebind(`SELECT id FROM attribute_definitions WHERE entity = 'user' AND key = ? AND source = 'scim'`), k).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrInvalid
 		}
 		if err != nil {
 			return err
 		}
-		return v.s.auditTx(ctx, tx, audit)
-	})
+		if err := v.setValue(ctx, tx, id, userID, attrs[k], SourceSCIM,
+			&AuditRecord{UserID: userID, Action: "scim.user.attribute", Resource: "user:" + userID, Details: "key=" + k}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (v inventoryStore) Values(ctx context.Context, entity string) (map[string]map[string]string, error) {

@@ -258,4 +258,6 @@ contradicts itself. Each names its section. The most secure reading wins.
     attributes its operations name. Deleting a SCIM user clears it as the owner of every
     account first (the account turns unowned, its class unchanged) and deletes its
     attribute values. GET responses do not echo the synced attributes back.
+    A SCIM write and its synced attributes are one transaction: the profile, session
+    revocation, attribute values and their audit rows commit or roll back together.
 

@@ -23,6 +23,9 @@ type User struct {
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
 	LastLoginAt        *time.Time `json:"last_login_at,omitempty"`
+	// SCIMAttributes, when set, are synced user attributes ("" clears one) that the same
+	// transaction as the user write applies (spec §8.2). Never stored on the row.
+	SCIMAttributes map[string]string `json:"-"`
 }
 
 // Session represents an active authenticated user session.
