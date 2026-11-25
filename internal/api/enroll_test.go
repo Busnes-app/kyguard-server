@@ -130,6 +130,20 @@ func TestEnrollmentRoutes(t *testing.T) {
 	if chains, _ := st.Vault().Chains(ctx, string(acct)); len(chains) != 0 {
 		t.Fatal("a refused candidate was stored")
 	}
+	// Security review of #15: a broker-signed envelope is never a candidate, even under an
+	// enroll signed over its digest.
+	pd, _ := pqcrypto.ObjDigest(pol)
+	bh := pqcrypto.Header{Type: pqcrypto.TypeEnvelope, DeploymentID: d.ID, Epoch: 1, Scope: pqcrypto.Scope{Kind: pqcrypto.ScopeAccount, ID: acct}, SignerRole: pqcrypto.RoleBroker}
+	benv, _ := pqcrypto.Seal(bh, pqcrypto.KindManaged, pqtest.UUID(), 1, pd.Hex(), 0, time.Now(), []byte("x"), []pqcrypto.SealTo{{Type: pqcrypto.RecipientBroker, ID: string(b.ID), Pub: enc.Public().Bytes()}})
+	pqcrypto.Sign(benv, pqcrypto.RoleBroker, sig)
+	bd, _ := pqcrypto.ObjDigest(benv)
+	_, btx := d.Tx(t, pol, b.ID, alice, pqcrypto.Action{ActionType: pqcrypto.ActionEnroll, EnvelopeDigest: bd.Hex(), SecretVersion: 1}, time.Now())
+	btx.RequestID, btx.Signatures = reqID, nil
+	pqcrypto.Sign(btx, pqcrypto.RoleUser, alice.Sig)
+	body, _ = json.Marshal(brokerproto.EnrollPush{Tx: pqtest.Canon(t, btx), Envelope: pqtest.Canon(t, benv)})
+	if w := postJSON(srv, user, base+"/"+string(reqID), body); w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("broker-signed candidate: %d %s", w.Code, w.Body)
+	}
 	body, _ = json.Marshal(brokerproto.EnrollPush{Tx: good.Tx, Envelope: good.Envelope})
 	// No broker is connected in this test: the candidate is stored and the CLI retries.
 	if w := postJSON(srv, user, base+"/"+string(reqID), body); w.Code != http.StatusServiceUnavailable {
