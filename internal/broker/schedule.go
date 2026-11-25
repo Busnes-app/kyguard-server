@@ -77,6 +77,14 @@ func (m *Machine) Tick(ctx context.Context) error {
 				continue
 			}
 		}
+		// A run whose receipts are journaled but not acknowledged is finished and re-sent,
+		// as after a restart, so it never stays open until a reconnect (PR Reviewer Guide on #16).
+		if r := a.Run; r != nil && !r.Sent && len(r.Receipts) > 0 {
+			if err := m.recover(ctx, a); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+		}
 		if l := a.Lease; l.Open() {
 			// Expiry moves the lease to rotation_pending; then its cleanup is the only
 			// rotation path and scheduled occurrences wait (§3.6 step 5).

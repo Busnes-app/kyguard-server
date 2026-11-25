@@ -559,3 +559,29 @@ func TestCleanupIsBoundToItsDescriptor(t *testing.T) {
 		t.Fatal("cleanup rotated under another descriptor")
 	}
 }
+
+// A cleanup whose receipts the Control Plane did not acknowledge is re-sent on the next
+// tick, not left open until a reconnect: the lease closes, with one write (PR Reviewer
+// Guide on #16).
+func TestUnacknowledgedCleanupReceiptsResendOnTheNextTick(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	c.open(60)
+	c.now = c.now.Add(time.Hour)
+	w := &brokerrig.WrapCP{ControlPlane: c.m.CP, ReceiptsErr: errors.New("control plane unreachable")}
+	c.m.CP = w
+	if err := c.m.Tick(ctx); err == nil {
+		t.Fatal("delivery did not fail")
+	}
+	if a := c.account(c.m); !a.Run.Open() || a.Run.Sent || a.Lease.State != broker.LeaseRotationPending {
+		t.Fatalf("after the failed delivery: run %s sent=%v lease %s", a.Run.State, a.Run.Sent, a.Lease.State)
+	}
+	w.ReceiptsErr = nil
+	if err := c.m.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	a := c.account(c.m)
+	if _, writes := c.target.state(); writes != 1 || a.Run.State != broker.StateReleaseAuthorized || a.Lease.State != broker.LeaseClosed {
+		t.Fatalf("writes=%d run %s lease %s", writes, a.Run.State, a.Lease.State)
+	}
+}
