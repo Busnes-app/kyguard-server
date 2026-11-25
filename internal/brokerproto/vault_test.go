@@ -654,3 +654,134 @@ func TestUndrainedPushesNeverBlockResults(t *testing.T) {
 		t.Fatalf("%d pushes queued", n)
 	}
 }
+
+// §4.2: a delayed write_outcome_unknown status moves only a mutating run; it never undoes
+// an outcome the receipts recorded.
+func TestLateUnknownStatusNeverRegressesARun(t *testing.T) {
+	f := newVault(t)
+	ctx := context.Background()
+	state := func(op pqcrypto.UUID) string {
+		t.Helper()
+		run, err := f.cp.Store.Vault().GetRun(ctx, string(f.acct()), string(op))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return run.State
+	}
+	unknown := func(op pqcrypto.UUID) {
+		t.Helper()
+		req := brokerproto.StatusRequest{AccountID: f.acct(), Health: "unknown", OperationID: op, RunState: "write_outcome_unknown"}
+		if err := f.call(brokerproto.MsgStatus, req, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, want := range []string{"target_verified", "release_authorized", "aborted"} {
+		op := pqtest.UUID()
+		v, err := f.reserve(op, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e, raw := f.envelope(v)
+		if err := f.call(brokerproto.MsgEnvelope, brokerproto.EnvelopeRequest{OperationID: op, Envelope: raw}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.intent(op, v, e.EnvelopeID); err != nil {
+			t.Fatal(err)
+		}
+		unknown(op)
+		if s := state(op); s != "write_outcome_unknown" {
+			t.Fatalf("mutating run after unknown status: %s", s)
+		}
+		c1, h1 := f.receipt(e, 1, pqcrypto.ZeroHex, pqcrypto.ReceiptCommitTarget, "", op)
+		c2, _ := f.receipt(e, 2, h1, pqcrypto.ReceiptRelease, "", op)
+		a, _ := f.receipt(e, 1, pqcrypto.ZeroHex, pqcrypto.ReceiptAbort, pqcrypto.ReasonRefused, op)
+		rs := map[string][]pqcrypto.B64{"target_verified": {c1}, "release_authorized": {c1, c2}, "aborted": {a}}[want]
+		if err := f.call(brokerproto.MsgReceipts, brokerproto.ReceiptsRequest{OperationID: op, AccountID: f.acct(), Receipts: rs}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if s := state(op); s != want {
+			t.Fatalf("run %s, want %s", s, want)
+		}
+		unknown(op)
+		if s := state(op); s != want {
+			t.Fatalf("late unknown status moved a %s run to %s", want, s)
+		}
+		if want == "target_verified" { // free the lock for the next case
+			if err := f.call(brokerproto.MsgReceipts, brokerproto.ReceiptsRequest{OperationID: op, AccountID: f.acct(), Receipts: []pqcrypto.B64{c1, c2}}, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+type accountCounter struct {
+	store.Store
+	rows, gets *atomic.Int64
+}
+
+func (s accountCounter) Vault() store.VaultStore {
+	return accountVault{s.Store.Vault(), s.rows, s.gets}
+}
+
+type accountVault struct {
+	store.VaultStore
+	rows, gets *atomic.Int64
+}
+
+func (v accountVault) PoolAccounts(ctx context.Context, pool, after string, limit int) ([]*store.Account, error) {
+	as, err := v.VaultStore.PoolAccounts(ctx, pool, after, limit)
+	v.rows.Add(int64(len(as)))
+	return as, err
+}
+
+func (v accountVault) GetAccount(ctx context.Context, id string) (*store.Account, error) {
+	v.gets.Add(1)
+	return v.VaultStore.GetAccount(ctx, id)
+}
+
+// An account sync page reads about one page of account rows and checks them as read,
+// with no query per account (PR Reviewer Guide on #10).
+func TestAccountListReadsOnlyOnePage(t *testing.T) {
+	f := newVault(t)
+	saved := brokerproto.SyncAccountsPage
+	defer func() { brokerproto.SyncAccountsPage = saved }()
+	brokerproto.SyncAccountsPage = 2
+	for range 6 {
+		f.cp.Account(nil)
+	}
+	var s brokerproto.SyncReply
+	for after := 0; ; after += len(s.Manifests) {
+		if err := f.call(brokerproto.MsgSync, brokerproto.SyncRequest{ManifestsAfter: after}, &s); err != nil {
+			t.Fatal(err)
+		}
+		if len(s.Manifests) == 0 {
+			break
+		}
+	}
+	var rows, gets atomic.Int64
+	f.cp.L.Store = accountCounter{f.cp.Store, &rows, &gets}
+	var last pqcrypto.UUID
+	seen := map[pqcrypto.UUID]bool{}
+	for pages := 0; ; pages++ {
+		if pages > 10 {
+			t.Fatal("sync never completes")
+		}
+		rows.Store(0)
+		if err := f.call(brokerproto.MsgSync, brokerproto.SyncRequest{ManifestsAfter: 1 << 20, AccountsAfter: last}, &s); err != nil {
+			t.Fatal(err)
+		}
+		if r := rows.Load(); r > int64(brokerproto.SyncAccountsPage)+1 {
+			t.Fatalf("a sync page read %d account rows", r)
+		}
+		for _, a := range s.Accounts {
+			seen[a] = true
+			last = a
+		}
+		if s.Done {
+			break
+		}
+	}
+	if len(seen) != 7 || gets.Load() != 0 {
+		t.Fatalf("%d accounts, %d per-account reads", len(seen), gets.Load())
+	}
+}
