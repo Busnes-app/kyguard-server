@@ -139,8 +139,8 @@ func (u *userStore) CreateUser(ctx context.Context, user *User) error {
 INSERT INTO users (
     id, username, email, display_name, password_hash, role, status,
     sso_provider, sso_subject, scim_managed, push_device_id, must_change_password,
-    created_at, updated_at, last_login_at, account_type
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    created_at, updated_at, last_login_at, account_type, sso_issuer
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `)
 	if user.AccountType == "" {
 		user.AccountType = AccountSSO
@@ -155,7 +155,7 @@ INSERT INTO users (
 		user.ID, user.Username, user.Email, user.DisplayName, user.PasswordHash,
 		user.Role, user.Status, user.SSOProvider, user.SSOSubject, user.SCIMManaged,
 		user.PushDeviceID, user.MustChangePassword,
-		user.CreatedAt, user.UpdatedAt, lastLogin, user.AccountType,
+		user.CreatedAt, user.UpdatedAt, lastLogin, user.AccountType, user.SSOIssuer,
 	); err != nil {
 		return uniqueErr(err)
 	}
@@ -174,7 +174,7 @@ func uniqueErr(err error) error {
 // recovery_codes_hash) stay in the schema with their data but are no longer read or written.
 const userColumns = `id, username, email, display_name, password_hash, role, status,
        sso_provider, sso_subject, scim_managed, push_device_id, must_change_password,
-       created_at, updated_at, last_login_at, account_type`
+       created_at, updated_at, last_login_at, account_type, sso_issuer`
 
 // checkUsernameFree refuses, inside the write's transaction, a name another account already
 // holds in any letter case. The LOWER(username) unique index enforces this once existing data
@@ -214,7 +214,7 @@ func (u *userStore) scanUser(row interface{ Scan(...any) error }) (*User, error)
 		&user.ID, &user.Username, &user.Email, &user.DisplayName, &user.PasswordHash,
 		&user.Role, &user.Status, &user.SSOProvider, &user.SSOSubject, &user.SCIMManaged,
 		&user.PushDeviceID, &user.MustChangePassword,
-		&user.CreatedAt, &user.UpdatedAt, &lastLogin, &user.AccountType,
+		&user.CreatedAt, &user.UpdatedAt, &lastLogin, &user.AccountType, &user.SSOIssuer,
 	)
 	if err != nil {
 		if errorsIs(err, sql.ErrNoRows) {
@@ -252,12 +252,15 @@ FROM users WHERE LOWER(email) = LOWER(?)
 	return u.scanUser(u.store.db.QueryRowContext(ctx, q, email))
 }
 
-func (u *userStore) GetUserBySSO(ctx context.Context, provider, subject string) (*User, error) {
+func (u *userStore) GetUserBySSO(ctx context.Context, issuer, subject string) (*User, error) {
+	if issuer == "" || subject == "" {
+		return nil, ErrNotFound // an identity needs both halves
+	}
 	q := u.store.rebind(`
 SELECT ` + userColumns + `
-FROM users WHERE sso_provider = ? AND sso_subject = ?
+FROM users WHERE sso_issuer = ? AND sso_subject = ?
 `)
-	return u.scanUser(u.store.db.QueryRowContext(ctx, q, provider, subject))
+	return u.scanUser(u.store.db.QueryRowContext(ctx, q, issuer, subject))
 }
 
 func (u *userStore) UpdateUser(ctx context.Context, user *User) error {
@@ -278,7 +281,7 @@ func (u *userStore) UpdateUser(ctx context.Context, user *User) error {
 	q := u.store.rebind(`
 UPDATE users SET
     username = ?, email = ?, display_name = ?, password_hash = ?,
-    role = ?, status = ?, sso_provider = ?, sso_subject = ?,
+    role = ?, status = ?, sso_provider = ?, sso_subject = ?, sso_issuer = ?,
     push_device_id = ?, must_change_password = ?, updated_at = ?,
     last_login_at = ?
 WHERE id = ?
@@ -286,7 +289,7 @@ WHERE id = ?
 
 	res, err := tx.ExecContext(ctx, q,
 		user.Username, user.Email, user.DisplayName, user.PasswordHash,
-		user.Role, user.Status, user.SSOProvider, user.SSOSubject,
+		user.Role, user.Status, user.SSOProvider, user.SSOSubject, user.SSOIssuer,
 		user.PushDeviceID, user.MustChangePassword, user.UpdatedAt,
 		lastLogin, user.ID,
 	)
@@ -310,13 +313,15 @@ WHERE id = ? AND role = ? AND status = ?`,
 }
 
 // UpdateSCIMProfile is UpdateUserProfile that also compares the subject read and, while the row is
-// still "scim", writes user.SSOSubject, all in the one statement.
+// still "scim", writes user.SSOSubject (and user.SSOIssuer over an empty one), all in the one
+// statement.
 func (u *userStore) UpdateSCIMProfile(ctx context.Context, user *User, prevRole, prevStatus, prevSubject string) error {
 	user.UpdatedAt = time.Now().UTC()
 	return u.updateProfile(ctx, user, prevRole, prevStatus, true, profileSet+`,
-    sso_subject = CASE WHEN sso_provider = 'scim' THEN ? ELSE sso_subject END
+    sso_subject = CASE WHEN sso_provider = 'scim' THEN ? ELSE sso_subject END,
+    sso_issuer = CASE WHEN sso_provider = 'scim' AND sso_issuer = '' THEN ? ELSE sso_issuer END
 WHERE id = ? AND role = ? AND status = ? AND sso_subject = ?`,
-		user.Username, user.Email, user.DisplayName, user.Role, user.Status, user.UpdatedAt, user.SSOSubject, user.ID, prevRole, prevStatus, prevSubject)
+		user.Username, user.Email, user.DisplayName, user.Role, user.Status, user.UpdatedAt, user.SSOSubject, user.SSOIssuer, user.ID, prevRole, prevStatus, prevSubject)
 }
 
 func (u *userStore) TakeOverForSCIM(ctx context.Context, user *User, prevRole, prevStatus string) error {
@@ -450,6 +455,12 @@ func (u *userStore) listUsers(ctx context.Context, offset, limit int, search str
 	return users, total, rows.Err()
 }
 
+func (u *userStore) CountUnissuedIdentities(ctx context.Context) (int, error) {
+	var n int
+	err := u.store.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM users WHERE sso_subject <> '' AND sso_issuer = ''`).Scan(&n)
+	return n, err
+}
+
 func (u *userStore) CountUsers(ctx context.Context) (int, error) {
 	var count int
 	err := u.store.db.QueryRowContext(ctx, "SELECT COUNT(1) FROM users").Scan(&count)
@@ -490,35 +501,102 @@ func (s *SQLStore) withPassword(ctx context.Context, userID, expectedHash string
 }
 
 func (s *sessionStore) CreateSession(ctx context.Context, sess *Session, expectedPasswordHash string) error {
-	err := s.store.withPassword(ctx, sess.UserID, expectedPasswordHash, func(tx *sql.Tx) error {
-		if sess.Stage == "" {
-			sess.Stage = StageActive
-		}
-		if sess.FactorID != "" {
-			if err := factorStillCurrent(ctx, s.store, tx, sess.UserID, sess.FactorID); err != nil {
-				return err
-			}
-		}
-		if _, err := tx.ExecContext(ctx, s.store.rebind(`INSERT INTO sessions (token_hash, user_id, user_agent, ip_address, created_at, expires_at, sso_sid, stage, stepup_at, break_glass_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), sess.TokenHash, sess.UserID, sess.UserAgent, sess.IPAddress, sess.CreatedAt, sess.ExpiresAt, sess.SSOSID, sess.Stage, nullTime(sess.StepupAt), sess.BreakGlassReason); err != nil {
+	if err := s.store.withPassword(ctx, sess.UserID, expectedPasswordHash, func(tx *sql.Tx) error {
+		return s.insertSession(ctx, tx, sess)
+	}); err != nil {
+		return err
+	}
+	return s.fenceCheck(ctx, sess)
+}
+
+// ExchangeSession turns a pending session into a new active one in one transaction holding
+// the user row: the pending row is deleted (it must still be pending and unexpired, else
+// ErrNotFound), newFactor is inserted when given (ErrAlreadyExists if the user has one), and
+// active is inserted with its audit record. The pending token never becomes active. Like
+// CreateSession, the logout fences are checked after commit.
+func (s *sessionStore) ExchangeSession(ctx context.Context, pendingHash, passwordHash string, active *Session, newFactor *MFAFactor) error {
+	if err := s.store.withPassword(ctx, active.UserID, passwordHash, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, s.store.rebind(`DELETE FROM sessions WHERE token_hash = ? AND user_id = ? AND stage = ? AND expires_at > ?`), pendingHash, active.UserID, StagePending, time.Now().UTC())
+		if err != nil {
 			return err
 		}
-		if sess.Audit != nil {
-			return s.store.insertAudit(ctx, tx, sess.Audit)
+		if n, _ := res.RowsAffected(); n != 1 {
+			return ErrNotFound
+		}
+		if newFactor != nil {
+			newFactor.UserID, newFactor.Kind, newFactor.CreatedAt = active.UserID, FactorTOTP, time.Now().UTC()
+			if _, err := tx.ExecContext(ctx, s.store.rebind(`INSERT INTO mfa_factors (id, user_id, kind, secret_enc, last_counter, created_at) VALUES (?, ?, ?, ?, ?, ?)`),
+				newFactor.ID, newFactor.UserID, newFactor.Kind, newFactor.SecretEnc, newFactor.LastCounter, newFactor.CreatedAt); err != nil {
+				return uniqueErr(err)
+			}
+			active.FactorID = newFactor.ID
+		}
+		return s.insertSession(ctx, tx, active)
+	}); err != nil {
+		return err
+	}
+	return s.fenceCheck(ctx, active)
+}
+
+// RefreshStepup records a new step-up on an active session, if factorID (whose code was just
+// checked) is still the user's factor; ErrNotFound otherwise.
+func (s *sessionStore) RefreshStepup(ctx context.Context, sess *Session, passwordHash, factorID string) error {
+	return s.store.withPassword(ctx, sess.UserID, passwordHash, func(tx *sql.Tx) error {
+		if err := factorStillCurrent(ctx, s.store, tx, sess.UserID, factorID); err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, s.store.rebind(`UPDATE sessions SET stepup_at = ? WHERE token_hash = ? AND stage = ?`), time.Now().UTC(), sess.TokenHash, StageActive)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return ErrNotFound
 		}
 		return nil
 	})
+}
+
+// SetPendingSecret stores the sealed enrollment secret on a pending session.
+func (s *sessionStore) SetPendingSecret(ctx context.Context, tokenHash, sealed string) error {
+	res, err := s.store.db.ExecContext(ctx, s.store.rebind(`UPDATE sessions SET pending_secret_enc = ? WHERE token_hash = ? AND stage = ?`), sealed, tokenHash, StagePending)
 	if err != nil {
 		return err
 	}
-	// Check the fences only after the session committed: EndSSOSession and EndSSOSubject
-	// commit their fence before deleting, so under read committed one of the two always
-	// sees the other.
+	if n, _ := res.RowsAffected(); n != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *sessionStore) insertSession(ctx context.Context, tx *sql.Tx, sess *Session) error {
+	if sess.Stage == "" {
+		sess.Stage = StageActive
+	}
+	if sess.FactorID != "" {
+		if err := factorStillCurrent(ctx, s.store, tx, sess.UserID, sess.FactorID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, s.store.rebind(`INSERT INTO sessions (token_hash, user_id, user_agent, ip_address, created_at, expires_at, sso_sid, stage, stepup_at, break_glass_reason, sso_issuer, mfa_asserted, pending_secret_enc) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		sess.TokenHash, sess.UserID, sess.UserAgent, sess.IPAddress, sess.CreatedAt, sess.ExpiresAt, sess.SSOSID, sess.Stage, nullTime(sess.StepupAt), sess.BreakGlassReason, sess.SSOIssuer, sess.MFAAsserted, sess.PendingSecretEnc); err != nil {
+		return err
+	}
+	if sess.Audit != nil {
+		return s.store.insertAudit(ctx, tx, sess.Audit)
+	}
+	return nil
+}
+
+// fenceCheck runs after the session committed: EndSSOSession and EndSSOSubject commit their
+// fence before deleting, so under read committed one of the two always sees the other. A
+// fenced session is deleted and ErrSSOSessionEnded returned.
+func (s *sessionStore) fenceCheck(ctx context.Context, sess *Session) error {
 	now := time.Now().UTC()
 	var fenced int
 	if err := s.store.db.QueryRowContext(ctx, s.store.rebind(`SELECT
- (SELECT COUNT(1) FROM sso_logouts WHERE sid = ? AND sid <> '' AND expires_at > ?) +
- (SELECT COUNT(1) FROM sso_subject_logouts f JOIN users u ON u.sso_provider = f.provider AND u.sso_subject = f.subject
-  WHERE u.id = ? AND f.cutoff > ? AND f.expires_at > ?)`), sess.SSOSID, now, sess.UserID, sess.CreatedAt.UTC(), now).Scan(&fenced); err != nil || fenced > 0 {
+ (SELECT COUNT(1) FROM sso_logouts WHERE issuer = ? AND sid = ? AND sid <> '' AND expires_at > ?) +
+ (SELECT COUNT(1) FROM sso_subject_logouts f JOIN users u ON u.sso_issuer = f.issuer AND u.sso_subject = f.subject
+  WHERE u.id = ? AND u.sso_subject <> '' AND f.cutoff > ? AND f.expires_at > ?)`), sess.SSOIssuer, sess.SSOSID, now, sess.UserID, sess.CreatedAt.UTC(), now).Scan(&fenced); err != nil || fenced > 0 {
 		_ = s.DeleteSession(ctx, sess.TokenHash)
 		if err != nil {
 			return err
@@ -528,28 +606,31 @@ func (s *sessionStore) CreateSession(ctx context.Context, sess *Session, expecte
 	return nil
 }
 
-func (s *sessionStore) EndSSOSession(ctx context.Context, sid string, fenceUntil time.Time) error {
+// EndSSOSession and EndSSOSubject commit their fence before deleting, so a session inserted
+// concurrently is either deleted here or sees the fence in CreateSession's re-check.
+func (s *sessionStore) EndSSOSession(ctx context.Context, issuer, sid string, fenceUntil time.Time) error {
 	now := time.Now().UTC()
 	if _, err := s.store.db.ExecContext(ctx, s.store.rebind(`DELETE FROM sso_logouts WHERE expires_at <= ?`), now); err != nil {
 		return err
 	}
-	if _, err := s.store.db.ExecContext(ctx, s.store.rebind(`INSERT INTO sso_logouts (sid, expires_at) VALUES (?, ?) ON CONFLICT (sid) DO UPDATE SET expires_at = excluded.expires_at`), sid, fenceUntil.UTC()); err != nil {
+	if _, err := s.store.db.ExecContext(ctx, s.store.rebind(`INSERT INTO sso_logouts (issuer, sid, expires_at) VALUES (?, ?, ?) ON CONFLICT (issuer, sid) DO UPDATE SET expires_at = excluded.expires_at`), issuer, sid, fenceUntil.UTC()); err != nil {
 		return err
 	}
-	_, err := s.store.db.ExecContext(ctx, s.store.rebind(`DELETE FROM sessions WHERE sso_sid = ?`), sid)
+	_, err := s.store.db.ExecContext(ctx, s.store.rebind(`DELETE FROM sessions WHERE sso_issuer = ? AND sso_sid = ?`), issuer, sid)
 	return err
 }
 
-func (s *sessionStore) EndSSOSubject(ctx context.Context, provider, subject string, cutoff, fenceUntil time.Time) error {
+func (s *sessionStore) EndSSOSubject(ctx context.Context, issuer, subject string, cutoff, fenceUntil time.Time) error {
 	if _, err := s.store.db.ExecContext(ctx, s.store.rebind(`DELETE FROM sso_subject_logouts WHERE expires_at <= ?`), time.Now().UTC()); err != nil {
 		return err
 	}
 	// Keyed by subject, not user, so it also fences a first login that is still provisioning.
-	if _, err := s.store.db.ExecContext(ctx, s.store.rebind(`INSERT INTO sso_subject_logouts (provider, subject, cutoff, expires_at) VALUES (?, ?, ?, ?)
-ON CONFLICT (provider, subject) DO UPDATE SET cutoff = excluded.cutoff, expires_at = excluded.expires_at WHERE sso_subject_logouts.cutoff < excluded.cutoff`), provider, subject, cutoff.UTC(), fenceUntil.UTC()); err != nil {
+	if _, err := s.store.db.ExecContext(ctx, s.store.rebind(`INSERT INTO sso_subject_logouts (issuer, subject, cutoff, expires_at) VALUES (?, ?, ?, ?)
+ON CONFLICT (issuer, subject) DO UPDATE SET cutoff = excluded.cutoff, expires_at = excluded.expires_at WHERE sso_subject_logouts.cutoff < excluded.cutoff`), issuer, subject, cutoff.UTC(), fenceUntil.UTC()); err != nil {
 		return err
 	}
-	_, err := s.store.db.ExecContext(ctx, s.store.rebind(`DELETE FROM sessions WHERE created_at < ? AND user_id IN (SELECT id FROM users WHERE sso_provider = ? AND sso_subject = ?)`), cutoff.UTC(), provider, subject)
+	// created_at is the session's credential time: the original ID token iat (IssueSSOSession).
+	_, err := s.store.db.ExecContext(ctx, s.store.rebind(`DELETE FROM sessions WHERE created_at < ? AND user_id IN (SELECT id FROM users WHERE sso_issuer = ? AND sso_subject = ?)`), cutoff.UTC(), issuer, subject)
 	return err
 }
 
@@ -598,14 +679,14 @@ func (u *userStore) revokePasswordGrants(ctx context.Context, tx *sql.Tx, userID
 
 func (s *sessionStore) GetSession(ctx context.Context, tokenHash string) (*Session, error) {
 	q := s.store.rebind(`
-SELECT token_hash, user_id, user_agent, ip_address, created_at, expires_at, sso_sid, stage, stepup_at, break_glass_reason
+SELECT token_hash, user_id, user_agent, ip_address, created_at, expires_at, sso_sid, stage, stepup_at, break_glass_reason, sso_issuer, mfa_asserted, pending_secret_enc
 FROM sessions WHERE token_hash = ?
 `)
 	var sess Session
 	var stepup sql.NullTime
 	err := s.store.db.QueryRowContext(ctx, q, tokenHash).Scan(
 		&sess.TokenHash, &sess.UserID, &sess.UserAgent, &sess.IPAddress,
-		&sess.CreatedAt, &sess.ExpiresAt, &sess.SSOSID, &sess.Stage, &stepup, &sess.BreakGlassReason,
+		&sess.CreatedAt, &sess.ExpiresAt, &sess.SSOSID, &sess.Stage, &stepup, &sess.BreakGlassReason, &sess.SSOIssuer, &sess.MFAAsserted, &sess.PendingSecretEnc,
 	)
 	if stepup.Valid {
 		sess.StepupAt = &stepup.Time

@@ -55,7 +55,8 @@ type UserStore interface {
 	GetUserByID(ctx context.Context, id string) (*User, error)
 	GetUserByUsername(ctx context.Context, username string) (*User, error)
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
-	GetUserBySSO(ctx context.Context, provider, subject string) (*User, error)
+	// GetUserBySSO finds the account whose identity is (issuer, subject), of any provider.
+	GetUserBySSO(ctx context.Context, issuer, subject string) (*User, error)
 	UpdateUser(ctx context.Context, u *User) error
 	// UpdateUserProfile writes only username, email, display name, role and status, so a
 	// directory sync working from a stale read cannot undo a concurrent password reset or SSO
@@ -89,6 +90,9 @@ type UserStore interface {
 	// ListSCIMUsers is ListUsers restricted to accounts SCIM created (SCIMManaged).
 	ListSCIMUsers(ctx context.Context, offset, limit int, search string) ([]*User, int, error)
 	CountUsers(ctx context.Context) (int, error)
+	// CountUnissuedIdentities counts accounts with an SSO subject but no issuer: rows from
+	// before migration 13, which (issuer, subject) lookups cannot reach.
+	CountUnissuedIdentities(ctx context.Context) (int, error)
 }
 
 // SessionStore defines repository operations for active login sessions.
@@ -97,12 +101,19 @@ type SessionStore interface {
 	GetSession(ctx context.Context, tokenHash string) (*Session, error)
 	DeleteSession(ctx context.Context, tokenHash string) error
 	DeleteUserSessions(ctx context.Context, userID string) error
-	// EndSSOSubject ends the provider subject's sessions whose credentials were verified
-	// before cutoff and fences that subject's earlier logins until fenceUntil.
-	EndSSOSubject(ctx context.Context, provider, subject string, cutoff, fenceUntil time.Time) error
-	// EndSSOSession ends every session of an SSO login and fences its sid until fenceUntil.
-	EndSSOSession(ctx context.Context, sid string, fenceUntil time.Time) error
+	// EndSSOSubject fences the issuer's subject's logins verified before cutoff until
+	// fenceUntil, then ends its sessions whose original token iat is before cutoff.
+	EndSSOSubject(ctx context.Context, issuer, subject string, cutoff, fenceUntil time.Time) error
+	// EndSSOSession fences the issuer's login sid until fenceUntil, then ends its sessions.
+	EndSSOSession(ctx context.Context, issuer, sid string, fenceUntil time.Time) error
 	CleanExpiredSessions(ctx context.Context) error
+	// ExchangeSession replaces a pending session with active (and a first factor when
+	// newFactor is set) in one transaction; see sessionStore.ExchangeSession.
+	ExchangeSession(ctx context.Context, pendingHash, passwordHash string, active *Session, newFactor *MFAFactor) error
+	// RefreshStepup sets an active session's stepup_at to now after a code from factorID.
+	RefreshStepup(ctx context.Context, sess *Session, passwordHash, factorID string) error
+	// SetPendingSecret stores the sealed enrollment secret on a pending session.
+	SetPendingSecret(ctx context.Context, tokenHash, sealed string) error
 	// SetBreakGlassReason records the reason once, with its audit record in the same
 	// transaction; ErrConflict when one is already set.
 	SetBreakGlassReason(ctx context.Context, tokenHash, reason string, audit *AuditRecord) error

@@ -46,7 +46,7 @@ func seedEveryTable(t *testing.T, st *SQLStore) {
 	must(st.Sessions().CreateSession(ctx, &Session{TokenHash: "tok", UserID: "u1", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}, "hash"))
 	must(st.Audit().LogAudit(ctx, &AuditRecord{UserID: "u1", Action: "seed", Details: "ä \x01 \"quoted\""}))
 	must(st.Settings().SetSetting(ctx, "kyrecovery_token_enc", "sealed"))
-	must(st.Sessions().EndSSOSession(ctx, "sid-1", now.Add(time.Hour)))
+	must(st.Sessions().EndSSOSession(ctx, "https://idp", "sid-1", now.Add(time.Hour)))
 	must(st.Sessions().EndSSOSubject(ctx, "kysignon", "sub-1", now, now.Add(time.Hour)))
 	_, _, err := st.TakeAttempt(ctx, "login:198.51.100.1", 5, time.Minute)
 	must(err)
