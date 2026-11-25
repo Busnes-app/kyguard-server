@@ -13,6 +13,14 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 
 ### Changes
 
+- SSO identity is `(issuer, subject)` (spec §7.2): `users.sso_issuer` with a unique index,
+  sessions record their issuer, and both back-channel logout fences are keyed by issuer.
+  SCIM accounts take `KY_SCIM_ISSUER` (default `KY_KYSIGNON_ISSUER`).
+- Generic OIDC sign-in at `/api/sso/oidc/login` and `/callback`. Both providers send
+  `max_age=0` (and `acr_values` for an MFA acr set, `KY_OIDC_MFA_ACRS` for OIDC) and refuse an
+  ID token whose `auth_time` is missing or older than 120 seconds.
+- The role comes only from the per-app `roles` claim at every sign-in; the IdP-wide `role`
+  fallback is gone. SCIM never grants admin; `KY_SCIM_ALLOW_ADMIN` is removed.
 - Break-glass accounts (spec §7.4): `kyguard-server break-glass create -username NAME` makes a
   local administrator with a generated password and TOTP secret, printed once; at most five
   exist. `break-glass reset-totp` replaces a secret and ends the account's sessions.
@@ -31,6 +39,10 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 - Removed the SAML 2.0 service-provider helper, its `/saml/metadata` route (now 404) and the
   `KY_SAML_ENTITY_ID` and `KY_SAML_METADATA_URL` settings (spec §7.2).
 - Removed the base's product-scaffolding script (`scripts/ky-init.sh`); KyGuard is a product.
+- Schema migration 12 (`kyguard_local_factors`): `users.account_type`, `sessions.stage`,
+  `stepup_at`, `break_glass_reason`, and the `mfa_factors` and `totp_attempts` tables, both
+  carried by `migrate-postgres` and PostgreSQL snapshots. Migration 13 (`kyguard_sso_issuer`)
+  adds the issuer columns and replaces the fence tables.
 - The README's OpenSSF Best Practices badge now shows KyGuard's own project (17119), not the
   one inherited from `ky-server-base`.
 - KyGuard `internal/pqcrypto` wire format (spec §3.1): strict RFC 8785 JCS, decimal-string

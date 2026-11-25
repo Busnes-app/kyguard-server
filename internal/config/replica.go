@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"slices"
 	"strconv"
+	"strings"
 )
 
 // ReplicaConfigSetting is the server_settings row holding the shared fingerprint. It is never
@@ -33,7 +34,7 @@ func sharedFields(c *Config) [][2]string {
 		{"KY_SESSION_SECRET", c.Security.SessionSecret},
 		{"KY_SCIM_ENABLED", b(c.SCIM.Enabled)},
 		{"KY_SCIM_TOKEN", scimToken},
-		{"KY_SCIM_ALLOW_ADMIN", b(c.SCIM.AllowAdmin)},
+		{"KY_SCIM_ISSUER", c.SCIM.Issuer},
 		{"KY_SSO_ENABLED", b(c.SSO.Enabled)},
 		{"KY_KYSIGNON_ISSUER", c.SSO.KySignOnIssuer},
 		{"KY_KYSIGNON_CLIENT_ID", c.SSO.KySignOnClientID},
@@ -41,6 +42,7 @@ func sharedFields(c *Config) [][2]string {
 		{"KY_OIDC_ISSUER", c.SSO.GenericOIDCIssuer},
 		{"KY_OIDC_CLIENT_ID", c.SSO.GenericOIDCClientID},
 		{"KY_OIDC_SECRET", c.SSO.GenericOIDCSecret},
+		{"KY_OIDC_MFA_ACRS", strings.Join(c.SSO.GenericOIDCMFAACRs, ",")},
 		{"KY_SSO_AUTO_PROVISION", b(c.SSO.AutoProvision)},
 		{"KY_CAPTCHA_PROVIDER", c.Captcha.Provider},
 		{"KY_CAPTCHA_SITE_KEY", c.Captcha.SiteKey},

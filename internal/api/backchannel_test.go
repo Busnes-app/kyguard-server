@@ -113,7 +113,8 @@ func ssoLoginClaims(t *testing.T, srv *api.Server, f *fakeKySignOn, sub, sid str
 		t.Fatalf("login redirect: %d %s", w.Code, w.Body.String())
 	}
 	q := loc.Query()
-	claims := map[string]any{"sub": sub, "sid": sid, "nonce": q.Get("nonce"), "preferred_username": sub, "iat": iat.Unix()}
+	// max_age=0 means the IdP authenticated just now: auth_time is fresh unless a test says not.
+	claims := map[string]any{"sub": sub, "sid": sid, "nonce": q.Get("nonce"), "preferred_username": sub, "iat": iat.Unix(), "auth_time": time.Now().Unix()}
 	for k, v := range extra {
 		claims[k] = v
 	}

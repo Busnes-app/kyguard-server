@@ -70,6 +70,8 @@ func change(t *testing.T, name string, f reflect.Value) {
 			f.Index(0).SetUint(1)
 		case []netip.Prefix:
 			f.Set(reflect.ValueOf([]netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}))
+		case []string:
+			f.Set(reflect.ValueOf([]string{"x"}))
 		default:
 			t.Fatalf("%s: no change rule for %s", name, f.Type())
 		}

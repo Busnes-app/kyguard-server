@@ -160,28 +160,30 @@ Sources: [SSO handlers](../internal/api/sso_handlers.go),
 
 | Method and path | Input and authority | Successful output |
 |---|---|---|
-| GET `/api/sso/kysignon/login` | Browser; no body | 302 to provider authorization URL; five-minute HttpOnly PKCE/nonce cookies |
-| GET `/api/sso/kysignon/callback` | Provider query `code`, `state`; matching PKCE/nonce cookies | 302 to `/` and session/CSRF cookies |
+| GET `/api/sso/kysignon/login`, `/api/sso/oidc/login` | Browser; no body | 302 to the provider's authorization URL with PKCE S256, nonce, `max_age=0` and, when the profile has an MFA acr set, `acr_values`; five-minute HttpOnly PKCE/nonce cookies |
+| GET `/api/sso/kysignon/callback`, `/api/sso/oidc/callback` | Provider query `code`, `state`; matching PKCE/nonce cookies | 302 to `/` and session/CSRF cookies |
 | POST `/api/sso/kysignon/backchannel-logout` | Provider server; form body `logout_token` (≤16 KiB) | 200, `Cache-Control: no-store`; 400 `{"error":"invalid_request"}` for any token that fails verification |
 | any `/saml/*` | Anonymous | 404: SAML is removed (spec §7.2) |
 
-The callback verifies provider tokens, PKCE and nonce. Invalid state/nonce is 400;
-failed exchange is 401. A subject with no KyIdentity account adopts the SCIM account
-whose `externalId` equals the subject: that row becomes a KyIdentity row (so
-back-channel logout reaches it) and stays SCIM-managed, audited as
-`sso.scim_account_linked`. Otherwise an unprovisioned account is 403 when automatic
-provisioning is off, and a username that another account already holds (in any letter
-case) is 409 naming it. A disabled account is 403. The role follows KyIdentity on every
-sign-in: `admin` in the ID token's per-app `roles` array means `admin`, any other `roles`
-value means `user`; a token without `roles` uses the legacy IdP-wide `role` (`admin` or
-`user`), and a token with neither leaves the stored role unchanged (automatic provisioning
-then creates `user`). A malformed `roles` claim (not an array, `null` included) fails the
-sign-in (401). A role change
-revokes the account's other sessions in the same transaction and is audited as
-`sso.role_changed`; only the role is written, so a concurrent directory edit stays, and a
-concurrent role or status change is 409 (sign in again). Only
-KyIdentity rows are reached, so local accounts never change. The server constructs a generic OIDC
-helper but does not yet register its login or callback route.
+The callback verifies provider tokens, PKCE and nonce. Invalid state/nonce is 400; a failed
+exchange is 401, and so is an ID token whose `auth_time` is missing, more than 120 seconds
+old or in the future. An account's identity is the verified token's `(iss, sub)`; two issuers
+with the same subject are two accounts. A SCIM account whose issuer (`KY_SCIM_ISSUER`) and
+`externalId` match is adopted: it becomes a provider row (so back-channel logout reaches it)
+and stays SCIM-managed, audited as `sso.scim_account_linked`. Otherwise an unprovisioned
+account is 403 when automatic provisioning is off, and a username that another account
+already holds (in any letter case) is 409 naming it. A disabled account is 403.
+
+The role is recomputed from the token at every sign-in: `admin` in the per-app `roles`
+array means `admin`; anything else, including no `roles` claim, means `user`. The IdP-wide
+`role` claim is never used. A malformed `roles` claim (not an array, `null` included) fails
+the sign-in (401). A role change revokes the account's other sessions in the same
+transaction and is audited as `sso.role_changed`; a concurrent role or status change is 409
+(sign in again).
+
+The callback also records whether the token asserted MFA: `amr` contains `mfa`, or `acr` is
+in the profile's MFA set (KySignOn: `urn:kysignon:acr:mfa`; generic OIDC:
+`KY_OIDC_MFA_ACRS`). `otp`, `hwk` or `swk` alone is not MFA. TOTP step-up (spec §7.3) uses it.
 
 Back-channel logout follows OpenID Connect Back-Channel Logout 1.0. The token must
 carry KySignOn's signature, this client as audience, an unexpired `exp`, an `iat`, a
@@ -191,7 +193,9 @@ JSON object and no `nonce`; a `typ` header, when present, must be `logout+jwt`. 
 so a callback still in flight for it answers 401 instead of signing in. A token with
 only `sub` ends the subject's logins whose ID token was issued before the second
 after its `iat`, and fences that cutoff for ten minutes by provider and subject, so
-it also stops a callback in flight, including a first login still provisioning. SSO
+it also stops a callback in flight, including a first login still provisioning. Both fences
+and the sessions they end are keyed by the logout token's issuer, so the same `sid` or `sub`
+from another issuer is untouched. SSO
 sessions are dated by their ID token's `iat`, not by when the callback finished. A
 replay is harmless and acknowledged; an unknown subject is acknowledged. The route is
 anonymous by design: the signature is its authority, and no session cookie means no
@@ -208,12 +212,8 @@ are ignored; a nonempty environment setting produces a startup migration warning
 without logging its value. Remove it after migrating. Existing stored webhook-ordering
 data is retained and unused. OIDC sign-in and back-channel logout are unchanged.
 
-**Before upgrading**, register this application in KyIdentity and assign its explicit
-per-app `admin` role to each application administrator. A present `roles: []` means
-ordinary user even alongside an IdP-wide `role: "admin"`; it never falls back to the
-global role. Only tokens with no `roles` claim retain the legacy mapping described
-above. Keep SCIM admin-role mappings specific to this app if
-`KY_SCIM_ALLOW_ADMIN=true`; directory provisioning is separate from the sign-in grant.
+Register this application in KyIdentity and assign its explicit per-app `admin` role to each
+KyGuard administrator: no other claim makes an administrator.
 
 ## SCIM 2.0
 
@@ -226,10 +226,11 @@ must be enabled. Use `application/scim+json` for request/response bodies. Do not
 browser session cookies; otherwise the shared CSRF rule also applies to writes.
 
 SCIM sees only the accounts it created (`scim_managed`, kept when a KyIdentity sign-in
-adopts one). Local and other SSO accounts, the bootstrap admin included, are absent
-from lists and filters, 404 by id, and 400 `invalidValue` as group members. SCIM may
-not grant the `admin` role (400 `invalidValue`) unless `KY_SCIM_ALLOW_ADMIN=true`;
-an account that is already an admin can still be updated, deactivated or demoted. A
+adopts one). Break-glass and other SSO accounts are absent
+from lists and filters, 404 by id, and 400 `invalidValue` as group members. SCIM never
+grants the `admin` role (400 `invalidValue`; there is no setting to allow it); an account
+that is already an admin can still be updated, deactivated or demoted. SCIM accounts take
+the issuer `KY_SCIM_ISSUER`. A
 `userName` that another account holds in any letter case is 409 `uniqueness`.
 `POST /Users` for someone who already signed in through KyIdentity takes that account
 over instead: when `externalId` equals the subject of a KyIdentity account SCIM does not
@@ -455,10 +456,11 @@ reader in the binary. The shipped `docker-compose.yml` passes its `.env` to the 
 | `KY_KYSIGNON_SECRET` | Empty | Registered client secret |
 | `KY_KYSIGNON_HMAC_SECRET` | Empty | Deprecated, accepted and ignored; a nonempty value logs a startup warning to migrate KyIdentity to the SCIM connector |
 | `KY_SSO_AUTO_PROVISION` | `true` | Allow a validated KySignOn login to create a local user |
-| `KY_OIDC_ISSUER`, `KY_OIDC_CLIENT_ID`, `KY_OIDC_SECRET` | Empty | Generic OIDC helper configuration; no public login/callback routes are wired |
+| `KY_OIDC_ISSUER`, `KY_OIDC_CLIENT_ID`, `KY_OIDC_SECRET` | Empty | Generic OIDC profile behind `/api/sso/oidc/login` and `/callback` |
+| `KY_OIDC_MFA_ACRS` | Empty | Comma- or space-separated acr values that mean MFA for the generic profile; sent as `acr_values` |
 | `KY_SCIM_ENABLED` | `true` | Enable authenticated provisioning |
 | `KY_SCIM_TOKEN` | Fresh random 24-byte hex on each SQLite load | Provisioning bearer credential; required explicitly with PostgreSQL when SCIM is enabled, identical across replicas |
-| `KY_SCIM_ALLOW_ADMIN` | `false` | Let SCIM grant the `admin` role |
+| `KY_SCIM_ISSUER` | `KY_KYSIGNON_ISSUER` | SSO issuer of SCIM-created accounts; a sign-in from it adopts them by `(issuer, externalId)` |
 | `KY_CAPTCHA_PROVIDER` | `pow` | Login PoW check; `none` disables it; other provider verification is not wired |
 | `KY_CAPTCHA_SITE_KEY`, `KY_CAPTCHA_SECRET_KEY` | Empty | Reserved provider configuration; not used by the current PoW verifier |
 | `KY_CAPTCHA_POW_DIFFICULTY` | `500000` | Maximum puzzle candidate number; nonpositive values fall back to the default. The default solves in about one second (median) in a desktop browser |

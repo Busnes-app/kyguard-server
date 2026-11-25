@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Busnes-app/kyguard-server/internal/scim"
+	"github.com/Busnes-app/kyguard-server/internal/store"
 )
 
 var patchSchema = []string{"urn:ietf:params:scim:api:messages:2.0:PatchOp"}
@@ -17,12 +18,11 @@ var patchSchema = []string{"urn:ietf:params:scim:api:messages:2.0:PatchOp"}
 // An IdP that empties a user's roles takes the role away: a PUT with empty roles and a
 // replace with an empty value both leave "user"; a PUT that omits roles leaves it alone.
 func TestSCIMEmptyRoleReplacementDemotes(t *testing.T) {
-	st, do := scopedSCIM(t, true)
+	st, do := scopedSCIM(t)
 	ctx := context.Background()
-	admin := map[string]any{"schemas": []string{scim.SchemaUser}, "userName": "ada", "roles": []any{map[string]any{"value": "admin"}}}
-	w := do("POST", "/scim/v2/Users", admin)
-	if w.Code != http.StatusCreated {
-		t.Fatal(w.Code, w.Body)
+	// An admin from an earlier sign-in; SCIM itself never grants admin.
+	if err := st.Users().CreateUser(ctx, &store.User{ID: "usr_ada", Username: "ada", Role: "admin", Status: "active", SSOProvider: "scim", SSOIssuer: testIssuer, SCIMManaged: true}); err != nil {
+		t.Fatal(err)
 	}
 	u, err := st.Users().GetUserByUsername(ctx, "ada")
 	if err != nil || u.Role != "admin" {
@@ -34,13 +34,16 @@ func TestSCIMEmptyRoleReplacementDemotes(t *testing.T) {
 	if u, _ := st.Users().GetUserByID(ctx, u.ID); u.Role != "user" {
 		t.Fatalf("an empty roles replace kept role %q", u.Role)
 	}
-	if w := do("PATCH", "/scim/v2/Users/"+u.ID, map[string]any{"schemas": patchSchema, "Operations": []any{map[string]any{"op": "replace", "path": "roles", "value": []any{map[string]any{"value": "admin"}}}}}); w.Code != http.StatusOK {
+	if w := do("PATCH", "/scim/v2/Users/"+u.ID, map[string]any{"schemas": patchSchema, "Operations": []any{map[string]any{"op": "replace", "path": "roles", "value": []any{map[string]any{"value": "admin"}}}}}); w.Code != http.StatusBadRequest {
+		t.Fatal("SCIM granted admin back:", w.Code, w.Body)
+	}
+	if w := do("PUT", "/scim/v2/Users/"+u.ID, map[string]any{"schemas": []string{scim.SchemaUser}, "userName": "ada", "active": true, "roles": []any{map[string]any{"value": "staff"}}}); w.Code != http.StatusOK {
 		t.Fatal(w.Code, w.Body)
 	}
 	if w := do("PUT", "/scim/v2/Users/"+u.ID, map[string]any{"schemas": []string{scim.SchemaUser}, "userName": "ada", "active": true}); w.Code != http.StatusOK {
 		t.Fatal(w.Code, w.Body)
 	}
-	if u, _ := st.Users().GetUserByID(ctx, u.ID); u.Role != "admin" {
+	if u, _ := st.Users().GetUserByID(ctx, u.ID); u.Role != "staff" {
 		t.Fatalf("a PUT that omits roles changed the role to %q", u.Role)
 	}
 	if w := do("PUT", "/scim/v2/Users/"+u.ID, map[string]any{"schemas": []string{scim.SchemaUser}, "userName": "ada", "active": true, "roles": []any{}}); w.Code != http.StatusOK {
@@ -54,7 +57,7 @@ func TestSCIMEmptyRoleReplacementDemotes(t *testing.T) {
 // externalId set after creation is stored while the row is still SCIM's own, so the user's
 // first KyIdentity sign-in can adopt it; an adopted row keeps the subject it signs in with.
 func TestSCIMExternalIDCanBeCorrectedBeforeAdoption(t *testing.T) {
-	st, do := scopedSCIM(t, false)
+	st, do := scopedSCIM(t)
 	ctx := context.Background()
 	if w := do("POST", "/scim/v2/Users", map[string]any{"schemas": []string{scim.SchemaUser}, "userName": "alice"}); w.Code != http.StatusCreated {
 		t.Fatal(w.Code, w.Body)
@@ -63,13 +66,13 @@ func TestSCIMExternalIDCanBeCorrectedBeforeAdoption(t *testing.T) {
 	if w := do("PATCH", "/scim/v2/Users/"+u.ID, map[string]any{"schemas": patchSchema, "Operations": []any{map[string]any{"op": "replace", "path": "externalId", "value": "sub-alice"}}}); w.Code != http.StatusOK {
 		t.Fatal(w.Code, w.Body)
 	}
-	if got, err := st.Users().GetUserBySSO(ctx, "scim", "sub-alice"); err != nil || got.ID != u.ID {
+	if got, err := st.Users().GetUserBySSO(ctx, testIssuer, "sub-alice"); err != nil || got.ID != u.ID {
 		t.Fatalf("externalId PATCH not stored: %v %v", got, err)
 	}
 	if w := do("PUT", "/scim/v2/Users/"+u.ID, map[string]any{"schemas": []string{scim.SchemaUser}, "userName": "alice", "externalId": "sub-alice-2"}); w.Code != http.StatusOK {
 		t.Fatal(w.Code, w.Body)
 	}
-	if got, err := st.Users().GetUserBySSO(ctx, "scim", "sub-alice-2"); err != nil || got.ID != u.ID {
+	if got, err := st.Users().GetUserBySSO(ctx, testIssuer, "sub-alice-2"); err != nil || got.ID != u.ID {
 		t.Fatalf("externalId PUT not stored: %v %v", got, err)
 	}
 	if err := st.Users().LinkSSOIdentity(ctx, u.ID, "sub-alice-2", "scim", "kysignon"); err != nil {
@@ -78,14 +81,14 @@ func TestSCIMExternalIDCanBeCorrectedBeforeAdoption(t *testing.T) {
 	if w := do("PATCH", "/scim/v2/Users/"+u.ID, map[string]any{"schemas": patchSchema, "Operations": []any{map[string]any{"op": "replace", "path": "externalId", "value": "someone-else"}}}); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"externalId":"sub-alice-2"`) {
 		t.Fatal(w.Code, w.Body)
 	}
-	if got, err := st.Users().GetUserBySSO(ctx, "kysignon", "sub-alice-2"); err != nil || got.ID != u.ID {
+	if got, err := st.Users().GetUserBySSO(ctx, testIssuer, "sub-alice-2"); err != nil || got.ID != u.ID {
 		t.Fatalf("an adopted row was relinked: %v %v", got, err)
 	}
 }
 
 // Renaming a group onto a taken name is a SCIM uniqueness conflict, not a 500.
 func TestSCIMGroupRenameOntoTakenNameIs409(t *testing.T) {
-	_, do := scopedSCIM(t, false)
+	_, do := scopedSCIM(t)
 	for _, name := range []string{"Sales", "Ops"} {
 		if w := do("POST", "/scim/v2/Groups", map[string]any{"schemas": []string{"urn:ietf:params:scim:schemas:core:2.0:Group"}, "displayName": name}); w.Code != http.StatusCreated {
 			t.Fatal(w.Code, w.Body)
@@ -100,7 +103,7 @@ func TestSCIMGroupRenameOntoTakenNameIs409(t *testing.T) {
 
 // Concurrent incremental PATCHes on one group keep every member they add.
 func TestSCIMConcurrentGroupAddsKeepEveryMember(t *testing.T) {
-	st, do := scopedSCIM(t, false)
+	st, do := scopedSCIM(t)
 	ctx := context.Background()
 	var ids []string
 	for _, name := range []string{"m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8"} {

@@ -312,8 +312,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/auth/break-glass/reason", s.handleBreakGlassReason)
 
 	// SSO
-	s.mux.HandleFunc("/api/sso/kysignon/login", s.handleKySignOnLogin)
-	s.mux.HandleFunc("/api/sso/kysignon/callback", s.handleKySignOnCallback)
+	s.mux.HandleFunc("/api/sso/kysignon/login", s.handleSSOLogin("kysignon"))
+	s.mux.HandleFunc("/api/sso/kysignon/callback", s.handleSSOCallback("kysignon"))
+	s.mux.HandleFunc("/api/sso/oidc/login", s.handleSSOLogin("oidc"))
+	s.mux.HandleFunc("/api/sso/oidc/callback", s.handleSSOCallback("oidc"))
 	s.mux.HandleFunc("POST /api/sso/kysignon/backchannel-logout", s.handleKySignOnBackchannelLogout)
 
 	// Feature 0 KyBackup & Restore Drills. Capsules carry site data and keys: admins only.
