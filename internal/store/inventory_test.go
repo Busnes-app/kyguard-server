@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 )
@@ -125,6 +127,43 @@ func TestAccountPatchWritesOnlyItsFields(t *testing.T) {
 	}
 	if _, err := inv.UpdateAccount(ctx, "missing", AccountPatch{Name: &name}, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown account: %v", err)
+	}
+}
+
+// Concurrent uploads of one descriptor all succeed and store it once; another account's
+// upload of the same digest is refused (PostgreSQL runs these in parallel).
+func TestDescriptorUploadIsIdempotentUnderConcurrency(t *testing.T) {
+	_, inv := inventoryFor(t)
+	ctx := context.Background()
+	if err := inv.CreateAccount(ctx, &InventoryAccount{Account: Account{ID: "ac2", AssetID: "as", Name: "svc2", AccountKind: "managed"}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	for round := range 20 {
+		dg := fmt.Sprintf("dg%d", round)
+		var wg sync.WaitGroup
+		errs := make([]error, 16)
+		start := make(chan struct{})
+		for i := range errs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				errs[i] = inv.PutDescriptor(ctx, dg, "ac", []byte(`{}`), &AuditRecord{Action: "inventory.descriptor_uploaded"})
+			}()
+		}
+		close(start)
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("round %d upload %d: %v", round, i, err)
+			}
+		}
+	}
+	if ds, err := inv.Descriptors(ctx, "ac"); err != nil || len(ds) != 20 {
+		t.Fatalf("descriptors %d %v", len(ds), err)
+	}
+	if err := inv.PutDescriptor(ctx, "dg0", "ac2", []byte(`{}`), nil); !errors.Is(err, ErrConflict) {
+		t.Fatalf("another account's upload: %v", err)
 	}
 }
 
