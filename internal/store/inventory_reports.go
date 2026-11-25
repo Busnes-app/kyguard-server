@@ -30,9 +30,14 @@ func (v inventoryStore) ReportFacts(ctx context.Context) (map[string]*ReportFact
 		}
 		return out[id]
 	}
-	// Rows, not MAX(): SQLite hands an aggregate timestamp back as text.
+	// Only each account's newest release row, picked in SQL so the read grows with the
+	// accounts, not the rotation history. Not MAX(): SQLite returns an aggregate timestamp
+	// as text. Ties may return two rows; the loop keeps the later one.
 	rows, err := v.s.db.QueryContext(ctx, `SELECT e.account_id, r.created_at FROM envelope_receipts r
-		JOIN secret_envelopes e ON e.envelope_id = r.envelope_id WHERE r.receipt_type = 'release'`)
+		JOIN secret_envelopes e ON e.envelope_id = r.envelope_id
+		WHERE r.receipt_type = 'release' AND NOT EXISTS (
+			SELECT 1 FROM envelope_receipts r2 JOIN secret_envelopes e2 ON e2.envelope_id = r2.envelope_id
+			WHERE e2.account_id = e.account_id AND r2.receipt_type = 'release' AND r2.created_at > r.created_at)`)
 	if err != nil {
 		return nil, err
 	}
