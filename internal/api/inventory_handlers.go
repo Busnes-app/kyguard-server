@@ -36,7 +36,7 @@ func (s *Server) inventoryRoutes() {
 	// TODO(hawthorn §7.5): classify + fresh(StepupWindow): a descriptor is what a policy pins.
 	s.mux.HandleFunc("PUT /api/accounts/{id}/target-descriptor", s.requireAdmin(s.handlePutDescriptor))
 	// Definitions are labels only; every signed-in user's report filters read them.
-	s.mux.HandleFunc("GET /api/attributes", s.requireAuthenticated(s.handleListAttributes))
+	s.mux.HandleFunc("GET /api/attributes", s.requireSession(s.handleListAttributes))
 	s.mux.HandleFunc("POST /api/attributes", s.requireAdmin(s.handleCreateAttribute))
 	s.mux.HandleFunc("PATCH /api/attributes/{id}", s.requireAdmin(s.handleUpdateAttribute))
 	s.mux.HandleFunc("DELETE /api/attributes/{id}", s.requireAdmin(s.handleDeleteAttribute))
@@ -44,6 +44,18 @@ func (s *Server) inventoryRoutes() {
 }
 
 // decodeStrict reads one JSON object with no unknown fields.
+// requireSession admits any active session, but a break-glass one only once it has stated
+// its reason, as requireAdmin does (spec §7.4): reporting data spans the deployment.
+func (s *Server) requireSession(h http.HandlerFunc) http.HandlerFunc {
+	return s.requireAuthenticated(func(w http.ResponseWriter, r *http.Request) {
+		if u, sess, err := s.sessions.AuthenticateRequest(r); err == nil && u.AccountType == store.AccountBreakGlass && sess.BreakGlassReason == "" {
+			s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "State the reason for this break-glass session first", "code": "break_glass_reason_required"})
+			return
+		}
+		h(w, r)
+	})
+}
+
 func decodeStrict(r *http.Request, v any) error {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
