@@ -1,0 +1,106 @@
+[
+  {
+    "name": "payload",
+    "dek": "xu6WEgxE-RDVCQ8dXi7k4W4kQsu4K02RO2AjxBQc5LY",
+    "nonce": "QGO1PRYtFcFbWcpr",
+    "seal_fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "epoch": "3",
+      "policy_digest": "823412d1eacb67956220e532959f0104603057c88704863ca38e7cd188fda812",
+      "recovery_epoch": "1",
+      "secret_version": "7"
+    },
+    "open_fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "epoch": "3",
+      "policy_digest": "823412d1eacb67956220e532959f0104603057c88704863ca38e7cd188fda812",
+      "recovery_epoch": "1",
+      "secret_version": "7"
+    },
+    "plaintext": "{\"password\":\"S3cret-pass_word.!@\"}",
+    "ciphertext": "jwYS_P6vDuHymzD7p9s9z2_lQ2dpwsPVSlFV3IyjFRLL8u6teN559fn55AooIPRqBh8",
+    "verdict": "ok"
+  },
+  {
+    "name": "recovery_epoch differs",
+    "dek": "xu6WEgxE-RDVCQ8dXi7k4W4kQsu4K02RO2AjxBQc5LY",
+    "nonce": "QGO1PRYtFcFbWcpr",
+    "seal_fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "epoch": "3",
+      "policy_digest": "823412d1eacb67956220e532959f0104603057c88704863ca38e7cd188fda812",
+      "recovery_epoch": "1",
+      "secret_version": "7"
+    },
+    "open_fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "epoch": "3",
+      "policy_digest": "823412d1eacb67956220e532959f0104603057c88704863ca38e7cd188fda812",
+      "recovery_epoch": "0",
+      "secret_version": "7"
+    },
+    "plaintext": "{\"password\":\"S3cret-pass_word.!@\"}",
+    "ciphertext": "jwYS_P6vDuHymzD7p9s9z2_lQ2dpwsPVSlFV3IyjFRLL8u6teN559fn55AooIPRqBh8",
+    "verdict": "decrypt_failed"
+  },
+  {
+    "name": "policy epoch differs",
+    "dek": "xu6WEgxE-RDVCQ8dXi7k4W4kQsu4K02RO2AjxBQc5LY",
+    "nonce": "QGO1PRYtFcFbWcpr",
+    "seal_fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "epoch": "3",
+      "policy_digest": "823412d1eacb67956220e532959f0104603057c88704863ca38e7cd188fda812",
+      "recovery_epoch": "1",
+      "secret_version": "7"
+    },
+    "open_fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "epoch": "4",
+      "policy_digest": "823412d1eacb67956220e532959f0104603057c88704863ca38e7cd188fda812",
+      "recovery_epoch": "1",
+      "secret_version": "7"
+    },
+    "plaintext": "{\"password\":\"S3cret-pass_word.!@\"}",
+    "ciphertext": "jwYS_P6vDuHymzD7p9s9z2_lQ2dpwsPVSlFV3IyjFRLL8u6teN559fn55AooIPRqBh8",
+    "verdict": "decrypt_failed"
+  },
+  {
+    "name": "policy digest differs",
+    "dek": "xu6WEgxE-RDVCQ8dXi7k4W4kQsu4K02RO2AjxBQc5LY",
+    "nonce": "QGO1PRYtFcFbWcpr",
+    "seal_fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "epoch": "3",
+      "policy_digest": "823412d1eacb67956220e532959f0104603057c88704863ca38e7cd188fda812",
+      "recovery_epoch": "1",
+      "secret_version": "7"
+    },
+    "open_fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "epoch": "3",
+      "policy_digest": "d9298a10d1b0735837dc4bd85dac641b0f3cef27a47e5d53a54f2f3f5b2fcffa",
+      "recovery_epoch": "1",
+      "secret_version": "7"
+    },
+    "plaintext": "{\"password\":\"S3cret-pass_word.!@\"}",
+    "ciphertext": "jwYS_P6vDuHymzD7p9s9z2_lQ2dpwsPVSlFV3IyjFRLL8u6teN559fn55AooIPRqBh8",
+    "verdict": "decrypt_failed"
+  }
+]

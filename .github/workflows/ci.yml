@@ -165,6 +165,7 @@ jobs:
       - run: go test -fuzz=FuzzClientIP -fuzztime=150000x ./internal/auth
       - run: go test -fuzz=FuzzVerifyPoWSolution -fuzztime=200000x ./internal/auth
       - run: go test -fuzz=FuzzAESGCM -fuzztime=1000000x ./internal/crypto
+      - run: go test -fuzz=FuzzParse -fuzztime=300000x ./internal/pqcrypto/canonical
 
   web:
     name: Frontend typecheck & build
