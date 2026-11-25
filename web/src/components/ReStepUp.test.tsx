@@ -71,3 +71,37 @@ it('returns the refusal when the shell goes away with the prompt open', async ()
   unmount();
   expect((await action).status).toBe(403);
 });
+
+it('shows a retryable error when the server cannot be reached', async () => {
+  let reachable = false;
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input) === '/api/auth/stepup/totp') {
+      if (!reachable) throw new TypeError('Failed to fetch');
+      return new Response('{"stepped_up":true}', { status: 200 });
+    }
+    return reachable ? new Response('{}', { status: 200 }) : stale();
+  }));
+  render(<ReStepUp />);
+  const action = secureFetch('/api/backup/deposit', { method: 'POST' });
+  fireEvent.change(await screen.findByLabelText('Authenticator code'), { target: { value: '123456' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+  expect((await screen.findByRole('alert')).textContent).toContain('Could not reach the server');
+  reachable = true;
+  fireEvent.change(screen.getByLabelText('Authenticator code'), { target: { value: '123456' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+  expect((await action).status).toBe(200);
+});
+
+it('keeps the shell inert while open and gives focus back on close', async () => {
+  stubServer();
+  render(<div><button type="button">Back up now</button><ReStepUp /></div>);
+  const origin = screen.getByRole('button', { name: 'Back up now' });
+  origin.focus();
+  const action = secureFetch('/api/backup/deposit', { method: 'POST' });
+  await screen.findByRole('dialog');
+  expect(origin.inert).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  await action;
+  await waitFor(() => expect(document.activeElement).toBe(origin));
+  expect(origin.inert).toBe(false);
+});

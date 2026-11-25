@@ -12,6 +12,20 @@ export function ReStepUp() {
   // Every action waiting on this prompt: concurrent refusals share one dialog and all of them
   // hear its answer.
   const waiting = useRef<((ok: boolean) => void)[]>([]);
+  const dialog = useRef<HTMLDivElement>(null);
+  const returnTo = useRef<HTMLElement | null>(null);
+
+  // While open the shell behind is inert, so Tab and clicks stay in the dialog; on close focus
+  // goes back to where it was.
+  useEffect(() => {
+    if (!open || !dialog.current) return;
+    const behind = Array.from(dialog.current.parentElement?.children ?? []).filter((el): el is HTMLElement => el !== dialog.current && el instanceof HTMLElement && !el.inert);
+    behind.forEach((el) => { el.inert = true; });
+    return () => {
+      behind.forEach((el) => { el.inert = false; });
+      returnTo.current?.focus();
+    };
+  }, [open]);
 
   const finish = (ok: boolean) => {
     const resolvers = waiting.current;
@@ -23,6 +37,7 @@ export function ReStepUp() {
   useEffect(() => {
     onStepupStale(() => new Promise<boolean>((resolve) => {
       if (waiting.current.length === 0) {
+        returnTo.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         setCode('');
         setError('');
         setOpen(true);
@@ -48,12 +63,14 @@ export function ReStepUp() {
       const body: unknown = await response.json().catch(() => ({}));
       setError(typeof body === 'object' && body !== null && 'error' in body && typeof body.error === 'string' ? body.error : 'The code was not accepted.');
       setCode('');
+    } catch {
+      setError('Could not reach the server. Check the connection and try again.');
     } finally { setBusy(false); }
   }
 
   if (!open) return null;
   return (
-    <div role="dialog" aria-modal="true" aria-labelledby="restepup-title" className="modal-backdrop"
+    <div ref={dialog} role="dialog" aria-modal="true" aria-labelledby="restepup-title" className="modal-backdrop"
       style={{ position: 'fixed', inset: 0, display: 'grid', placeItems: 'center', background: 'rgba(0,0,0,0.5)', zIndex: 1000 }}>
       <form className="panel" onSubmit={submit} style={{ width: '100%', maxWidth: 400 }}>
         <h2 id="restepup-title">Confirm it is you</h2>
