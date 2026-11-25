@@ -197,10 +197,12 @@ func (s *session) chage(ctx context.Context) (time.Time, int, error) {
 		return time.Time{}, 0, err
 	}
 	defer ss.Close()
-	out, err := ss.Output("LC_ALL=C chage -l " + shellQuote(s.user))
-	if err != nil {
+	t := newTranscript(func() { s.c.Close() })
+	ss.Stdout = t
+	if err := ss.Run("LC_ALL=C chage -l " + shellQuote(s.user)); err != nil {
 		return time.Time{}, 0, err
 	}
+	out := t.since()
 	var last time.Time
 	minDays := -1
 	for _, l := range strings.Split(string(out), "\n") {
@@ -256,7 +258,7 @@ func (s *session) Change(ctx context.Context, oldPassword, newPassword []byte, c
 	if err != nil {
 		return err
 	}
-	t := newTranscript()
+	t := newTranscript(func() { s.c.Close() })
 	ss.Stdout, ss.Stderr = t, t
 	// Every blocking step is bounded by ctx and the timeout: start, each write, each prompt.
 	stop = s.bound(ctx)
@@ -320,16 +322,30 @@ func (s *session) Change(ctx context.Context, oldPassword, newPassword []byte, c
 
 // transcript collects PTY output and tracks the position of the last answer.
 type transcript struct {
-	mu   sync.Mutex
-	buf  bytes.Buffer
-	mark int
-	ch   chan struct{}
+	mu       sync.Mutex
+	buf      bytes.Buffer
+	mark     int
+	ch       chan struct{}
+	overflow func() // closes the connection
 }
 
-func newTranscript() *transcript { return &transcript{ch: make(chan struct{}, 1)} }
+// maxOutput caps what a target may print to one command; more closes the connection, so a
+// hostile target cannot exhaust the broker's memory.
+const maxOutput = 64 << 10
+
+func newTranscript(overflow func()) *transcript {
+	return &transcript{ch: make(chan struct{}, 1), overflow: overflow}
+}
+
+var errOutput = errors.New("sshpasswd: the target printed more than the output limit")
 
 func (t *transcript) Write(p []byte) (int, error) {
 	t.mu.Lock()
+	if t.buf.Len()+len(p) > maxOutput {
+		t.mu.Unlock()
+		t.overflow()
+		return 0, errOutput
+	}
 	t.buf.Write(p)
 	t.mu.Unlock()
 	select {
