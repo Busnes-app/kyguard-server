@@ -76,10 +76,14 @@ func (l *Listener) sync(ctx context.Context, tr *pqcrypto.Trust, b *store.Broker
 		return nil, err
 	}
 	out := &SyncReply{Manifests: []pqcrypto.B64{}, Accounts: []pqcrypto.UUID{}}
-	for i, m := range ms {
-		if i == SyncPage {
+	budget := SyncBudget
+	for _, m := range ms {
+		// A page always carries one manifest, which fits a frame (cptrust.MaxManifest).
+		size := encoded(m.Manifest)
+		if len(out.Manifests) == SyncPage || (size > budget && len(out.Manifests) > 0) {
 			return out, nil
 		}
+		budget -= size
 		out.Manifests = append(out.Manifests, m.Manifest)
 	}
 	if len(out.Manifests) > 0 {

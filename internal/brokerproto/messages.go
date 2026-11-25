@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/Busnes-app/kyguard-server/internal/cptrust"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto/canonical"
 )
@@ -108,15 +109,27 @@ const (
 // MaxFrame is the largest channel frame either end reads.
 const MaxFrame = 4 << 20
 
-// SyncPage is how many manifests one sync reply carries; SyncAccountsPage how many account
-// IDs. SyncBudget bounds the encoded chains of one sync_account reply, well under MaxFrame.
+// SyncPage is the most manifests one sync reply carries; SyncAccountsPage how many account
+// IDs.
 const (
 	SyncPage         = 64
 	SyncAccountsPage = 4096
 )
 
-// SyncBudget is a variable only so tests can lower it.
-var SyncBudget = 2 << 20
+// SyncBudget bounds the encoded manifests of one sync page and the encoded chains of one
+// sync_account reply. A page that would be empty carries its first item anyway; one
+// manifest is at most cptrust.MaxManifest, so a page stays under MaxFrame. It is a
+// variable only so tests can lower it.
+var SyncBudget = syncBudget
+
+const syncBudget = 2 << 20
+
+// A budget-sized page or one maximal manifest, base64url-encoded, leaves 1 MiB of a frame
+// for JSON framing (a negative constant fails to compile).
+const (
+	_ = uint(MaxFrame - 1<<20 - syncBudget)
+	_ = uint(MaxFrame - 1<<20 - (cptrust.MaxManifest+2)/3*4)
+)
 
 // SyncRequest pages through the verified manifests, then the pool's account IDs.
 type SyncRequest struct {

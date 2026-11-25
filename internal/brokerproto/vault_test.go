@@ -382,3 +382,51 @@ func TestAccountSyncIsBudgeted(t *testing.T) {
 		t.Fatalf("%d chains in %d pages", len(got), pages)
 	}
 }
+
+// Manifest pages are bounded by SyncBudget in encoded bytes, not only by count, and always
+// carry one manifest so a page of large manifests never repeats forever (PR Reviewer Guide
+// on #10).
+func TestManifestPagesAreBudgeted(t *testing.T) {
+	f := newVault(t)
+	saved := brokerproto.SyncBudget
+	defer func() { brokerproto.SyncBudget = saved }()
+	for range 9 {
+		f.cp.Account(nil)
+	}
+	ms, err := f.cp.Store.Guard().Manifests(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	brokerproto.SyncBudget = len(ms[len(ms)-1].Manifest) * 3 // under four policies
+	after, pages := 0, 0
+	for {
+		if pages > len(ms)+2 {
+			t.Fatal("sync never completes")
+		}
+		var s brokerproto.SyncReply
+		if err := f.call(brokerproto.MsgSync, brokerproto.SyncRequest{ManifestsAfter: after}, &s); err != nil {
+			t.Fatal(err)
+		}
+		pages++
+		size := 0
+		for _, m := range s.Manifests {
+			size += (len(m) + 2) / 3 * 4
+		}
+		if len(s.Manifests) > 1 && size > brokerproto.SyncBudget {
+			t.Fatalf("page of %d manifests, %d encoded bytes over a %d budget", len(s.Manifests), size, brokerproto.SyncBudget)
+		}
+		after += len(s.Manifests)
+		if len(s.Manifests) == 0 {
+			break
+		}
+	}
+	if after != len(ms) || pages < 4 {
+		t.Fatalf("%d of %d manifests in %d pages", after, len(ms), pages)
+	}
+	// A budget below one manifest still advances one manifest per page.
+	brokerproto.SyncBudget = 1
+	var s brokerproto.SyncReply
+	if err := f.call(brokerproto.MsgSync, brokerproto.SyncRequest{}, &s); err != nil || len(s.Manifests) != 1 {
+		t.Fatalf("tiny budget: %d manifests, %v", len(s.Manifests), err)
+	}
+}

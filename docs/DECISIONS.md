@@ -154,3 +154,7 @@ contradicts itself. Each names its section. The most secure reading wins.
 41. §4.1 (channel scope). Every channel request is re-authorized: the broker must be its
     pool's active member at that moment, and the account's current policy must be managed
     and name that pool.
+61. §4.1 (sync frame bound). `cptrust.Submit` refuses a manifest over 512 KiB
+    (`MaxManifest`), so any stored manifest fits a 4 MiB channel frame base64url-encoded. A
+    `sync` page carries at most 64 manifests whose encoded size stays within `SyncBudget`
+    (2 MiB), and always at least one, so every page advances.
