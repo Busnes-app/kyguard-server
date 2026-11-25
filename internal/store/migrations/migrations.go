@@ -407,6 +407,67 @@ CREATE TABLE totp_attempts (
 CREATE INDEX idx_totp_attempts_user ON totp_attempts(user_id, created_at);
 CREATE INDEX idx_totp_attempts_session ON totp_attempts(session_hash) WHERE session_hash <> '';`,
 	},
+	{
+		// Identity is (issuer, subject), never subject alone (spec §7.2): two issuers with the
+		// same subject are two people. Sessions record the issuer of their login, and both
+		// back-channel logout fences are keyed by issuer. The fences are short-lived (minutes),
+		// so the old provider-keyed tables are replaced rather than converted. Older rows get
+		// an empty issuer and may share a subject across providers, so the unique index skips
+		// them; the start refuses them until an operator sets each issuer. Existing SSO sessions
+		// carry no issuer, so no issuer-keyed logout could end them: they are deleted, and
+		// local (break-glass) sessions stay.
+		Version: 13,
+		Name:    "kyguard_sso_issuer",
+		SQLite: `ALTER TABLE users ADD COLUMN sso_issuer TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX idx_users_sso_identity ON users(sso_issuer, sso_subject) WHERE sso_subject <> '' AND sso_issuer <> '';
+ALTER TABLE sessions ADD COLUMN sso_issuer TEXT NOT NULL DEFAULT '';
+DELETE FROM sessions WHERE sso_sid <> '' OR user_id IN (SELECT id FROM users WHERE sso_subject <> '');
+DROP TABLE sso_logouts;
+CREATE TABLE sso_logouts (
+    issuer TEXT NOT NULL,
+    sid TEXT NOT NULL,
+    expires_at DATETIME NOT NULL,
+    PRIMARY KEY (issuer, sid)
+);
+DROP TABLE sso_subject_logouts;
+CREATE TABLE sso_subject_logouts (
+    issuer TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    cutoff DATETIME NOT NULL,
+    expires_at DATETIME NOT NULL,
+    PRIMARY KEY (issuer, subject)
+);`,
+		Postgres: `ALTER TABLE users ADD COLUMN sso_issuer TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX idx_users_sso_identity ON users(sso_issuer, sso_subject) WHERE sso_subject <> '' AND sso_issuer <> '';
+ALTER TABLE sessions ADD COLUMN sso_issuer TEXT NOT NULL DEFAULT '';
+DELETE FROM sessions WHERE sso_sid <> '' OR user_id IN (SELECT id FROM users WHERE sso_subject <> '');
+DROP TABLE sso_logouts;
+CREATE TABLE sso_logouts (
+    issuer TEXT NOT NULL,
+    sid TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (issuer, sid)
+);
+DROP TABLE sso_subject_logouts;
+CREATE TABLE sso_subject_logouts (
+    issuer TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    cutoff TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (issuer, subject)
+);`,
+	},
+	{
+		// A pending SSO session (spec §7.3) records whether its ID token asserted MFA, which
+		// alone allows first-factor enrollment, and holds the sealed TOTP secret offered for
+		// enrollment until a code confirms it.
+		Version: 14,
+		Name:    "kyguard_pending_sessions",
+		SQLite: `ALTER TABLE sessions ADD COLUMN mfa_asserted INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN pending_secret_enc TEXT NOT NULL DEFAULT '';`,
+		Postgres: `ALTER TABLE sessions ADD COLUMN mfa_asserted BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE sessions ADD COLUMN pending_secret_enc TEXT NOT NULL DEFAULT '';`,
+	},
 }
 
 // EnsureUsernameIndex builds the case-insensitive unique index on usernames when existing
