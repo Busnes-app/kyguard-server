@@ -1,0 +1,69 @@
+[
+  {
+    "name": "broker recipient",
+    "fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "key_id": "66399103b05cddaa4c9e0e6b47fcf84dee376151a6a67c768e236b7fe4af1f9e",
+      "recipient_id": "4c2f0e1a-9b8d-4c6e-a7f3-2d1b0c9e8f7a",
+      "recipient_type": "broker",
+      "secret_version": "7"
+    },
+    "aad_hex": "6b7967756172642f312f726563697069656e7400000000076d616e616765640000002430313930623261342d356336642d376538662d396130622d3163326433653466356136620000002430313930623261342d303030302d373030302d383030302d3030303030303030613030310000000800000000000000070000002434633266306531612d396238642d346336652d613766332d3264316230633965386637610000000662726f6b65720000004036363339393130336230356364646161346339653065366234376663663834646565333736313531613661363763373638653233366237666534616631663965",
+    "verdict": "ok"
+  },
+  {
+    "name": "recovery recipient",
+    "fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "key_id": "01a4f86cd291585e36e4569330524987f2cbd74264b8eeb9851c34ceb8e3f597",
+      "recipient_id": "01a4f86cd291585e36e4569330524987f2cbd74264b8eeb9851c34ceb8e3f597",
+      "recipient_type": "recovery",
+      "secret_version": "7"
+    },
+    "aad_hex": "6b7967756172642f312f726563697069656e7400000000076d616e616765640000002430313930623261342d356336642d376538662d396130622d3163326433653466356136620000002430313930623261342d303030302d373030302d383030302d3030303030303030613030310000000800000000000000070000004030316134663836636432393135383565333665343536393333303532343938376632636264373432363462386565623938353163333463656238653366353937000000087265636f766572790000004030316134663836636432393135383565333665343536393333303532343938376632636264373432363462386565623938353163333463656238653366353937",
+    "verdict": "ok"
+  },
+  {
+    "name": "unknown recipient type",
+    "fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "key_id": "66399103b05cddaa4c9e0e6b47fcf84dee376151a6a67c768e236b7fe4af1f9e",
+      "recipient_id": "4c2f0e1a-9b8d-4c6e-a7f3-2d1b0c9e8f7a",
+      "recipient_type": "custodian",
+      "secret_version": "7"
+    },
+    "verdict": "invalid_aad"
+  },
+  {
+    "name": "broker with hex id",
+    "fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "key_id": "66399103b05cddaa4c9e0e6b47fcf84dee376151a6a67c768e236b7fe4af1f9e",
+      "recipient_id": "01a4f86cd291585e36e4569330524987f2cbd74264b8eeb9851c34ceb8e3f597",
+      "recipient_type": "broker",
+      "secret_version": "7"
+    },
+    "verdict": "invalid_aad"
+  },
+  {
+    "name": "recovery with uuid id",
+    "fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "key_id": "01a4f86cd291585e36e4569330524987f2cbd74264b8eeb9851c34ceb8e3f597",
+      "recipient_id": "4c2f0e1a-9b8d-4c6e-a7f3-2d1b0c9e8f7a",
+      "recipient_type": "recovery",
+      "secret_version": "7"
+    },
+    "verdict": "invalid_aad"
+  }
+]
