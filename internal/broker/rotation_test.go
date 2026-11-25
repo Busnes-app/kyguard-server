@@ -316,7 +316,7 @@ func TestSyncRefusesRollbackForksAndStaleChains(t *testing.T) {
 		}
 		req.ManifestsAfter += len(page.Manifests)
 	}
-	realAcct, err := r.cpw.SyncAccount(ctx, r.pol.AccountID, 0)
+	realAcct, err := r.cpw.SyncAccount(ctx, r.pol.AccountID, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +333,7 @@ func TestSyncRefusesRollbackForksAndStaleChains(t *testing.T) {
 	st.Chains[len(st.Chains)-1] = last
 	m.CP = &wrapCP{ControlPlane: r.cpw,
 		sync: func(context.Context, brokerproto.SyncRequest) (*brokerproto.SyncReply, error) { return &stale, nil },
-		account: func(context.Context, pqcrypto.UUID, pqcrypto.Counter) (*brokerproto.AccountState, error) {
+		account: func(context.Context, pqcrypto.UUID, pqcrypto.Counter, bool) (*brokerproto.AccountState, error) {
 			return &st, nil
 		}}
 	r.alerts = nil
