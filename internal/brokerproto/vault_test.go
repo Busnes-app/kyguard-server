@@ -327,8 +327,18 @@ func TestSyncIsPaged(t *testing.T) {
 func TestAccountSyncIsBudgeted(t *testing.T) {
 	f := newVault(t)
 	saved := brokerproto.SyncBudget
-	brokerproto.SyncBudget = 20 << 10
 	defer func() { brokerproto.SyncBudget = saved }()
+	// A current chain at the start of history that, with any newer chain, exceeds the
+	// budget: every continuation must still advance (security review of #10).
+	op := pqtest.UUID()
+	v, _ := f.reserve(op, 0)
+	e, raw := f.envelope(v)
+	f.call(brokerproto.MsgEnvelope, brokerproto.EnvelopeRequest{OperationID: op, Envelope: raw}, nil)
+	c1, h1 := f.receipt(e, 1, pqcrypto.ZeroHex, pqcrypto.ReceiptCommitTarget, "", op)
+	c2, _ := f.receipt(e, 2, h1, pqcrypto.ReceiptRelease, "", op)
+	if err := f.call(brokerproto.MsgReceipts, brokerproto.ReceiptsRequest{OperationID: op, AccountID: f.acct(), Receipts: []pqcrypto.B64{c1, c2}}, nil); err != nil {
+		t.Fatal(err)
+	}
 	for range 12 { // twelve refused rotations: terminated, each a few KiB
 		op := pqtest.UUID()
 		v, _ := f.reserve(op, 0)
@@ -339,11 +349,15 @@ func TestAccountSyncIsBudgeted(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	brokerproto.SyncBudget = len(raw) * 2 // one chain fits, two do not
 	got, pages := map[string]bool{}, 0
-	after := pqcrypto.Counter(0)
+	after := v // the broker already holds the current chain; only newer history is missing
 	for {
+		if pages > 30 {
+			t.Fatal("sync never completes")
+		}
 		var st brokerproto.AccountState
-		if err := f.call(brokerproto.MsgSyncAccount, brokerproto.SyncAccountRequest{AccountID: f.acct(), AfterVersion: after}, &st); err != nil {
+		if err := f.call(brokerproto.MsgSyncAccount, brokerproto.SyncAccountRequest{AccountID: f.acct(), AfterVersion: after, Continue: pages > 0}, &st); err != nil {
 			t.Fatal(err)
 		}
 		pages++
@@ -364,7 +378,7 @@ func TestAccountSyncIsBudgeted(t *testing.T) {
 			break
 		}
 	}
-	if len(got) != 12 || pages < 2 {
+	if len(got) != 13 || pages < 2 {
 		t.Fatalf("%d chains in %d pages", len(got), pages)
 	}
 }

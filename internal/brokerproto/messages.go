@@ -138,6 +138,10 @@ type SyncReply struct {
 type SyncAccountRequest struct {
 	AccountID    pqcrypto.UUID    `json:"account_id"`
 	AfterVersion pqcrypto.Counter `json:"after_version"`
+	// Continue is set on every request after the first: the current and unterminated
+	// chains at or below AfterVersion came with the first reply, so a continuation carries
+	// only newer chains and always advances.
+	Continue bool `json:"continue,omitzero"`
 }
 
 // AccountState is one account as the Control Plane holds it.
