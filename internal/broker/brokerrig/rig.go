@@ -72,7 +72,7 @@ func New(t *testing.T, o Options) *Rig {
 	}
 	j.Close()
 	r.CPW = broker.NewChannelCP(b.Conn)
-	r.seed()
+	r.Seed()
 	m := r.Machine()
 	defer m.J.Close()
 	if err := m.Sync(context.Background()); err != nil {
@@ -81,9 +81,9 @@ func New(t *testing.T, o Options) *Rig {
 	return r
 }
 
-// seed puts v1 on the Control Plane: a broker-sealed envelope of the initial
+// Seed puts v1 on the Control Plane: a broker-sealed envelope of the initial
 // password with commit_target and release, as a completed earlier rotation leaves it.
-func (r *Rig) seed() {
+func (r *Rig) Seed() {
 	t := r.T
 	ctx := context.Background()
 	v := r.CP.Store.Vault()
