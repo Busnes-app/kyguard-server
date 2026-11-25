@@ -131,8 +131,17 @@ func (m *mfaStore) DeleteFactor(ctx context.Context, userID string, audit *Audit
 		return err
 	}
 	defer tx.Rollback()
-	// Break-glass factors are reset only on the host, never here.
-	res, err := tx.ExecContext(ctx, s.rebind(`DELETE FROM mfa_factors WHERE kind = ? AND user_id = (SELECT id FROM users WHERE id = ? AND account_type = ?)`), FactorTOTP, userID, AccountSSO)
+	// The user row lock is the one every session issuance holds (withPassword), so an exchange
+	// authorized by this factor either commits first, and its session is deleted below, or
+	// waits and then finds the factor gone. Break-glass factors are reset only on the host.
+	lock, err := tx.ExecContext(ctx, s.rebind(`UPDATE users SET id = id WHERE id = ? AND account_type = ?`), userID, AccountSSO)
+	if err != nil {
+		return err
+	}
+	if n, _ := lock.RowsAffected(); n != 1 {
+		return ErrNotFound
+	}
+	res, err := tx.ExecContext(ctx, s.rebind(`DELETE FROM mfa_factors WHERE kind = ? AND user_id = ?`), FactorTOTP, userID)
 	if err != nil {
 		return err
 	}
