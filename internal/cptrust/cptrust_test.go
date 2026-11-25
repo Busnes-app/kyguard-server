@@ -138,3 +138,16 @@ func TestSubmitRefusesRollbackAndEquivocation(t *testing.T) {
 		t.Fatalf("refused manifests were stored: %d", len(ms))
 	}
 }
+
+// A manifest that could never fit a broker channel frame is refused at upload, before it
+// is parsed or stored (decision 61).
+func TestSubmitRefusesAnOversizedManifest(t *testing.T) {
+	st, _ := setup(t)
+	raw := make([]byte, cptrust.MaxManifest+1)
+	if _, _, err := cptrust.New(st).Submit(context.Background(), raw, "custodian", ""); !errors.Is(err, cptrust.ErrTooLarge) {
+		t.Fatalf("oversized manifest: %v", err)
+	}
+	if ms, _ := st.Guard().Manifests(context.Background(), 0); len(ms) != 0 {
+		t.Fatalf("stored %d manifests", len(ms))
+	}
+}

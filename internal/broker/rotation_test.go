@@ -2,7 +2,10 @@ package broker_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -251,11 +254,59 @@ func TestReservedVersionMustBeAboveTheHighestSeen(t *testing.T) {
 	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); !errors.Is(err, broker.ErrStaleVersion) {
 		t.Fatalf("got %v", err)
 	}
-	if a := r.account(m); a.Run != nil {
+	if a := r.account(m); a.Run.State != broker.StateReserving || len(a.Run.NewEnvelope) > 0 || a.HighestVersion != 1 {
 		t.Fatalf("journaled %+v", a.Run)
 	}
 	if _, writes := r.target.state(); writes != 0 {
 		t.Fatal("wrote")
+	}
+}
+
+// A reservation the Control Plane committed while the broker never journaled its reply
+// (a crash or a lost response) is settled after sync and recovery: the same operation's
+// version is accepted, aborted with nothing written, its lock released, and rotation
+// resumes (security review of #11).
+func TestACommittedReservationWithoutAPreparedRunIsSettled(t *testing.T) {
+	r := newRig(t)
+	real := r.CPW
+	w := &brokerrig.WrapCP{ControlPlane: real}
+	w.OnReserve = func(ctx context.Context, account, op pqcrypto.UUID, reported pqcrypto.Counter) (pqcrypto.Counter, error) {
+		if _, err := real.Reserve(ctx, account, op, reported); err != nil {
+			return 0, err
+		}
+		return 0, errors.New("connection lost") // the reply never reaches the journal
+	}
+	r.CPW = w
+	m := r.machine()
+	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); err == nil {
+		t.Fatal("rotate succeeded without a reservation reply")
+	}
+	op := r.account(m).Run.OperationID
+	if r.cpLock() != string(op) {
+		t.Fatalf("lock %q, want the reserving run %s", r.cpLock(), op)
+	}
+	m.J.Close()
+	w.OnReserve = nil
+	m2 := r.machine()
+	defer m2.J.Close()
+	if err := m2.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m2.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	a := r.account(m2)
+	if a.Run.OperationID != op || a.Run.State != broker.StateAborted || !a.Run.Sent || r.cpLock() != "" {
+		t.Fatalf("run %+v lock %q", a.Run, r.cpLock())
+	}
+	if _, writes := r.target.state(); writes != 0 {
+		t.Fatal("a settled reservation wrote to the target")
+	}
+	if err := m2.Rotate(context.Background(), r.pol.AccountID, 0, due); err != nil {
+		t.Fatalf("rotation after settling: %v", err)
+	}
+	if a := r.account(m2); a.Run.State != broker.StateReleaseAuthorized || a.Run.Attempt != 1 {
+		t.Fatalf("next run %+v", a.Run)
 	}
 }
 
@@ -317,7 +368,7 @@ func TestSyncRefusesRollbackForksAndStaleChains(t *testing.T) {
 		}
 		req.ManifestsAfter += len(page.Manifests)
 	}
-	realAcct, err := r.CPW.SyncAccount(ctx, r.pol.AccountID, 0, false)
+	realAcct, err := r.CPW.SyncAccount(ctx, r.pol.AccountID, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +385,7 @@ func TestSyncRefusesRollbackForksAndStaleChains(t *testing.T) {
 	st.Chains[len(st.Chains)-1] = last
 	m.CP = &brokerrig.WrapCP{ControlPlane: r.CPW,
 		OnSync: func(context.Context, brokerproto.SyncRequest) (*brokerproto.SyncReply, error) { return &stale, nil },
-		OnAccount: func(context.Context, pqcrypto.UUID, pqcrypto.Counter, bool) (*brokerproto.AccountState, error) {
+		OnAccount: func(context.Context, pqcrypto.UUID, pqcrypto.Counter, pqcrypto.Counter) (*brokerproto.AccountState, error) {
 			return &st, nil
 		}}
 	r.Alerts = nil
@@ -408,6 +459,32 @@ func TestSyncFollowsEveryPage(t *testing.T) {
 	}
 }
 
+// An account sync keeps its AfterVersion and continues from the highest version received
+// until the Control Plane has no more (security review of #10).
+func TestAccountSyncContinuesFromTheLastVersion(t *testing.T) {
+	r := newRig(t)
+	m := r.machine()
+	defer m.J.Close()
+	env := func(v pqcrypto.Counter) brokerproto.ChainState {
+		raw, _ := json.Marshal(struct {
+			V pqcrypto.Counter `json:"secret_version"`
+		}{v})
+		return brokerproto.ChainState{Envelope: raw, Receipts: []pqcrypto.B64{}}
+	}
+	var asked [][2]pqcrypto.Counter
+	m.CP = &brokerrig.WrapCP{ControlPlane: r.CPW, OnAccount: func(_ context.Context, id pqcrypto.UUID, after, from pqcrypto.Counter) (*brokerproto.AccountState, error) {
+		asked = append(asked, [2]pqcrypto.Counter{after, from})
+		st := &brokerproto.AccountState{AccountID: id, Chains: []brokerproto.ChainState{env(from + 1), env(from + 2)}, More: from < 4}
+		return st, nil
+	}}
+	if err := m.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(asked) != "[[1 0] [1 2] [1 4]]" { // the rig's broker holds version 1
+		t.Fatalf("requests (after, from) = %v", asked)
+	}
+}
+
 // moveTarget signs policy epoch 2 pointing the account at another host.
 func moveTarget(t *testing.T, r *rig) {
 	t.Helper()
@@ -465,5 +542,143 @@ func TestRecoveryProbesTheOriginalTarget(t *testing.T) {
 	}
 	if len(r.target.hosts) != 1 || r.target.hosts[0] != "db1.example.test" {
 		t.Fatalf("probed %v", r.target.hosts)
+	}
+}
+
+// An aborted run whose receipts were not delivered is not replaced by the next rotation: the
+// next attempt delivers the abort first, or stays blocked (PR Reviewer Guide on #11).
+func TestUndeliveredAbortIsSentBeforeTheNextRun(t *testing.T) {
+	r := newRig(t)
+	r.target.refuseBeforeCommit = true
+	w := &brokerrig.WrapCP{ControlPlane: r.CPW, ReceiptsErr: errors.New("control plane unreachable")}
+	r.CPW = w
+	m := r.machine()
+	defer m.J.Close()
+	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); err == nil {
+		t.Fatal("delivery did not fail")
+	}
+	r.target.refuseBeforeCommit = false
+	first := r.account(m).Run
+	if first.State != broker.StateAborted || first.Sent {
+		t.Fatalf("first run %+v", first)
+	}
+	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); !errors.Is(err, broker.ErrBlocked) {
+		t.Fatalf("undelivered abort: %v", err)
+	}
+	if a := r.account(m); a.Run.OperationID != first.OperationID || a.Run.Sent || r.cpLock() != string(first.OperationID) {
+		t.Fatalf("pending abort lost: run %+v lock %s", a.Run, r.cpLock())
+	}
+	w.ReceiptsErr = nil
+	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); err != nil {
+		t.Fatal(err)
+	}
+	// The second run could reserve only because the abort released the first one's lock.
+	a := r.account(m)
+	if a.Run.State != broker.StateReleaseAuthorized || a.Run.Attempt != 1 || r.cpLock() != "" {
+		t.Fatalf("second run %+v lock %s", a.Run, r.cpLock())
+	}
+	if !slices.ContainsFunc(a.Chains, func(c broker.ChainCopy) bool { return slices.Equal(c.Envelope, first.NewEnvelope) }) {
+		t.Fatal("the delivered abort did not join the broker's copy")
+	}
+}
+
+// Health whose report failed is sent again on reconnect (PR Reviewer Guide on #11).
+func TestUndeliveredHealthIsResentOnRecover(t *testing.T) {
+	r := newRig(t)
+	r.target.ambiguous = errors.New("connection reset") // not applied: the probe fails
+	w := &brokerrig.WrapCP{ControlPlane: r.CPW, StatusErr: errors.New("control plane unreachable")}
+	r.CPW = w
+	m := r.machine()
+	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); err != nil {
+		t.Fatal(err)
+	}
+	if a := r.account(m); !a.Quarantined || !a.Unreported || r.cpAccount().Health == broker.HealthQuarantined {
+		t.Fatalf("quarantined=%v unreported=%v cp health=%s", a.Quarantined, a.Unreported, r.cpAccount().Health)
+	}
+	m.J.Close()
+	w.StatusErr = nil
+	m2 := r.machine()
+	defer m2.J.Close()
+	if err := m2.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if h := r.cpAccount().Health; h != broker.HealthQuarantined {
+		t.Fatalf("control plane health %s", h)
+	}
+	if r.account(m2).Unreported {
+		t.Fatal("still unreported after delivery")
+	}
+}
+
+// A crash after a quarantine is journaled and before its health reaches the Control Plane
+// leaves it to be sent by recovery, without another probe (security review of #11).
+func TestQuarantineHealthSurvivesACrashBeforeItsReport(t *testing.T) {
+	r := newRig(t)
+	r.target.ambiguous = errors.New("connection reset") // not applied: the probe fails
+	m := r.machine()
+	m.Hook = func(p string) error {
+		if p == "quarantined" {
+			return errors.New("crash")
+		}
+		return nil
+	}
+	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); !errors.Is(err, broker.ErrStopped) {
+		t.Fatalf("rotate: %v", err)
+	}
+	if a := r.account(m); !a.Quarantined || !a.Unreported || r.cpAccount().Health == broker.HealthQuarantined {
+		t.Fatalf("quarantined=%v unreported=%v cp health=%s", a.Quarantined, a.Unreported, r.cpAccount().Health)
+	}
+	m.J.Close()
+	logins := func() (n int) {
+		for _, c := range r.target.logins {
+			n += c
+		}
+		return n
+	}
+	before := logins()
+	m2 := r.machine()
+	defer m2.J.Close()
+	if err := m2.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if h := r.cpAccount().Health; h != broker.HealthQuarantined {
+		t.Fatalf("control plane health %s after recovery", h)
+	}
+	if a := r.account(m2); a.Unreported {
+		t.Fatal("still unreported after delivery")
+	}
+	if logins() != before {
+		t.Fatal("recovery logged in to the target again")
+	}
+}
+
+// Account pages follow accounts_next: a page whose accounts were all filtered out still
+// advances, and a page that does not advance is refused (PR Reviewer Guide on #10).
+func TestSyncFollowsTheAccountCursor(t *testing.T) {
+	r := newRig(t)
+	m := r.machine()
+	defer m.J.Close()
+	ctx := context.Background()
+	var asked []pqcrypto.UUID
+	stuck := false
+	m.CP = &brokerrig.WrapCP{ControlPlane: r.CPW, OnSync: func(_ context.Context, req brokerproto.SyncRequest) (*brokerproto.SyncReply, error) {
+		asked = append(asked, req.AccountsAfter)
+		switch {
+		case stuck:
+			return &brokerproto.SyncReply{Accounts: []pqcrypto.UUID{}, AccountsNext: req.AccountsAfter}, nil
+		case req.AccountsAfter == "":
+			return &brokerproto.SyncReply{Accounts: []pqcrypto.UUID{}, AccountsNext: "00000000-0000-7000-8000-000000000001"}, nil
+		}
+		return &brokerproto.SyncReply{Accounts: []pqcrypto.UUID{r.pol.AccountID}, Done: true}, nil
+	}}
+	if err := m.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(asked) != 2 || asked[1] != "00000000-0000-7000-8000-000000000001" {
+		t.Fatalf("pages asked after %v", asked)
+	}
+	stuck = true
+	if err := m.Sync(ctx); err == nil || !strings.Contains(err.Error(), "no progress") {
+		t.Fatalf("a page that does not advance: %v", err)
 	}
 }

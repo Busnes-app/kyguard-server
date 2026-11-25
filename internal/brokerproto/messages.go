@@ -7,8 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Busnes-app/kyguard-server/internal/cptrust"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto/canonical"
+	"github.com/Busnes-app/kyguard-server/internal/store"
 )
 
 // Paths on the broker listener.
@@ -110,7 +112,7 @@ const (
 
 	// Control Plane pushes.
 	MsgEnroll  = "enroll"  // EnrollPush: a relayed enroll transaction and its candidate
-	MsgTx      = "tx"      // TxPush: vault_checkout, standing_release or manual_rotation
+	MsgTx      = "tx"      // TxPush: vault_checkout or manual_rotation
 	MsgProof   = "proof"   // ProofPush: a possession proof for a challenge
 	MsgCheckin = "checkin" // CheckinPush: the lease holder asks for a check-in challenge
 )
@@ -121,15 +123,34 @@ const (
 // MaxFrame is the largest channel frame either end reads.
 const MaxFrame = 4 << 20
 
-// SyncPage is how many manifests one sync reply carries; SyncAccountsPage how many account
-// IDs. SyncBudget bounds the encoded chains of one sync_account reply, well under MaxFrame.
-const (
-	SyncPage         = 64
-	SyncAccountsPage = 4096
-)
+// SyncPage is the most manifests one sync reply carries.
+const SyncPage = 64
 
-// SyncBudget is a variable only so tests can lower it.
-var SyncBudget = 2 << 20
+// SyncAccountsPage is the most account rows one sync page reads, and so the most account
+// IDs it carries. It is a variable only so tests can lower it.
+var SyncAccountsPage = 4096
+
+// SyncBudget bounds the encoded manifests of one sync page and the encoded descriptor and
+// chains of one sync_account reply. A page that would be empty carries its first item
+// anyway; one manifest is at most cptrust.MaxManifest and one chain with its descriptor at
+// most store.MaxChain and store.MaxDescriptor, so a page stays under MaxFrame. It is a
+// variable only so tests can lower it.
+var SyncBudget = syncBudget
+
+// SyncChains is the most newer chains one sync_account reply carries, and so about the
+// most the Control Plane reads for it (decision 62). A variable only so tests can lower it.
+var SyncChains = 64
+
+const syncBudget = 2 << 20
+
+// A budget-sized page or one maximal manifest, base64url-encoded, leaves 1 MiB of a frame
+// for JSON framing, and one maximal chain with its descriptor fits the budget (a negative
+// constant fails to compile).
+const (
+	_ = uint(MaxFrame - 1<<20 - syncBudget)
+	_ = uint(MaxFrame - 1<<20 - (cptrust.MaxManifest+2)/3*4)
+	_ = uint(syncBudget - 64<<10 - (store.MaxChain+store.MaxDescriptor+2)/3*4)
+)
 
 // SyncRequest pages through the verified manifests, then the pool's account IDs.
 type SyncRequest struct {
@@ -142,19 +163,19 @@ type SyncRequest struct {
 type SyncReply struct {
 	Manifests []pqcrypto.B64  `json:"manifests"`
 	Accounts  []pqcrypto.UUID `json:"accounts"`
-	Done      bool            `json:"done"`
+	// AccountsNext, while not Done, is the AccountsAfter of the next page.
+	AccountsNext pqcrypto.UUID `json:"accounts_next,omitzero"`
+	Done         bool          `json:"done"`
 }
 
-// SyncAccountRequest asks for one account: its current and unterminated chains and, within
-// SyncBudget, the chains above AfterVersion in version order. More means call again with
-// AfterVersion set to the highest version received.
+// SyncAccountRequest asks for one account, within SyncBudget per reply: its current and
+// unterminated chains at or below AfterVersion and every chain above it, in version order,
+// starting above From. More means call again with the same AfterVersion and From set to the
+// highest version received.
 type SyncAccountRequest struct {
 	AccountID    pqcrypto.UUID    `json:"account_id"`
 	AfterVersion pqcrypto.Counter `json:"after_version"`
-	// Continue is set on every request after the first: the current and unterminated
-	// chains at or below AfterVersion came with the first reply, so a continuation carries
-	// only newer chains and always advances.
-	Continue bool `json:"continue,omitzero"`
+	From         pqcrypto.Counter `json:"from,omitzero"`
 }
 
 // AccountState is one account as the Control Plane holds it.
@@ -305,6 +326,9 @@ type LeaseRequest struct {
 	CloseReason   string           `json:"close_reason,omitzero"`
 	OpenedAt      pqcrypto.Time    `json:"opened_at"`
 	ExpiresAt     pqcrypto.Time    `json:"expires_at"`
+	// The policy and descriptor the lease opened under (§3.3).
+	PolicyDigest           pqcrypto.HexID `json:"policy_digest"`
+	TargetDescriptorDigest pqcrypto.HexID `json:"target_descriptor_digest"`
 }
 
 // DeliveryRequest carries the checkout wrap: the DEK sealed to the requester's enc_key_id

@@ -29,6 +29,10 @@ const (
 	StateDependenciesComplete = "dependencies_complete"
 	StateReleaseAuthorized    = "release_authorized"
 	StateAborted              = "aborted"
+	// StateReserving is journaled before the Control Plane is asked for a version, so a
+	// reservation never exists without a local run. It is not a §4.2 state: the run becomes
+	// prepared, or aborted with nothing to send when the Control Plane refused.
+	StateReserving = "reserving"
 )
 
 // Health values (§8.1) the broker reports.
@@ -49,6 +53,8 @@ type Account struct {
 	Health         string           `json:"health"`
 	HealthReason   string           `json:"health_reason,omitempty"`
 	Quarantined    bool             `json:"quarantined"`
+	// Unreported is set while the last health report was not delivered (resent by Recover).
+	Unreported bool `json:"unreported,omitempty"`
 	// Schedule floor inputs (§3.4).
 	PolicyEpoch       pqcrypto.Counter `json:"policy_epoch"`
 	PolicyPersistedAt time.Time        `json:"policy_persisted_at"`
@@ -65,6 +71,9 @@ type Account struct {
 	Enrollment *Enrollment `json:"enrollment,omitempty"`
 	// Lease is the latest checkout lease (§3.6).
 	Lease *Lease `json:"lease,omitempty"`
+	// DeferredPolicy is a verified policy that changes the target descriptor, held back
+	// while a lease is open and applied once the lease closes (§3.3).
+	DeferredPolicy pqcrypto.B64 `json:"deferred_policy,omitempty"`
 }
 
 // Lease states (§3.6).
@@ -82,13 +91,18 @@ type Lease struct {
 	TxDigest      pqcrypto.HexID   `json:"tx_digest"`
 	SecretVersion pqcrypto.Counter `json:"secret_version"`
 	EncKeyID      pqcrypto.HexID   `json:"enc_key_id"`
-	OpenedAt      time.Time        `json:"opened_at"`
-	ExpiresAt     time.Time        `json:"expires_at"`
-	State         string           `json:"state"`
-	CloseReason   string           `json:"close_reason,omitempty"`
-	Attempt       pqcrypto.Counter `json:"attempt"`
-	NextAttemptAt time.Time        `json:"next_attempt_at"`
-	Mirrored      bool             `json:"mirrored,omitempty"` // the Control Plane holds this state
+	// The policy and descriptor the lease opened under; cleanup is bound to the descriptor.
+	PolicyDigest           pqcrypto.HexID   `json:"policy_digest"`
+	TargetDescriptorDigest pqcrypto.HexID   `json:"target_descriptor_digest"`
+	OpenedAt               time.Time        `json:"opened_at"`
+	ExpiresAt              time.Time        `json:"expires_at"`
+	State                  string           `json:"state"`
+	CloseReason            string           `json:"close_reason,omitempty"`
+	Attempt                pqcrypto.Counter `json:"attempt"`
+	NextAttemptAt          time.Time        `json:"next_attempt_at"`
+	Mirrored               bool             `json:"mirrored,omitempty"` // the Control Plane holds this state
+	// Delivery is the checkout wrap until the Control Plane acknowledges it (ciphertext).
+	Delivery *pqcrypto.Recipient `json:"delivery,omitempty"`
 }
 
 // Open reports whether the lease is not closed.
@@ -139,6 +153,9 @@ type Run struct {
 	Due           time.Time        `json:"due"`
 	State         string           `json:"state"`
 	SecretVersion pqcrypto.Counter `json:"secret_version"`
+	// SeenBefore is the highest version the broker had seen before it reserved; a version the
+	// Control Plane returns for this operation must be above it.
+	SeenBefore    pqcrypto.Counter `json:"seen_before,omitempty"`
 	NewEnvelope   pqcrypto.B64     `json:"new_envelope"`
 	OldEnvelopeID pqcrypto.UUID    `json:"old_envelope_id,omitempty"`
 	// Intent is the canonical mutating intent once journaled; AckReceived is journaled

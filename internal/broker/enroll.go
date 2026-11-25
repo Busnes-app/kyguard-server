@@ -110,8 +110,12 @@ func (m *Machine) verifyEnrollment(ctx context.Context, a *Account) error {
 	if err != nil {
 		return err
 	}
+	// The credential goes only to the target the signed enrollment and the candidate's
+	// sealing policy pin; a descriptor applied since then fails the enrollment (§3.3).
 	rc, err := m.target(a)
-	if err != nil {
+	var tx pqcrypto.AccessTransaction
+	if err != nil || canonicalDecode(a.Enrollment.Tx, &tx) != nil || rc.policy.TargetDescriptorDigest != cand.Policy.TargetDescriptorDigest ||
+		rc.policy.TargetDescriptorDigest != tx.Action.TargetDescriptorDigest {
 		return m.enrollFail(ctx, a)
 	}
 	pw, err := m.open(cand.SecretEnvelope)
@@ -160,7 +164,7 @@ func (m *Machine) target(a *Account) (*rotationContext, error) {
 // and signs vault_commit for the candidate (§4.5 step 3); then it delivers them.
 func (m *Machine) enrollCommit(ctx context.Context, a *Account, cand *pqcrypto.VerifiedEnvelope) error {
 	// A stuck run's envelope was stored at the Control Plane but never joined the copy.
-	if a.Run.Open() && !a.Run.Sent {
+	if a.Run.Open() && !a.Run.Sent && len(a.Run.NewEnvelope) > 0 {
 		a.Chains = append(a.Chains, ChainCopy{Envelope: a.Run.NewEnvelope, Receipts: []pqcrypto.B64{}})
 	}
 	chains, err := m.chains(a)
@@ -187,7 +191,8 @@ func (m *Machine) enrollCommit(ctx context.Context, a *Account, cand *pqcrypto.V
 	if a.Run.Open() {
 		a.Run.State, a.Run.Reason = StateAborted, pqcrypto.ReasonSuperseded
 	}
-	a.Quarantined, a.Health, a.HealthReason = false, HealthHealthy, ""
+	a.Quarantined = false
+	setHealth(a, HealthHealthy, "")
 	a.CurrentCommitAt, a.Refusals, a.NextAttemptAt = m.now(), 0, time.Time{}
 	a.Enrollment.Receipts = receipts
 	if err := m.J.Save(a); err != nil {
@@ -267,4 +272,9 @@ func (m *Machine) recoverEnrollment(ctx context.Context, a *Account) error {
 		return m.verifyEnrollment(ctx, a)
 	}
 	return m.enrollFail(ctx, a)
+}
+
+func canonicalDecode(raw []byte, v any) error {
+	_, err := canonical.Decode(raw, v)
+	return err
 }

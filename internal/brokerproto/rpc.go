@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"sync"
 
 	"github.com/coder/websocket"
@@ -25,6 +26,7 @@ type Conn struct {
 	pending map[uint64]chan Message
 	err     error
 	// Pushes delivers Control Plane pushes (ID 0) until the channel closes, then is closed.
+	// A push that finds it full is dropped.
 	Pushes chan Message
 }
 
@@ -59,10 +61,12 @@ func (c *Conn) read(ctx context.Context) {
 			return
 		}
 		if m.ID == 0 {
+			// A push never stalls the reader: results still reach pending calls. A dropped
+			// push is a lost relay, which the Control Plane and CLI already handle.
 			select {
 			case c.Pushes <- m:
-			case <-ctx.Done():
-				return
+			default:
+				log.Printf("[BROKER] push queue full; dropped a %q push", m.Type)
 			}
 			continue
 		}

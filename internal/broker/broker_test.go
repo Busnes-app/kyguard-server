@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Busnes-app/kyguard-server/internal/broker"
+	"github.com/Busnes-app/kyguard-server/internal/broker/brokerrig"
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto/brokertest"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
@@ -139,5 +140,92 @@ func TestRunRefusesAnUnpairedHost(t *testing.T) {
 	os.MkdirAll(a.Dir, 0o700)
 	if err := a.Run(context.Background()); err != broker.ErrNotPaired {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// A dropped channel never lets a second Machine work on the journal while the first is
+// still inside a rotation: the daemon reconnects only once that rotation has ended
+// (security review of #12).
+func TestReconnectWaitsForTheRotationInFlight(t *testing.T) {
+	cp := brokertest.NewCP(t)
+	a, _ := newApp(t)
+	if err := a.Pair(context.Background(), cp.Token(cp.Srv, time.Minute), string(cp.Dep.Fingerprint), ""); err != nil {
+		t.Fatal(err)
+	}
+	j, err := broker.OpenJournal(a.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := j.Identity()
+	j.Close()
+	k, err := broker.LoadKeys(a.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &brokertest.Broker{ID: id.BrokerID, TLS: k.TLS, Sig: k.Sig, Enc: k.Enc, Paired: &brokerproto.Paired{BrokerID: id.BrokerID, Cert: id.Cert, CACert: id.CACert}}
+	cp.AdmitPool(1, b.Member(pqcrypto.StatusActive))
+	tg := newTarget(initialPassword)
+	r := &brokerrig.Rig{T: t, CP: cp, B: b, Dir: a.Dir, Password: initialPassword, Conn: tg, ConnType: pqcrypto.ConnectorSSHPasswd}
+	r.Pol = cp.Account(func(p *pqcrypto.PolicyManifest) {
+		p.RotationSchedule = &pqcrypto.Schedule{AnchorUTC: pqcrypto.NewTime(time.Now().Add(-time.Hour)), IntervalSeconds: 1}
+	})
+	r.Seed()
+	tg.hold, tg.held = make(chan struct{}), make(chan struct{}, 1)
+	a.Connectors = map[string]broker.Connector{pqcrypto.ConnectorSSHPasswd: tg}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error)
+	go func() { done <- a.Run(ctx) }()
+	deadline := time.Now().Add(15 * time.Second)
+	for waiting := true; waiting; {
+		select {
+		case <-tg.held:
+			waiting = false
+		case <-time.After(100 * time.Millisecond):
+			if time.Now().After(deadline) {
+				t.Fatal("no rotation reached the target")
+			}
+			cp.L.Send(context.Background(), b.ID, brokerproto.Message{V: 1, Type: brokerproto.MsgNudge})
+		}
+	}
+	// Drop the daemon's channel: the listener replaces it with this connection.
+	if err := cp.Dial(b); err != nil {
+		t.Fatal(err)
+	}
+	// The daemon's backoff is one second; a reconnect would replace this connection.
+	time.Sleep(2500 * time.Millisecond)
+	cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer ccancel()
+	var s brokerproto.SyncReply
+	if err := b.Conn.Call(cctx, brokerproto.MsgSync, brokerproto.SyncRequest{}, &s); err != nil {
+		t.Fatalf("the daemon reconnected while its rotation was still running: %v", err)
+	}
+	close(tg.hold)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The identity outlives the journal transaction that read it: a reconnect after the journal
+// grew (and bbolt remapped it) dials with the same certificates.
+func TestIdentityOutlivesTheJournalMapping(t *testing.T) {
+	cp := brokertest.NewCP(t)
+	a, _ := newApp(t)
+	if err := a.Pair(context.Background(), cp.Token(cp.Srv, time.Minute), string(cp.Dep.Fingerprint), ""); err != nil {
+		t.Fatal(err)
+	}
+	j, err := broker.OpenJournal(a.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := j.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := brokerproto.CertSHA256(bytes.Clone(id.Cert.Raw)) + brokerproto.CertSHA256(bytes.Clone(id.CACert.Raw))
+	j.Close() // unmaps the file
+	if got := brokerproto.CertSHA256(id.Cert.Raw) + brokerproto.CertSHA256(id.CACert.Raw); got != want {
+		t.Fatal("identity certificates changed after the journal closed")
 	}
 }

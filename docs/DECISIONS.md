@@ -172,8 +172,16 @@ contradicts itself. Each names its section. The most secure reading wins.
 46a. §3.3 (target change). Phase 1A rotates and checks out only while the current envelope's
     sealing policy pins the same descriptor as the current policy; otherwise health is
     `needs_enrollment` and nothing is sent. Recovery probes the descriptor of the intent's
-    own envelope. Deferring a descriptor-changing policy while an intent or lease is open
-    (the full §3.3 rule) is not built yet.
+    own envelope. A lease records the policy and descriptor it opened under, and its cleanup
+    runs only at that descriptor. While a lease is open the broker verifies a policy that
+    changes the descriptor and holds it in the journal (the highest epoch only) instead of
+    applying it; it applies it when the lease closes, and a crash in between loses nothing
+    because the Control Plane re-sends every manifest on sync. The Control Plane refuses
+    such a policy (409) while `checkout_leases` holds an open lease, and refuses to record a
+    new lease unless it was opened under the account's current policy; both checks run
+    under the manifest lock, and the broker touches the credential only after the lease is
+    mirrored, so the Control Plane never reports a descriptor the broker has deferred.
+    Write intents keep the binding above; deferral for them is not built.
 46. §3.4 (skipped occurrences). Skipping is implicit: when the latest outstanding occurrence
     releases, its due time becomes the floor, so every earlier one is no longer
     outstanding. The broker journals the occurrence each run belongs to, not a skip list.
@@ -222,6 +230,79 @@ contradicts itself. Each names its section. The most secure reading wins.
 58. §3.6 (relay mailbox). The CLI collects challenges, deliveries and refusals from
     `access_transactions`; any session can read a mailbox, which reveals nothing usable: a
     challenge needs the transaction's `cnf` key and a delivery the requester's key.
+
+61. §4.1 (sync frame bound). `cptrust.Submit` refuses a manifest over 512 KiB
+    (`MaxManifest`), so any stored manifest fits a 4 MiB channel frame base64url-encoded. A
+    `sync` page carries at most 64 manifests whose encoded size stays within `SyncBudget`
+    (2 MiB), and always at least one, so every page advances.
+62. §4.1 (sync read and reply bound). A `sync_account` page is the chains above the
+    request's `from`, in version order: the open ones at or below the broker's version
+    (current, or without `abort`, `release` or `vault_commit`), then every newer one. It
+    reads at most `SyncChains + 1` (65) chains and the whole reply, descriptor included,
+    stays within `SyncBudget`; a page always carries one chain. The store caps one chain
+    (envelope plus receipts) at 256 KiB and a descriptor at 64 KiB (`store.ErrTooLarge`), so
+    a one-chain page always fits a frame and every continuation advances. A `sync` page reads
+    at most `SyncPage` manifests. A `receipts` request reads only the chains its receipts
+    name.
+63. §4.2, §4.3 rule 7 (undelivered results). A run whose journaled receipts the Control
+    Plane has not acknowledged is never replaced: the next rotation attempt first re-sends
+    them and, if that fails, is refused as blocked, so an abort's operation ID and the
+    reservation it releases are never lost.
+64. §8.1, §4.3 rule 6 (health delivery). A health report that fails is journaled as
+    unreported and sent again by every `Recover` (startup and reconnect) until one is
+    acknowledged, so a quarantine is never left unknown to the Control Plane.
+65. §4.4 (AD effective minimum age). `PasswordAge` reports the minimum age of the policy
+    that actually governs the account: when the account's `msDS-ResultantPSO` names a
+    fine-grained password settings object, its `msDS-MinimumPasswordAge`; otherwise the
+    domain's `minPwdAge`. If the account can see its resultant PSO but cannot read the
+    PSO's minimum age (AD's default ACL hides PSOs from ordinary accounts), the minimum age
+    is unknown and `PasswordAge` fails: the domain value could be shorter than the enforced
+    one and schedule retries into refusals that spend the three-refusal limit, so the
+    broker keeps its previously known deadline instead. Deployments that use PSOs grant the
+    account read access to its PSO. A directory that hides `msDS-ResultantPSO` itself is
+    indistinguishable from no PSO, and the domain value is reported.
+66. §4.4 (connector cancellation). Every target operation observes its context: the
+    `ad_ldaps` connector closes the connection when the context ends during a bind, search
+    or modify (go-ldap requests otherwise wait for the fixed timeout), and `Change` sends
+    no modify once the context has ended, checked again after the intent commits.
+68. §4.5 step 3 (receipt delivery). Enrollment receipts journaled but not acknowledged by
+    the Control Plane are re-sent by every scheduler tick as well as by recovery, so a
+    transient delivery failure on an open channel does not leave the enrollment open (and
+    rotation blocked) until the next reconnect. The re-send never binds again; resubmitting
+    the enrollment is a replay and is refused.
+70. §4.1 (pushes). A Control Plane push that finds the broker's 16-slot queue full is
+    dropped and logged, never waited for, so results for pending calls keep flowing. A
+    dropped push is a lost relay: nothing was persisted, and the CLI retries or the
+    reservation expires.
+71. §3.5 (duplicate completion). A completion whose receipts are all already stored is a
+    retry and changes no derived state (current envelope, run state, lock). The current
+    envelope only ever moves to a higher `secret_version`.
+72. §3.4, §4.2 (reservation recovery). An attempt is journaled `reserving`, with the highest
+    version seen so far, before the broker asks for a version. Recovery (or the next
+    rotation) reserves again under the same operation ID; the Control Plane returns that
+    operation's own reservation, which is accepted if it is above the version seen before
+    and above every envelope the broker holds, even when sync has since copied it into the
+    high-water mark. The run is then sealed, stored and aborted (`restart_before_send`) so
+    the lock is released. A refusal means nothing was reserved and the run ends with
+    nothing to send. `reserving` is a journal state, not a §4.2 state, and blocks the account.
+73. §8.1 (health delivery). Every health change sets `Unreported` in the same journal save,
+    and only an acknowledged report clears it, so a crash between the save and the report
+    still leaves the health to be sent by `Recover`.
+74. §4.4 (minimum age source). Besides enrollment, the broker reads the account's last
+    change and the target's minimum password age at every pre-rotation login, through the
+    connector's `AgeReporter`, so the schedule stop and refusal retries use the target's
+    real values; a connector that cannot read them leaves the journaled values unchanged.
+75. §4.1 (relay across replicas). A Control Plane push to a broker (an enrollment now, the
+    checkout relays later) goes straight down the channel when the receiving replica holds
+    it, and otherwise into the shared `broker_outbox` table (migration 102, unmerged),
+    which the replica holding the broker's channel drains every second with one
+    `DELETE ... RETURNING`, so each queued push is taken once. A queued push expires with
+    its transaction. The submission answers 202 either way; the CLI follows the
+    enrollment's state.
+76. §3.4 (`standing_release` not yet built). The broker has no `standing_release` path in
+    this slice (no `rewrap_user` receipts), so the Control Plane refuses one at submission
+    with 422 `unsupported_action` instead of relaying a transaction the broker would
+    reject. The route accepts it again when the broker path lands.
 200. §8.2 (who writes attributes). An attribute definition has one source. The store refuses
     an admin write to a `scim` definition and a SCIM write to an `admin` one, so SCIM-synced
     values are read-only in the UI and API. The user keys `department`, `manager` and

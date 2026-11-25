@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -151,7 +152,11 @@ func (a *App) serve(ctx context.Context, j *Journal, k *Keys, id pqcrypto.UUID, 
 	if err := m.Recover(cctx); err != nil {
 		log.Printf("[BROKER] recovery: %v", err)
 	}
-	go m.Schedule(cctx, time.Minute, a.Nudges)
+	// Every goroutine of this connection ends before serve returns, so the next connection's
+	// Machine never works on the journal beside this one (security review of #12).
+	var wg sync.WaitGroup
+	defer func() { cancel(); wg.Wait() }()
+	wg.Go(func() { m.Schedule(cctx, time.Minute, a.Nudges) })
 	for msg := range conn.Pushes {
 		switch msg.Type {
 		case brokerproto.MsgEnroll:
@@ -160,13 +165,13 @@ func (a *App) serve(ctx context.Context, j *Journal, k *Keys, id pqcrypto.UUID, 
 				log.Printf("[BROKER] malformed enroll push")
 				continue
 			}
-			go func() {
+			wg.Go(func() {
 				if err := m.Enroll(cctx, e.Tx, e.Envelope); err != nil {
 					log.Printf("[BROKER] enrollment refused: %v", err)
 				}
-			}()
+			})
 		case brokerproto.MsgTx, brokerproto.MsgProof, brokerproto.MsgCheckin:
-			go a.transaction(cctx, m, msg)
+			wg.Go(func() { a.transaction(cctx, m, msg) })
 		case brokerproto.MsgNudge:
 			select {
 			case a.Nudges <- struct{}{}:
