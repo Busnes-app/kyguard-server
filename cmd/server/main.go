@@ -133,7 +133,8 @@ func bootstrap(ctx context.Context, cfg *config.Config, st store.Store) error {
 
 // prepareStart is everything that must pass before the server listens: bootstrap and the
 // replica configuration check, removal of plaintext snapshots a killed process left, and the
-// recovery key. A recovery.pub naming another key refuses the start; a pin no replica can
+// recovery key, after settling external effects a stopped process left pending. A recovery.pub
+// naming another key refuses the start; a pin no replica can
 // load is repaired from the screen, so it is logged and the server starts.
 func prepareStart(ctx context.Context, cfg *config.Config, st store.Store) error {
 	if err := bootstrap(ctx, cfg, st); err != nil {
@@ -145,6 +146,11 @@ func prepareStart(ctx context.Context, cfg *config.Config, st store.Store) error
 		return err
 	} else if n > 0 {
 		return fmt.Errorf("%d accounts have an SSO subject but no issuer (created before migration 13); set users.sso_issuer for each to its identity provider's issuer (delete or merge any two rows for the same person first: one issuer and subject may name one account), then start again", n)
+	}
+	// An external effect a stopped process left pending is settled before anything retries it
+	// (spec §9.3): to its noted outcome, else outcome_unknown.
+	if err := backup.ReconcileIntents(ctx, st); err != nil {
+		return err
 	}
 	if n, err := backup.RemoveStaleSnapshots(cfg.Database.DataDir); err != nil {
 		log.Printf("[BACKUP] leftover snapshot scratch under %s not removed: %v", cfg.Database.DataDir, err)
@@ -289,7 +295,7 @@ func runBackup(ctx context.Context, cfg *config.Config, st store.Store) (recover
 		return recoveryclient.Result{}, err
 	}
 	client := recoveryclient.NewClient(recoveryclient.Options{AllowPrivate: cfg.Backup.AllowPrivateRecovery})
-	return backup.RunOwned(ctx, cfg, rc, st, client)
+	return backup.RunOwned(ctx, cfg, rc, st, client, runRecord("cli", false))
 }
 
 // backupLoop polls the admin's schedule every tick; a change in the UI needs no restart and a
@@ -316,16 +322,17 @@ func backupLoop(ctx context.Context, cfg *config.Config, st store.Store, client 
 		if err := st.Sessions().CleanExpiredSessions(ctx); err != nil {
 			log.Printf("[WORKER] session cleanup: %v", err)
 		}
+		if err := backup.ReconcileStale(ctx, st); err != nil {
+			log.Printf("[WORKER] %v", err)
+		}
 		_, err := st.Coordination().WithLock(ctx, "backup-run", func(ctx context.Context) error {
 			// Read the schedule after winning, so a waiter cannot run a stale due job.
 			next, on, err := recoveryclient.NextRun(cfg.Backup.DepositInterval, backup.Settings(ctx, st.Settings()))
 			if err != nil || !on || time.Now().Before(next) {
 				return err
 			}
-			res, err := backup.Run(ctx, cfg, rc, st, client)
-			if !errors.Is(err, recoveryclient.ErrNotPaired) && !errors.Is(err, recoveryclient.ErrNoDestination) {
-				recordRun(context.WithoutCancel(ctx), st, "system", res, err)
-			}
+			res, err := backup.Run(ctx, cfg, rc, st, client, runRecord("system", true))
+			logRun("system", res, err)
 			return nil
 		})
 		if err != nil {
@@ -334,13 +341,23 @@ func backupLoop(ctx context.Context, cfg *config.Config, st store.Store, client 
 	})
 }
 
-// recordRun audits one run the same way the admin route does, under the actor that started it.
-func recordRun(ctx context.Context, st store.Store, actor string, res recoveryclient.Result, err error) {
-	action, outcome, details := recoveryclient.Outcome(res, err)
-	details["outcome"] = outcome
-	if aerr := st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: actor, Action: action,
-		Resource: res.Manifest.CapsuleID, Details: api.AuditDetails(details)}); aerr != nil {
-		log.Printf("[BACKUP] %s: AUDIT WRITE FAILED for capsule %s: %v", actor, res.Manifest.CapsuleID, aerr)
+// runRecord audits a run the same way the admin route does, under the actor that started it.
+// The scheduler skips runs that found nothing to do (quiet) unless they reached a deposit.
+func runRecord(actor string, quiet bool) backup.Recorder {
+	return func(res recoveryclient.Result, err error) *store.AuditRecord {
+		if quiet && (errors.Is(err, recoveryclient.ErrNotPaired) || errors.Is(err, recoveryclient.ErrNoDestination)) {
+			return nil
+		}
+		action, outcome, details := recoveryclient.Outcome(res, err)
+		details["outcome"] = outcome
+		return &store.AuditRecord{UserID: actor, Action: action, Resource: res.Manifest.CapsuleID, Details: api.AuditDetails(details)}
+	}
+}
+
+// logRun logs one run's outcome for the operator; the audit record is written by backup.Run.
+func logRun(actor string, res recoveryclient.Result, err error) {
+	if errors.Is(err, recoveryclient.ErrNotPaired) || errors.Is(err, recoveryclient.ErrNoDestination) {
+		return
 	}
 	if err != nil {
 		log.Printf("[BACKUP] %s: %s", actor, recoveryclient.AuditSafe(err.Error()))
@@ -363,7 +380,6 @@ func runDeposit() {
 	defer st.Close()
 
 	res, err := runBackup(ctx, cfg, st)
-	recordRun(ctx, st, "cli", res, err)
 	if err != nil {
 		log.Fatalf("Backup: %v", err)
 	}
