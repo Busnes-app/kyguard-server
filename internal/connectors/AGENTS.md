@@ -27,10 +27,22 @@ Owns how a broker talks to a target. The rotation order, journaling and quaranti
   `ErrRefused`; `PasswordAge` reads `pwdLastSet` and the minimum age of the account's
   resultant PSO (`msDS-ResultantPSO`), failing if that PSO is unreadable, or the domain
   `minPwdAge` when there is none (DECISIONS 65).
+  `ErrRefused`; `PasswordAge` reads `pwdLastSet` and the domain `minPwdAge`.
+- `sshpasswd`: the host-key callback compares the hex SHA-256 of the wire-format key in
+  constant time and fails before authentication. Password or keyboard-interactive (only
+  questions mentioning "password" are answered). `LC_ALL=C passwd` runs in a PTY; the
+  current-password prompt is answered, then `commit`, then the new and retype prompts.
+  Before the commit any other output is `ErrRefused`; after it, a repeated new-password
+  prompt is `ErrRefused` and only "password updated successfully" plus exit 0 is success.
+  Verify is a fresh login. `PasswordAge` and the baseline come from `chage -l` when the
+  account can read it.
 
 ## Verification
 - `KY_TEST_DOCKER=1 go test -race ./internal/connectors/...` (CI job `connectors`; on Major
   under `kslot`). Without `KY_TEST_DOCKER` the Docker tests skip.
+- The OpenSSH image (`sshpasswd/testdata/sshd`, Debian with linux-pam `passwd`) pins one
+  Ed25519 host key and ships two test login shells: `oddshell` (a prompt outside the set)
+  and `recordshell` (records which answers arrived, to prove nothing leaves before commit).
 - The Samba image (`adldaps/testdata/samba`) uses the test's own CA, turns off Samba's
   hour-long acceptance of the previous password and counts bad passwords.
 

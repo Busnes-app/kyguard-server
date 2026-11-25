@@ -68,6 +68,10 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   pinned CA and host name, baseline `pwdLastSet`/`msDS-KeyVersionNumber`, verification by
   a fresh bind, and minimum password age from the domain; tested in CI against Samba AD at
   `min-pwd-age=0` and at the default of one day.
+- Linux SSH connector (spec §4.4): the descriptor's host key is checked before any
+  authentication; `passwd` runs in a PTY and the new password is sent only after the
+  broker's commit; unrecognized prompts and rejected passwords are refusals; tested in CI
+  against OpenSSH with linux-pam `passwd`.
 
 ### Upgrade impact
 
