@@ -9,7 +9,6 @@ BIN="$(cd "$(dirname "$0")/.." && pwd)/${1:-kyguard-server}"
 WORK="$(mktemp -d)"
 PORT="${KY_SMOKE_PORT:-18080}"
 BASE="http://127.0.0.1:${PORT}"
-ADMIN_PASS="SmokeTestAdminPass123!"
 SERVER_PID=""
 FAILURES=0
 
@@ -38,13 +37,33 @@ contains() { # contains <description> <haystack> <needle>
 
 status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 
+# totp <base32 secret> [step offset]: the RFC 6238 code, stdlib only.
+totp() {
+  python3 -c 'import base64,hashlib,hmac,struct,sys,time
+s=sys.argv[1]; k=base64.b32decode(s+"="*(-len(s)%8)); c=int(time.time())//30+int(sys.argv[2])
+h=hmac.new(k,struct.pack(">Q",c),hashlib.sha1).digest(); o=h[-1]&15
+print("%06d"%((struct.unpack(">I",h[o:o+4])[0]&0x7fffffff)%1000000))' "$1" "${2:-0}"
+}
+
+# wrong_totp <base32 secret>: a well-formed code that matches no step near now (a fixed one,
+# 000000 included, is sometimes valid).
+wrong_totp() {
+  near=" $(for o in -3 -2 -1 0 1 2 3; do totp "$1" "$o"; done | tr '\n' ' ')"
+  n=0
+  while case "$near" in *" $(printf '%06d' "$n") "*) true ;; *) false ;; esac; do n=$((n + 1)); done
+  printf '%06d\n' "$n"
+}
+
+login_body() { # login_body <username> <password> <code>
+  printf '{"username":"%s","password":"%s","totp_code":"%s"}' "$1" "$2" "$3"
+}
+
 start_server() { # start_server <captcha-provider>
   KY_PORT="$PORT" \
     KY_HOST=127.0.0.1 \
     KY_DATA_DIR="$WORK/data" \
     KY_BACKUP_DIR="$WORK/backups" \
     KY_DB_DRIVER=sqlite \
-    KY_ADMIN_PASSWORD="$ADMIN_PASS" \
     KY_CAPTCHA_PROVIDER="$1" \
     KY_SCIM_ENABLED=true \
     "$BIN" >"$WORK/server.log" 2>&1 &
@@ -71,10 +90,10 @@ contains "backup-drill verifies the required files" "$DRILL_OUT" "required files
 contains "backup-drill checks database integrity" "$DRILL_OUT" "integrity_check passed"
 contains "backup-drill passes on a complete payload" "$DRILL_OUT" "Status:   PASSED"
 
-check "init-admin rejects short password" \
-  "$(KY_DATA_DIR="$WORK/cli" KY_DB_DRIVER=sqlite "$BIN" init-admin -password short >/dev/null 2>&1 && echo 0 || echo 1)" "1"
-check "init-admin creates admin" \
-  "$(KY_DATA_DIR="$WORK/cli" KY_DB_DRIVER=sqlite "$BIN" init-admin -password "$ADMIN_PASS" >/dev/null 2>&1 && echo 0 || echo 1)" "0"
+check "init-admin is gone" \
+  "$(KY_DATA_DIR="$WORK/cli" KY_DB_DRIVER=sqlite "$BIN" init-admin -password SmokeTestAdminPass123! >/dev/null 2>&1 && echo 0 || echo 1)" "1"
+check "break-glass create refuses a bad name" \
+  "$(KY_DATA_DIR="$WORK/cli" KY_DB_DRIVER=sqlite "$BIN" break-glass create -username 'a b' >/dev/null 2>&1 && echo 0 || echo 1)" "1"
 
 echo "==> HTTP with default PoW captcha"
 start_server pow
@@ -82,7 +101,7 @@ check "GET / serves the PWA" "$(status "$BASE/")" "200"
 contains "index.html has react root" "$(curl -s "$BASE/")" 'id="root"'
 check "SPA fallback for unknown route" "$(status "$BASE/settings/deep/link")" "200"
 check "login blocked without captcha token" \
-  "$(status -X POST -H 'Content-Type: application/json' -d '{"username":"admin","password":"'"$ADMIN_PASS"'"}' "$BASE/api/auth/login")" "403"
+  "$(status -X POST -H 'Content-Type: application/json' -d "$(login_body admin SmokeTestAdminPass123! 000000)" "$BASE/api/auth/login")" "403"
 check "malformed login body rejected" \
   "$(status -X POST -H 'Content-Type: application/json' -d 'not-json' "$BASE/api/auth/login")" "400"
 check "login rejects GET" "$(status "$BASE/api/auth/login")" "405"
@@ -103,59 +122,71 @@ check "local MFA sign-in is gone" \
 check "anonymous cannot list accounts" "$(status "$BASE/api/admin/users")" "401"
 check "anonymous cannot set site theme" "$(status -X POST -H 'Content-Type: application/json' -d '{"theme":"oled"}' "$BASE/api/settings/theme")" "401"
 check "scim rejects wrong bearer" "$(status -H 'Authorization: Bearer wrong' "$BASE/scim/v2/Users")" "401"
+check "SAML metadata is gone" "$(status "$BASE/saml/metadata")" "404"
 stop_server
+
+echo "==> Break-glass accounts (host only)"
+check "an empty database has no account" \
+  "$(python3 -c 'import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute("SELECT COUNT(*) FROM users").fetchone()[0])' "$WORK/data/ky_server.db")" "0"
+CREATED="$(KY_DATA_DIR="$WORK/data" KY_DB_DRIVER=sqlite "$BIN" break-glass create -username admin)"
+contains "break-glass create prints the TOTP URI once" "$CREATED" "otpauth://totp/"
+ADMIN_PASS="$(printf '%s\n' "$CREATED" | sed -n 's/^Password: //p')"
+SECRET="$(printf '%s\n' "$CREATED" | sed -n 's/.*[?&]secret=\([A-Z2-7]*\).*/\1/p')"
+check "generated password has at least 16 characters" "$([ "${#ADMIN_PASS}" -ge 16 ] && echo yes || echo no)" "yes"
 
 echo "==> HTTP auth flow (captcha disabled)"
 start_server none
 check "wrong password is 401" \
-  "$(status -X POST -H 'Content-Type: application/json' -d '{"username":"admin","password":"wrong-password"}' "$BASE/api/auth/login")" "401"
+  "$(status -X POST -H 'Content-Type: application/json' -d "$(login_body admin wrong-password-0123 "$(totp "$SECRET")")" "$BASE/api/auth/login")" "401"
 check "unknown user is 401" \
-  "$(status -X POST -H 'Content-Type: application/json' -d '{"username":"nobody","password":"'"$ADMIN_PASS"'"}' "$BASE/api/auth/login")" "401"
+  "$(status -X POST -H 'Content-Type: application/json' -d "$(login_body nobody "$ADMIN_PASS" 000000)" "$BASE/api/auth/login")" "401"
+check "password without a code is refused" \
+  "$(status -X POST -H 'Content-Type: application/json' -d '{"username":"admin","password":"'"$ADMIN_PASS"'"}' "$BASE/api/auth/login")" "400"
+check "wrong code is 401" \
+  "$(status -X POST -H 'Content-Type: application/json' -d "$(login_body admin "$ADMIN_PASS" "$(wrong_totp "$SECRET")")" "$BASE/api/auth/login")" "401"
 
 LOGIN_HEADERS="$WORK/login.headers"
 LOGIN_BODY="$(curl -s -D "$LOGIN_HEADERS" -c "$WORK/cookies" -X POST -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"'"$ADMIN_PASS"'"}' "$BASE/api/auth/login")"
-contains "login succeeds" "$LOGIN_BODY" '"authenticated":true'
+  -d "$(login_body admin "$ADMIN_PASS" "$(totp "$SECRET")")" "$BASE/api/auth/login")"
+contains "break-glass login succeeds" "$LOGIN_BODY" '"authenticated":true'
 contains "session cookie is HttpOnly" "$(grep -i '^set-cookie' "$LOGIN_HEADERS")" "HttpOnly"
 contains "session cookie is SameSite" "$(grep -i '^set-cookie' "$LOGIN_HEADERS")" "SameSite"
 contains "password hash never leaves the server" \
   "$(if echo "$LOGIN_BODY" | grep -q 'argon2'; then echo leaked; else echo clean; fi)" "clean"
 
-contains "/me returns the session user" "$(curl -s -b "$WORK/cookies" "$BASE/api/auth/me")" '"username":"admin"'
+ME="$(curl -s -b "$WORK/cookies" "$BASE/api/auth/me")"
+contains "/me returns the session user" "$ME" '"username":"admin"'
+contains "/me carries the break-glass banner" "$ME" '"break_glass":{'
 ANON_SETTINGS="$(curl -s "$BASE/api/settings")"
 contains "anonymous settings keep login fields" "$ANON_SETTINGS" '"app_name"'
 contains "anonymous settings hide extra_settings" \
   "$(if echo "$ANON_SETTINGS" | grep -q 'extra_settings'; then echo leaked; else echo hidden; fi)" "hidden"
 contains "anonymous settings hide db_driver" \
   "$(if echo "$ANON_SETTINGS" | grep -q 'db_driver'; then echo leaked; else echo hidden; fi)" "hidden"
-contains "bootstrap requires password replacement" "$LOGIN_BODY" '"must_change_password":true'
-check "bootstrap session cannot read backup state" "$(status -b "$WORK/cookies" "$BASE/api/backup/status")" "403"
+check "no privileged action before a reason" "$(status -b "$WORK/cookies" "$BASE/api/backup/status")" "403"
 CSRF="$(awk '$6 == "ky_csrf" { print $7 }' "$WORK/cookies")"
-check "password replacement requires CSRF" "$(status -b "$WORK/cookies" -X POST "$BASE/api/auth/change-password")" "403"
-check "bootstrap password replacement succeeds" \
+check "password change requires CSRF" "$(status -b "$WORK/cookies" -X POST "$BASE/api/auth/change-password")" "403"
+check "password change requires a code" \
   "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
-    -d '{"current_password":"'"$ADMIN_PASS"'","new_password":"ReplacementSmokePass456!"}' "$BASE/api/auth/change-password")" "200"
-contains "bootstrap session was revoked" "$(curl -s -b "$WORK/cookies" "$BASE/api/auth/me")" '"authenticated":false'
-check "old bootstrap password stops working" \
-  "$(status -H 'Content-Type: application/json' -d '{"username":"admin","password":"'"$ADMIN_PASS"'"}' "$BASE/api/auth/login")" "401"
+    -d '{"current_password":"'"$ADMIN_PASS"'","new_password":"ReplacementSmokePass456!","totp_code":"'"$(wrong_totp "$SECRET")"'"}' "$BASE/api/auth/change-password")" "401"
+check "password change with a code succeeds" \
+  "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
+    -d '{"current_password":"'"$ADMIN_PASS"'","new_password":"ReplacementSmokePass456!","totp_code":"'"$(totp "$SECRET" 1)"'"}' "$BASE/api/auth/change-password")" "200"
+contains "password change revoked the session" "$(curl -s -b "$WORK/cookies" "$BASE/api/auth/me")" '"authenticated":false'
+check "old password stops working" \
+  "$(status -H 'Content-Type: application/json' -d "$(login_body admin "$ADMIN_PASS" 000000)" "$BASE/api/auth/login")" "401"
+RESET="$(KY_DATA_DIR="$WORK/data" KY_DB_DRIVER=sqlite "$BIN" break-glass reset-totp -username admin)"
+contains "reset-totp prints a new URI" "$RESET" "otpauth://totp/"
+OLD_SECRET="$SECRET"
+SECRET="$(printf '%s\n' "$RESET" | sed -n 's/.*[?&]secret=\([A-Z2-7]*\).*/\1/p')"
+check "the old secret stops working" \
+  "$(status -H 'Content-Type: application/json' -d "$(login_body admin ReplacementSmokePass456! "$(totp "$OLD_SECRET" 1)")" "$BASE/api/auth/login")" "401"
 LOGIN_BODY="$(curl -s -c "$WORK/cookies" -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"ReplacementSmokePass456!"}' "$BASE/api/auth/login")"
-contains "replacement password signs in" "$LOGIN_BODY" '"authenticated":true'
-contains "replacement clears the restriction" "$LOGIN_BODY" '"must_change_password":false'
-check "init-admin resets the existing admin" \
-  "$(KY_DATA_DIR="$WORK/data" KY_DB_DRIVER=sqlite "$BIN" init-admin -password 'OperatorResetPass789!' >/dev/null 2>&1 && echo 0 || echo 1)" "0"
-check "operator reset revokes the previous session" "$(status -b "$WORK/cookies" "$BASE/api/backup/status")" "401"
-LOGIN_BODY="$(curl -s -c "$WORK/cookies" -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"OperatorResetPass789!"}' "$BASE/api/auth/login")"
-contains "operator reset requires replacement" "$LOGIN_BODY" '"must_change_password":true'
-check "reset login cannot read backup state" "$(status -b "$WORK/cookies" "$BASE/api/backup/status")" "403"
+  -d "$(login_body admin ReplacementSmokePass456! "$(totp "$SECRET")")" "$BASE/api/auth/login")"
+contains "new password and new secret sign in" "$LOGIN_BODY" '"authenticated":true'
 CSRF="$(awk '$6 == "ky_csrf" { print $7 }' "$WORK/cookies")"
-check "operator password replacement succeeds" \
-  "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
-    -d '{"current_password":"OperatorResetPass789!","new_password":"FinalSmokePassword123!"}' "$BASE/api/auth/change-password")" "200"
-LOGIN_BODY="$(curl -s -c "$WORK/cookies" -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"FinalSmokePassword123!"}' "$BASE/api/auth/login")"
-contains "reset replacement signs in" "$LOGIN_BODY" '"authenticated":true'
+check "break-glass reason is recorded" \
+  "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' -d '{"reason":"smoke test"}' "$BASE/api/auth/break-glass/reason")" "200"
 contains "admin settings include db_driver" "$(curl -s -b "$WORK/cookies" "$BASE/api/settings")" '"db_driver"'
 check "deposit CLI refuses without a key" \
   "$(KY_DATA_DIR="$WORK/cli" KY_DB_DRIVER=sqlite "$BIN" deposit >/dev/null 2>&1 && echo 0 || echo 1)" "1"

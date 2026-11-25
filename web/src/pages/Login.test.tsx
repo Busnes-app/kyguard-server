@@ -46,8 +46,9 @@ it('solves a fresh CAPTCHA after a failed sign-in', async () => {
   const fetchMock = await stubAuth({ '/api/auth/login': () => json({ error: 'Invalid credentials' }, 401) });
   const { container } = render(<Login onSuccess={vi.fn()} appName="Test" />);
   await screen.findByText('Security check verified.');
-  fireEvent.change(container.querySelector('input[type="text"]')!, { target: { value: 'admin' } });
+  fireEvent.change(screen.getByPlaceholderText('admin'), { target: { value: 'admin' } });
   fireEvent.change(container.querySelector('input[type="password"]')!, { target: { value: 'wrong password!' } });
+  fireEvent.change(screen.getByLabelText('Authenticator code'), { target: { value: '000000' } });
   fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
   await screen.findByText('Invalid credentials');
   await vi.waitFor(() => expect(fetchMock.mock.calls.filter(([u]) => String(u) === '/api/auth/pow-challenge')).toHaveLength(2));
@@ -89,8 +90,9 @@ it('explains a session the browser did not keep instead of showing a broken app'
   });
   const { container } = render(<App />);
   await screen.findByText('Security check verified.');
-  fireEvent.change(container.querySelector('input[type="text"]')!, { target: { value: 'admin' } });
+  fireEvent.change(screen.getByPlaceholderText('admin'), { target: { value: 'admin' } });
   fireEvent.change(container.querySelector('input[type="password"]')!, { target: { value: 'right password!' } });
+  fireEvent.change(screen.getByLabelText('Authenticator code'), { target: { value: '123456' } });
   fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
   expect((await screen.findByRole('status')).textContent).toContain('did not keep the session');
   expect(meCalls).toBe(2);
@@ -98,4 +100,22 @@ it('explains a session the browser did not keep instead of showing a broken app'
   await screen.findByText('Security check verified.');
   expect(fetchMock.mock.calls.filter(([u]) => String(u) === '/api/auth/pow-challenge')).toHaveLength(2);
   expect(screen.queryByText('Overview')).toBeNull();
+});
+
+// Local sign-in is break-glass only: the code travels in the same request as the password.
+it('sends the authenticator code with the password', async () => {
+  let sent: unknown;
+  await stubAuth({ '/api/auth/login': () => json({ error: 'Invalid credentials' }, 401) });
+  const fetchMock = vi.mocked(fetch);
+  render(<Login onSuccess={vi.fn()} appName="Test" />);
+  await screen.findByText('Security check verified.');
+  fireEvent.change(screen.getByPlaceholderText('admin'), { target: { value: 'root' } });
+  fireEvent.change(document.querySelector('input[type="password"]')!, { target: { value: 'pw' } });
+  fireEvent.change(screen.getByLabelText('Authenticator code'), { target: { value: '654321' } });
+  fireEvent.click(screen.getByRole('button', { name: /sign in/i }));
+  await screen.findByText('Invalid credentials');
+  const call = fetchMock.mock.calls.find(([u]) => String(u) === '/api/auth/login');
+  sent = JSON.parse(String(call?.[1]?.body));
+  expect(sent).toMatchObject({ username: 'root', password: 'pw', totp_code: '654321' });
+  expect((screen.getByLabelText('Authenticator code') as HTMLInputElement).value).toBe('');
 });
