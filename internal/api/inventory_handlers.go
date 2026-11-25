@@ -158,31 +158,28 @@ func (s *Server) handleUpdateAccount(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "only name, owner_user_id and status can change")
 		return
 	}
-	a, err := s.store.Inventory().GetAccount(r.Context(), r.PathValue("id"))
-	if err != nil {
-		s.inventoryError(w, err, "account")
-		return
-	}
+	p, detail := store.AccountPatch{OwnerUserID: req.OwnerUserID, Status: req.Status}, map[string]any{}
 	if req.Name != nil {
 		name, ok := cleanText(*req.Name, 128)
 		if !ok {
 			s.writeError(w, http.StatusBadRequest, "name must be 1 to 128 characters")
 			return
 		}
-		a.Name = name
+		p.Name, detail["name"] = &name, name
 	}
 	if req.OwnerUserID != nil {
-		a.OwnerUserID = *req.OwnerUserID
+		detail["owner"] = *req.OwnerUserID
 	}
 	if req.Status != nil {
 		if *req.Status != "active" && *req.Status != "decommissioned" {
 			s.writeError(w, http.StatusBadRequest, "status is active or decommissioned")
 			return
 		}
-		a.Status = *req.Status
+		detail["status"] = *req.Status
 	}
-	if err := s.store.Inventory().UpdateAccount(r.Context(), a, s.audit(r, "inventory.account_updated", "account:"+a.ID,
-		map[string]any{"name": a.Name, "owner": a.OwnerUserID, "status": a.Status})); err != nil {
+	id := r.PathValue("id")
+	a, err := s.store.Inventory().UpdateAccount(r.Context(), id, p, s.audit(r, "inventory.account_updated", "account:"+id, detail))
+	if err != nil {
 		s.inventoryError(w, err, "account")
 		return
 	}
