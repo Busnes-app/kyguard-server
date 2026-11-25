@@ -45,6 +45,9 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   broker that a Custodian-signed pool manifest lists as active with that certificate.
   `POST /api/manifests` admits Custodian-signed manifests on the Control Plane. Startup
   refuses a broker CA that paired brokers did not pin.
+- `kyguard-broker` (spec §4.1): `pair` creates the broker's keys on the host (one 0600 key
+  file), pairs it and prints the identity the Custodians check; `run` sets `RLIMIT_CORE=0`
+  and holds the control channel. A hardened systemd unit is in `deploy/broker`.
 
 ### Upgrade impact
 
@@ -57,6 +60,8 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   New settings `KY_BROKER_LISTEN` (default `:8443`), `KY_BROKER_HOSTNAME` (unset: listener
   off) and `KY_MIN_BROKER_VERSION` are shared replica settings; `github.com/coder/websocket`
   is a new dependency.
+- New binary `kyguard-broker` (`GOOS=linux go build ./cmd/broker`); `go.etcd.io/bbolt` is a
+  new dependency (the broker journal).
 - The module declares `go 1.27.0` (for `crypto/mldsa`); builds need Go 1.27, as the pinned
   `go1.27.4` toolchain already provides.
 
