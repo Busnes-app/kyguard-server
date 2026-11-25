@@ -560,3 +560,45 @@ func TestUndeliveredHealthIsResentOnRecover(t *testing.T) {
 		t.Fatal("still unreported after delivery")
 	}
 }
+
+// A crash after a quarantine is journaled and before its health reaches the Control Plane
+// leaves it to be sent by recovery, without another probe (security review of #11).
+func TestQuarantineHealthSurvivesACrashBeforeItsReport(t *testing.T) {
+	r := newRig(t)
+	r.target.ambiguous = errors.New("connection reset") // not applied: the probe fails
+	m := r.machine()
+	m.Hook = func(p string) error {
+		if p == "quarantined" {
+			return errors.New("crash")
+		}
+		return nil
+	}
+	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); !errors.Is(err, broker.ErrStopped) {
+		t.Fatalf("rotate: %v", err)
+	}
+	if a := r.account(m); !a.Quarantined || !a.Unreported || r.cpAccount().Health == broker.HealthQuarantined {
+		t.Fatalf("quarantined=%v unreported=%v cp health=%s", a.Quarantined, a.Unreported, r.cpAccount().Health)
+	}
+	m.J.Close()
+	logins := func() (n int) {
+		for _, c := range r.target.logins {
+			n += c
+		}
+		return n
+	}
+	before := logins()
+	m2 := r.machine()
+	defer m2.J.Close()
+	if err := m2.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if h := r.cpAccount().Health; h != broker.HealthQuarantined {
+		t.Fatalf("control plane health %s after recovery", h)
+	}
+	if a := r.account(m2); a.Unreported {
+		t.Fatal("still unreported after delivery")
+	}
+	if logins() != before {
+		t.Fatal("recovery logged in to the target again")
+	}
+}

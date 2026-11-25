@@ -193,7 +193,7 @@ func (m *Machine) Rotate(ctx context.Context, account pqcrypto.UUID, occurrence 
 	}
 	rc, err := m.rotationContext(a)
 	if errors.Is(err, ErrNeedsEnrollment) && a.Health != HealthNeedsEnrollment {
-		a.Health, a.HealthReason = HealthNeedsEnrollment, "the target descriptor changed"
+		setHealth(a, HealthNeedsEnrollment, "the target descriptor changed")
 		if serr := m.J.Save(a); serr != nil {
 			return serr
 		}
@@ -296,7 +296,8 @@ func (m *Machine) mutate(ctx context.Context, a *Account, rc *rotationContext, p
 		// §4.6: one attempt only; never retry a credential. The quarantine is journaled with
 		// the abort, before any Control Plane call can fail.
 		log.Printf("[BROKER] ALERT: account %s quarantined: the current credential was denied", a.ID)
-		a.Quarantined, a.Health, a.HealthReason = true, HealthAuthFailed, "pre-rotation login with the current credential was denied"
+		a.Quarantined = true
+		setHealth(a, HealthAuthFailed, "pre-rotation login with the current credential was denied")
 		return m.abort(ctx, a, pqcrypto.ReasonRestartBeforeSend)
 	}
 	if err != nil {
@@ -455,7 +456,7 @@ func (m *Machine) abort(ctx context.Context, a *Account, reason string) error {
 	}
 	a.Run.State, a.Run.Reason, a.Run.Receipts = StateAborted, reason, []pqcrypto.B64{r}
 	if reason == pqcrypto.ReasonRefused {
-		a.Health, a.HealthReason = HealthRotationFailed, "the target refused the change"
+		setHealth(a, HealthRotationFailed, "the target refused the change")
 	}
 	if err := m.J.Save(a); err != nil {
 		return err
@@ -507,7 +508,7 @@ func (m *Machine) send(ctx context.Context, a *Account) error {
 	if a.Run.State == StateDependenciesComplete {
 		a.Run.State = StateReleaseAuthorized
 		a.LastConsumedDue, a.CurrentCommitAt = a.Run.Due, m.now()
-		a.Health, a.HealthReason = HealthHealthy, ""
+		setHealth(a, HealthHealthy, "")
 	}
 	if err := m.J.Save(a); err != nil {
 		return err
@@ -519,16 +520,26 @@ func (m *Machine) send(ctx context.Context, a *Account) error {
 // quarantine stops all work on the account until re-enrollment (§4.3 rule 6).
 func (m *Machine) quarantine(ctx context.Context, a *Account, health, reason string) error {
 	log.Printf("[BROKER] ALERT: account %s quarantined: %s", a.ID, reason)
-	a.Quarantined, a.Health, a.HealthReason = true, health, reason
+	a.Quarantined = true
+	setHealth(a, health, reason)
 	if err := m.J.Save(a); err != nil {
+		return err
+	}
+	if err := m.hook("quarantined"); err != nil {
 		return err
 	}
 	m.report(ctx, a, "")
 	return nil
 }
 
-// report tells the Control Plane the account's health. A failed delivery is journaled as
-// Unreported and the health is sent again by the next Recover.
+// setHealth changes the account's health and marks it unreported, in the caller's next
+// journal save, so a crash before report still leaves it to be sent by Recover.
+func setHealth(a *Account, health, reason string) {
+	a.Health, a.HealthReason, a.Unreported = health, reason, true
+}
+
+// report tells the Control Plane the account's health. Unreported is cleared only once the
+// Control Plane acknowledges it; until then every Recover sends the health again.
 func (m *Machine) report(ctx context.Context, a *Account, runState string) {
 	s := brokerproto.StatusRequest{AccountID: a.ID, Health: a.Health, Reason: a.HealthReason}
 	if runState != "" && a.Run != nil {
