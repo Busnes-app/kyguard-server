@@ -94,7 +94,7 @@ Default section order:
 - SQLite remains a first-class single-server default. PostgreSQL migration is an explicit,
   verified maintenance command; multi-host replicas and worker election require no Kubernetes.
 - KyIdentity directory synchronization uses its SCIM connector; the incompatible webhook is retired. The legacy HMAC-secret config remains accepted with a startup warning. Per-app `admin` roles must be assigned before upgrade; empty `roles` means ordinary user. SCIM username adoption refuses a different nonempty `externalId` with 409.
-- Bootstrap passwords and passwords installed by `init-admin` must be replaced before privileged use. Operator resets atomically revoke sessions. Untouched existing accounts are not retroactively flagged.
+- No bootstrap admin and no `init-admin`: break-glass administrators (at most five) are created and their TOTP reset only on the host (`kyguard-server break-glass create|reset-totp`, spec §7.4).
 
 When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md
 
@@ -115,7 +115,7 @@ CI (`.github/workflows/ci.yml`) runs on every push and every non-draft pull requ
 - Frontend vitest suite, then typecheck/build plus a check that committed `web/dist` matches source (it is embedded in the binary)
 - `govulncheck` and `npm run audit`: strict production audit plus full high/critical audit,
   with the single dated development-tool exception in `docs/NPM-AUDIT.md`
-- `scripts/smoke-test.sh`: runs the built binary and asserts CLI, auth, session, and SPA behavior
+- `scripts/smoke-test.sh`: runs the built binary and asserts CLI, break-glass auth (password + TOTP via a stdlib Python helper), session, and SPA behavior
 - Docker image build and container HTTP check
 - Chromium regressions against the built server: production CSP/worker, themes, responsive layout and keyboard dialogs; the browser job gates publishing.
 - On a push to `main` that passes every job (`reuse` included in `publish.needs`), `publish` pushes the exact image the Docker check ran against (handed over as an artifact, no rebuild) to `ghcr.io/busnes-app/kyguard-server:<commit sha>`, attests it and verifies the attestation pinned to this workflow on `main`; `promote` then moves `:latest` to that digest, only at the tip of `main`, and asserts the tag resolves to the attested digest. `docker-compose.yml` names the published image and never builds; source installs add `docker-compose.build.yml` to the `COMPOSE_FILE` chain in `.env` (overlay tags `kyguard-server:local`) so every compose command, recovery docs included, uses the local build.
@@ -138,6 +138,7 @@ overlay merges with synthetic inputs and starts no containers.
 - [internal/config/AGENTS.md](internal/config/AGENTS.md): Configuration management and environment loader.
 - [internal/store/AGENTS.md](internal/store/AGENTS.md): Pluggable database abstraction layer (SQLite & PostgreSQL).
 - [internal/crypto/AGENTS.md](internal/crypto/AGENTS.md): Cryptographic primitives (AES-256-GCM, HMAC, SHA-256, randomness, PKCE).
+- [internal/pqcrypto/AGENTS.md](internal/pqcrypto/AGENTS.md): KyGuard wire format and crypto core (spec §3): JCS, D(obj), hybrid signatures, key IDs, AADs, DEK wrap, golden vectors.
 - [internal/auth/AGENTS.md](internal/auth/AGENTS.md): Authentication, sessions, local TOTP step-up, client addresses and CAPTCHA.
 - [internal/sso/AGENTS.md](internal/sso/AGENTS.md): Single Sign-On federation (KySignOn, generic OIDC).
 - [internal/scim/AGENTS.md](internal/scim/AGENTS.md): SCIM 2.0 user and group provisioning engine.

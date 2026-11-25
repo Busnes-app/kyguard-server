@@ -86,7 +86,7 @@ func TestReplicasSpendCAPTCHAExactlyOnce(t *testing.T) {
 	if solved == "" {
 		t.Fatal("no solved challenge")
 	}
-	body, _ := json.Marshal(api.LoginRequest{Username: "unknown", Password: "wrong-password", CaptchaToken: solved})
+	body, _ := json.Marshal(api.LoginRequest{Username: "unknown", Password: "wrong-password", TOTPCode: "000000", CaptchaToken: solved})
 	var wg sync.WaitGroup
 	codes := make(chan int, 2)
 	for i, srv := range []*api.Server{a, b} {
@@ -140,7 +140,7 @@ func TestPostgresSecurityStoreFailureNeverFallsBack(t *testing.T) {
 			if st.Driver() != "postgres" {
 				t.Skip("requires PostgreSQL")
 			}
-			request := api.LoginRequest{Username: "unknown", Password: "wrong-password"}
+			request := api.LoginRequest{Username: "unknown", Password: "wrong-password", TOTPCode: "000000"}
 			want := http.StatusTooManyRequests
 			if table == "spent_challenges" {
 				cfg.Captcha.Provider = "pow"

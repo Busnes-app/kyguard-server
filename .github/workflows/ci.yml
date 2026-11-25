@@ -165,6 +165,7 @@ jobs:
       - run: go test -fuzz=FuzzClientIP -fuzztime=150000x ./internal/auth
       - run: go test -fuzz=FuzzVerifyPoWSolution -fuzztime=200000x ./internal/auth
       - run: go test -fuzz=FuzzAESGCM -fuzztime=1000000x ./internal/crypto
+      - run: go test -fuzz=FuzzParse -fuzztime=300000x ./internal/pqcrypto/canonical
 
   web:
     name: Frontend typecheck & build
@@ -287,16 +288,26 @@ jobs:
           set -euo pipefail
           docker run -d --name ky_ci -p 127.0.0.1::8080 \
             -e KY_DB_DRIVER=sqlite \
-            -e KY_ADMIN_PASSWORD='CiSmokeAdminPass123!' \
             -e KY_CAPTCHA_PROVIDER=none \
             kyguard-server:ci
           trap 'docker logs ky_ci; docker logs ky_strong_ci 2>/dev/null || true; docker rm -fv ky_strong_ci ky_ci 2>/dev/null || true' EXIT
+          # RFC 6238 code for a base32 secret, one step ahead per offset.
+          totp() {
+            python3 -c 'import base64,hashlib,hmac,struct,sys,time
+          s=sys.argv[1]; k=base64.b32decode(s+"="*(-len(s)%8)); c=int(time.time())//30+int(sys.argv[2])
+          h=hmac.new(k,struct.pack(">Q",c),hashlib.sha1).digest(); o=h[-1]&15
+          print("%06d"%((struct.unpack(">I",h[o:o+4])[0]&0x7fffffff)%1000000))' "$1" "$2"
+          }
 
           base="http://$(docker port ky_ci 8080/tcp)"
           curl -sf -o /dev/null --retry 30 --retry-delay 1 --retry-all-errors "$base/"
           curl -sf -o /dev/null "$base/api/settings"
+          # No bootstrap admin: the only first account is a break-glass one made on the host.
+          created="$(docker exec ky_ci /app/kyguard-server break-glass create -username admin)"
+          pass="$(printf '%s\n' "$created" | sed -n 's/^Password: //p')"
+          secret="$(printf '%s\n' "$created" | sed -n 's/.*[?&]secret=\([A-Z2-7]*\).*/\1/p')"
           curl -sf -X POST -H 'Content-Type: application/json' \
-            -d '{"username":"admin","password":"CiSmokeAdminPass123!"}' \
+            -d '{"username":"admin","password":"'"$pass"'","totp_code":"'"$(totp "$secret" 0)"'"}' \
             "$base/api/auth/login" | grep -q '"authenticated":true'
 
           # Recreate against the same owned data, with no simultaneous writers.
@@ -307,13 +318,13 @@ jobs:
             -e GODEBUG=fips140=on -e KY_ENV=production \
             -e KY_SESSION_SECRET=synthetic-profile-session-secret-for-ci \
             -e KY_APP_URL=https://profile.example.invalid -e KY_COOKIE_SECURE=true \
-            -e KY_ADMIN_PASSWORD='CiSmokeAdminPass123!' -e KY_CAPTCHA_PROVIDER=none \
+            -e KY_CAPTCHA_PROVIDER=none \
             kyguard-server:ci
           base="http://$(docker port ky_strong_ci 8080/tcp)"
           curl -sf -o /dev/null --retry 30 --retry-delay 1 --retry-all-errors "$base/"
           test "$(docker exec ky_strong_ci sha256sum /app/data/encryption.key)" = "$before"
           curl -sf -D profile-headers.txt -X POST -H 'Content-Type: application/json' \
-            -d '{"username":"admin","password":"CiSmokeAdminPass123!"}' \
+            -d '{"username":"admin","password":"'"$pass"'","totp_code":"'"$(totp "$secret" 1)"'"}' \
             "$base/api/auth/login" | grep -q '"authenticated":true'
           grep -iE '^Set-Cookie: __Host-ky_session=.*; Secure' profile-headers.txt
           docker exec ky_strong_ci /app/kyguard-server backup-drill > profile-drill.txt
