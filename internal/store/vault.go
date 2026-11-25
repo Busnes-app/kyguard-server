@@ -228,14 +228,11 @@ func (v vaultStore) PutTargetDescriptor(ctx context.Context, digest, accountID s
 	if len(raw) > MaxDescriptor {
 		return ErrTooLarge
 	}
-	return v.s.inTx(ctx, func(tx *sql.Tx) error {
-		var n int
-		if err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT COUNT(1) FROM target_descriptors WHERE digest = ?`), digest).Scan(&n); err != nil || n > 0 {
-			return err
-		}
-		_, err := tx.ExecContext(ctx, v.s.rebind(`INSERT INTO target_descriptors (digest, account_id, descriptor, created_at) VALUES (?, ?, ?, ?)`), digest, accountID, string(raw), time.Now().UTC())
-		return err
-	})
+	// The digest names the content, so a stored row is the same descriptor: concurrent
+	// identical stores are all no-ops (Guide on #10, "Concurrent retries").
+	_, err := v.s.db.ExecContext(ctx, v.s.rebind(`INSERT INTO target_descriptors (digest, account_id, descriptor, created_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING`),
+		digest, accountID, string(raw), time.Now().UTC())
+	return err
 }
 
 func (v vaultStore) TargetDescriptor(ctx context.Context, digest string) ([]byte, error) {

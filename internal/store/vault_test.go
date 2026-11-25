@@ -488,3 +488,29 @@ func TestConcurrentIdenticalTxSubmissionsSucceed(t *testing.T) {
 		t.Fatalf("another transaction under the same request ID: %v", err)
 	}
 }
+
+// Identical descriptor stores racing each other are all no-ops (Guide on #10, "Concurrent
+// retries"; the race needs PostgreSQL).
+func TestConcurrentIdenticalDescriptorStoresSucceed(t *testing.T) {
+	v, a := vaultAccount(t)
+	ctx := context.Background()
+	for round := range 20 {
+		dg := strings.Repeat(string(rune('a'+round)), 64)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		errs := make([]error, 16)
+		for i := range errs {
+			wg.Go(func() {
+				<-start
+				errs[i] = v.PutTargetDescriptor(ctx, dg, a, []byte(dg))
+			})
+		}
+		close(start)
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("round %d, store %d: %v", round, i, err)
+			}
+		}
+	}
+}
