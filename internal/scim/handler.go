@@ -309,11 +309,9 @@ func (h *userResourceHandler) Delete(r *http.Request, id string) error {
 	if _, err := h.managedUser(r, id); err != nil {
 		return err
 	}
-	// Accounts it owned become unowned and its attributes go (spec §8.2).
-	if err := h.store.Inventory().ForgetUser(r.Context(), id, &store.AuditRecord{UserID: id, Action: "scim.user.forget", Resource: "user:" + id}); err != nil {
-		return err
-	}
-	return scimStoreError(h.store.Users().DeleteUser(r.Context(), id), id)
+	// One transaction: accounts it owned become unowned, its attributes go, the user goes
+	// (spec §8.2). A failure changes nothing.
+	return scimStoreError(h.store.Inventory().ForgetUser(r.Context(), id, &store.AuditRecord{UserID: id, Action: "scim.user.delete", Resource: "user:" + id}), id)
 }
 
 func (h *userResourceHandler) Patch(r *http.Request, id string, operations []protocol.PatchOperation) (protocol.Resource, error) {

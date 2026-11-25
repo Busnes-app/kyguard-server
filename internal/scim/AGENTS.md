@@ -30,8 +30,9 @@ Owns local persistence adapters and bearer authentication; the library owns `/sc
   user write, so a request whose attributes cannot be written changes nothing (create,
   adoption, PUT, PATCH). The handler sets `User.SCIMAttributes`, and the store writes
   them (with their audit rows) in the same transaction as the create, adoption or update,
-  so a failure at any point leaves the user, its sessions and its attributes unchanged. Manager sub-attributes other than `value` are ignored. Delete first runs `Inventory().ForgetUser` (accounts
-  become unowned, values go), because `accounts.owner_user_id` references the user.
+  so a failure at any point leaves the user, its sessions and its attributes unchanged. Manager sub-attributes other than `value` are ignored. Delete is `Inventory().ForgetUser`: in one transaction
+  the accounts it owned become unowned, its values go and the user row goes
+  (`accounts.owner_user_id` references the user).
 - SCIM protocol models and parsing must come from `github.com/elimity-com/scim`; do not add parallel local request/response implementations.
 
 ## Verification

@@ -54,7 +54,8 @@ type InventoryStore interface {
 	// Values maps entity ID to attribute key to value for one entity type.
 	Values(ctx context.Context, entity string) (map[string]map[string]string, error)
 
-	// ForgetUser clears the user as account owner and deletes their attribute values, so
+	// ForgetUser clears the user as account owner, deletes their attribute values and
+	// deletes the user, in one transaction (ErrNotFound for an unknown user, nothing changed).
 	// the user row can be deleted.
 	ForgetUser(ctx context.Context, userID string, audit *AuditRecord) error
 
@@ -504,6 +505,13 @@ func (v inventoryStore) ForgetUser(ctx context.Context, userID string, audit *Au
 		}
 		if _, err := tx.ExecContext(ctx, v.s.rebind(`DELETE FROM attribute_values WHERE entity_id = ? AND definition_id IN (SELECT id FROM attribute_definitions WHERE entity = 'user')`), userID); err != nil {
 			return err
+		}
+		res, err := tx.ExecContext(ctx, v.s.rebind(`DELETE FROM users WHERE id = ?`), userID)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil || n == 0 {
+			return errors.Join(err, ErrNotFound)
 		}
 		return v.s.auditTx(ctx, tx, audit)
 	})
