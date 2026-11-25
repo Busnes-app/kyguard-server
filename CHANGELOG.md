@@ -92,6 +92,9 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   released at least once), Yellow (sealed current envelope) or Red, with one health value
   beside it; `GET /api/reports/scorecard` serves the dashboard and, with `format=json|csv`,
   an audited download of the same rows. Non-admins see accounts they own or are listed on.
+- SCIM syncs `title` and the Enterprise User extension's `department` and `manager`
+  into read-only user attributes (spec §8.2); deleting a SCIM user leaves its accounts
+  unowned.
 
 ### Upgrade impact
 
