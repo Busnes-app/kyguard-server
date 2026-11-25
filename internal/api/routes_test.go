@@ -178,7 +178,7 @@ func TestAdminFactorResetNeedsAFreshCode(t *testing.T) {
 		srv.ServeHTTP(w, req)
 		return w
 	}
-	if w := del(gus.ID, "000000"); w.Code != http.StatusUnauthorized {
+	if w := del(gus.ID, admin.WrongCode(t)); w.Code != http.StatusUnauthorized {
 		t.Fatalf("reset with a wrong code: %d", w.Code)
 	}
 	if w := del(admin.ID, admin.Code(t)); w.Code != http.StatusNotFound {
