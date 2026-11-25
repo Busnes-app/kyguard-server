@@ -297,10 +297,10 @@ func (s *Server) handleSignDraft(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusOK, map[string]any{"accepted": false, "signatures": len(pm.Signatures)})
 		return
 	}
-	// Consume the draft first, by compare-and-swap on the object checked: a draft replaced or
-	// deleted meanwhile is never admitted. A refused admission after this leaves no draft;
-	// it could only be refused because the verified state moved, which makes it stale.
-	if err := s.store.Drafts().TakeDraft(ctx, d.ID, d.Object, audit); errors.Is(err, store.ErrConflict) {
+	// Keep the signed object first, by compare-and-swap on the object checked: a draft
+	// replaced or deleted meanwhile is never admitted, and an interrupted or failed admission
+	// leaves the signatures stored for a retry. Only an admitted policy consumes its draft.
+	if err := s.store.Drafts().SetDraftObject(ctx, d.ID, d.Object, canon, nil); errors.Is(err, store.ErrConflict) {
 		s.writeError(w, http.StatusConflict, "the draft changed meanwhile; fetch it again and re-sign")
 		return
 	} else if err != nil {
@@ -309,6 +309,10 @@ func (s *Server) handleSignDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, _, err := s.trust.Submit(ctx, canon, s.actor(r), s.requestIP(r)); err != nil {
 		s.refuse(w, err)
+		return
+	}
+	if err := s.store.Drafts().TakeDraft(ctx, d.ID, canon, audit); err != nil && !errors.Is(err, store.ErrConflict) {
+		s.writeError(w, http.StatusInternalServerError, "policy accepted; the draft could not be removed")
 		return
 	}
 	s.writeJSON(w, http.StatusCreated, map[string]any{"accepted": true, "epoch": pm.Epoch.String(), "digest": d.Digest})
