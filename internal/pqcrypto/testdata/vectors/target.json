@@ -1,0 +1,157 @@
+[
+  {
+    "name": "ssh_passwd descriptor",
+    "op": "target",
+    "object": {
+      "account_id": "0190b2a4-3333-7333-8333-00000000000e",
+      "asset_id": "0190b2a4-4444-7444-8444-000000000001",
+      "authenticated_target_identity": "svc-backup",
+      "connector_config": {},
+      "connector_type": "ssh_passwd",
+      "dependencies": [],
+      "deployment_id": "0190b2a4-1111-7111-8111-000000000001",
+      "descriptor_version": "1",
+      "endpoint": {
+        "host": "db1.internal.example.test",
+        "port": 22,
+        "ssh_host_key_sha256": "e0cfe2375c64dce6b29e4500799b6f17035d97030e1bca8b9556563e614bdafe"
+      }
+    },
+    "canonical": "{\"account_id\":\"0190b2a4-3333-7333-8333-00000000000e\",\"asset_id\":\"0190b2a4-4444-7444-8444-000000000001\",\"authenticated_target_identity\":\"svc-backup\",\"connector_config\":{},\"connector_type\":\"ssh_passwd\",\"dependencies\":[],\"deployment_id\":\"0190b2a4-1111-7111-8111-000000000001\",\"descriptor_version\":\"1\",\"endpoint\":{\"host\":\"db1.internal.example.test\",\"port\":22,\"ssh_host_key_sha256\":\"e0cfe2375c64dce6b29e4500799b6f17035d97030e1bca8b9556563e614bdafe\"}}",
+    "digest": "cf5b6e5e8d5e12d48c17acb3207d762c9b500158cb9e8a4f8c0578253f3d1bd7",
+    "params": {},
+    "verdict": "ok"
+  },
+  {
+    "name": "ad_ldaps descriptor",
+    "op": "target",
+    "object": {
+      "account_id": "0190b2a4-3333-7333-8333-00000000000e",
+      "asset_id": "0190b2a4-4444-7444-8444-000000000001",
+      "authenticated_target_identity": "CN=svc-backup,OU=Service,DC=corp,DC=example,DC=test",
+      "connector_config": {},
+      "connector_type": "ad_ldaps",
+      "dependencies": [],
+      "deployment_id": "0190b2a4-1111-7111-8111-000000000001",
+      "descriptor_version": "1",
+      "endpoint": {
+        "host": "dc1.corp.example.test",
+        "port": 636,
+        "tls_ca_pem": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+      }
+    },
+    "canonical": "{\"account_id\":\"0190b2a4-3333-7333-8333-00000000000e\",\"asset_id\":\"0190b2a4-4444-7444-8444-000000000001\",\"authenticated_target_identity\":\"CN=svc-backup,OU=Service,DC=corp,DC=example,DC=test\",\"connector_config\":{},\"connector_type\":\"ad_ldaps\",\"dependencies\":[],\"deployment_id\":\"0190b2a4-1111-7111-8111-000000000001\",\"descriptor_version\":\"1\",\"endpoint\":{\"host\":\"dc1.corp.example.test\",\"port\":636,\"tls_ca_pem\":\"-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----\\n\"}}",
+    "digest": "82bb1c695fddb90e0ece6560756d8c94b30fa125c5a20b085d35bb08aa216bb4",
+    "params": {},
+    "verdict": "ok"
+  },
+  {
+    "name": "non-empty connector_config",
+    "op": "target",
+    "object": {
+      "account_id": "0190b2a4-3333-7333-8333-00000000000e",
+      "asset_id": "0190b2a4-4444-7444-8444-000000000001",
+      "authenticated_target_identity": "svc-backup",
+      "connector_config": {
+        "script": "x"
+      },
+      "connector_type": "ssh_passwd",
+      "dependencies": [],
+      "deployment_id": "0190b2a4-1111-7111-8111-000000000001",
+      "descriptor_version": "1",
+      "endpoint": {
+        "host": "db1.internal.example.test",
+        "port": 22,
+        "ssh_host_key_sha256": "e0cfe2375c64dce6b29e4500799b6f17035d97030e1bca8b9556563e614bdafe"
+      }
+    },
+    "params": {},
+    "verdict": "unsupported_in_phase"
+  },
+  {
+    "name": "non-empty dependencies",
+    "op": "target",
+    "object": {
+      "account_id": "0190b2a4-3333-7333-8333-00000000000e",
+      "asset_id": "0190b2a4-4444-7444-8444-000000000001",
+      "authenticated_target_identity": "svc-backup",
+      "connector_config": {},
+      "connector_type": "ssh_passwd",
+      "dependencies": [
+        {
+          "kind": "service"
+        }
+      ],
+      "deployment_id": "0190b2a4-1111-7111-8111-000000000001",
+      "descriptor_version": "1",
+      "endpoint": {
+        "host": "db1.internal.example.test",
+        "port": 22,
+        "ssh_host_key_sha256": "e0cfe2375c64dce6b29e4500799b6f17035d97030e1bca8b9556563e614bdafe"
+      }
+    },
+    "params": {},
+    "verdict": "unsupported_in_phase"
+  },
+  {
+    "name": "connector outside the 1A slice",
+    "op": "target",
+    "object": {
+      "account_id": "0190b2a4-3333-7333-8333-00000000000e",
+      "asset_id": "0190b2a4-4444-7444-8444-000000000001",
+      "authenticated_target_identity": "svc-backup",
+      "connector_config": {},
+      "connector_type": "sql_server",
+      "dependencies": [],
+      "deployment_id": "0190b2a4-1111-7111-8111-000000000001",
+      "descriptor_version": "1",
+      "endpoint": {
+        "host": "db1.internal.example.test",
+        "port": 22,
+        "ssh_host_key_sha256": "e0cfe2375c64dce6b29e4500799b6f17035d97030e1bca8b9556563e614bdafe"
+      }
+    },
+    "params": {},
+    "verdict": "unsupported_in_phase"
+  },
+  {
+    "name": "ssh_passwd without host key",
+    "op": "target",
+    "object": {
+      "account_id": "0190b2a4-3333-7333-8333-00000000000e",
+      "asset_id": "0190b2a4-4444-7444-8444-000000000001",
+      "authenticated_target_identity": "svc-backup",
+      "connector_config": {},
+      "connector_type": "ssh_passwd",
+      "dependencies": [],
+      "deployment_id": "0190b2a4-1111-7111-8111-000000000001",
+      "descriptor_version": "1",
+      "endpoint": {
+        "host": "db1.internal.example.test",
+        "port": 22
+      }
+    },
+    "params": {},
+    "verdict": "invalid_body"
+  },
+  {
+    "name": "ad_ldaps without CA",
+    "op": "target",
+    "object": {
+      "account_id": "0190b2a4-3333-7333-8333-00000000000e",
+      "asset_id": "0190b2a4-4444-7444-8444-000000000001",
+      "authenticated_target_identity": "CN=svc-backup,OU=Service,DC=corp,DC=example,DC=test",
+      "connector_config": {},
+      "connector_type": "ad_ldaps",
+      "dependencies": [],
+      "deployment_id": "0190b2a4-1111-7111-8111-000000000001",
+      "descriptor_version": "1",
+      "endpoint": {
+        "host": "dc1.corp.example.test",
+        "port": 636
+      }
+    },
+    "params": {},
+    "verdict": "invalid_body"
+  }
+]
