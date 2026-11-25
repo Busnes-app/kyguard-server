@@ -158,8 +158,19 @@ contradicts itself. Each names its section. The most secure reading wins.
     (`MaxManifest`), so any stored manifest fits a 4 MiB channel frame base64url-encoded. A
     `sync` page carries at most 64 manifests whose encoded size stays within `SyncBudget`
     (2 MiB), and always at least one, so every page advances.
-62. §4.1 (sync read bound). A `sync_account` reply reads from the store only the open
-    chains at or below the broker's version (current, or without `abort`, `release` or
-    `vault_commit`; first request only) and at most `SyncChains + 1` (65) chains above it,
-    so a page never loads the whole history. A `receipts` request reads only the chains its
-    receipts name.
+62. §4.1 (sync read and reply bound). A `sync_account` page is the chains above the
+    request's `from`, in version order: the open ones at or below the broker's version
+    (current, or without `abort`, `release` or `vault_commit`), then every newer one. It
+    reads at most `SyncChains + 1` (65) chains and the whole reply, descriptor included,
+    stays within `SyncBudget`; a page always carries one chain. The store caps one chain
+    (envelope plus receipts) at 256 KiB and a descriptor at 64 KiB (`store.ErrTooLarge`), so
+    a one-chain page always fits a frame and every continuation advances. A `sync` page reads
+    at most `SyncPage` manifests. A `receipts` request reads only the chains its receipts
+    name.
+70. §4.1 (pushes). A Control Plane push that finds the broker's 16-slot queue full is
+    dropped and logged, never waited for, so results for pending calls keep flowing. A
+    dropped push is a lost relay: nothing was persisted, and the CLI retries or the
+    reservation expires.
+71. §3.5 (duplicate completion). A completion whose receipts are all already stored is a
+    retry and changes no derived state (current envelope, run state, lock). The current
+    envelope only ever moves to a higher `secret_version`.

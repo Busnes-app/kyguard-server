@@ -71,7 +71,7 @@ func (l *Listener) sync(ctx context.Context, tr *pqcrypto.Trust, b *store.Broker
 	if err := decode(body, &req); err != nil {
 		return nil, err
 	}
-	ms, err := l.Store.Guard().Manifests(ctx, int64(max(req.ManifestsAfter, 0)))
+	ms, err := l.Store.Guard().ManifestsPage(ctx, int64(max(req.ManifestsAfter, 0)), SyncPage)
 	if err != nil {
 		return nil, err
 	}
@@ -123,24 +123,25 @@ func (l *Listener) syncAccount(ctx context.Context, tr *pqcrypto.Trust, b *store
 	if raw, err := l.Store.Vault().TargetDescriptor(ctx, string(p.TargetDescriptorDigest)); err == nil {
 		st.Descriptor = raw
 	}
-	// Only the open chains at or below the broker's version and one page above it are read,
-	// so a long history costs each page no more than the page itself.
-	var open []*store.StoredChain
-	if !req.Continue {
-		if open, err = l.Store.Vault().OpenChains(ctx, a.ID, uint64(req.AfterVersion)); err != nil {
-			return nil, err
-		}
-	}
-	newer, err := l.Store.Vault().ChainsAfter(ctx, a.ID, uint64(req.AfterVersion), SyncChains+1)
+	// One page is the chains above From, in version order: the open ones up to AfterVersion,
+	// then every newer one. At most SyncChains+1 are read and the whole reply, descriptor
+	// included, stays within SyncBudget; a page always carries one chain, which fits a frame
+	// (store.MaxChain), so every continuation advances.
+	from, upTo := uint64(req.From), uint64(req.AfterVersion)
+	cs, err := l.Store.Vault().OpenChains(ctx, a.ID, from, upTo, SyncChains+1)
 	if err != nil {
 		return nil, err
 	}
-	budget := SyncBudget
-	for _, c := range open {
-		budget -= add(st, c)
+	if n := SyncChains + 1 - len(cs); n > 0 {
+		newer, err := l.Store.Vault().ChainsAfter(ctx, a.ID, max(from, upTo), n)
+		if err != nil {
+			return nil, err
+		}
+		cs = append(cs, newer...)
 	}
-	for i, c := range newer {
-		if i == SyncChains || (size(c) > budget && i > 0) { // a page with More always carries a newer chain
+	budget := SyncBudget - encoded(st.Descriptor)
+	for i, c := range cs {
+		if i == SyncChains || (size(c) > budget && i > 0) {
 			st.More = true
 			break
 		}

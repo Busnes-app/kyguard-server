@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -141,8 +142,11 @@ func TestChainQueriesReadOnlyTheirSlice(t *testing.T) {
 			t.Fatalf("ChainsAfter(%d, %d) = %v %v, want %s", tc.after, tc.limit, ids(cs), err, tc.want)
 		}
 	}
-	if cs, err := v.OpenChains(ctx, acct, 5); err != nil || fmt.Sprint(ids(cs)) != "[e1/1 e3/0 e4/1]" {
+	if cs, err := v.OpenChains(ctx, acct, 0, 5, 10); err != nil || fmt.Sprint(ids(cs)) != "[e1/1 e3/0 e4/1]" {
 		t.Fatalf("OpenChains = %v %v", ids(cs), err)
+	}
+	if cs, err := v.OpenChains(ctx, acct, 1, 5, 1); err != nil || fmt.Sprint(ids(cs)) != "[e3/0]" {
+		t.Fatalf("OpenChains(1, 5, 1) = %v %v", ids(cs), err)
 	}
 	if c, err := v.Chain(ctx, acct, "e4"); err != nil || c.Envelope.SecretVersion != 4 || len(c.Receipts) != 1 || string(c.Receipts[0].Receipt) != "re4" {
 		t.Fatalf("Chain(e4) = %+v %v", c, err)
@@ -152,5 +156,67 @@ func TestChainQueriesReadOnlyTheirSlice(t *testing.T) {
 	}
 	if _, err := v.Chain(ctx, "other", "e4"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("another account's envelope: %v", err)
+	}
+}
+
+// A completion delayed past a newer rotation is a retry: it neither rewinds the current
+// envelope nor the run state (PR Reviewer Guide on #10).
+func TestADelayedDuplicateCompletionChangesNothing(t *testing.T) {
+	v, acct := vaultAccount(t)
+	ctx := context.Background()
+	release := func(op, id string) []*StoredReceipt {
+		ver, err := v.Reserve(ctx, acct, op, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := v.PutEnvelope(ctx, op, &StoredEnvelope{EnvelopeID: id, AccountID: acct, SecretVersion: ver, EnvelopeKind: "managed", Digest: "d" + id, Envelope: []byte(id)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := v.RecordIntent(ctx, &RotationRun{OperationID: op, AccountID: acct, BrokerID: "b", SecretVersion: ver, Intent: []byte("i" + op)}); err != nil {
+			t.Fatal(err)
+		}
+		rs := []*StoredReceipt{{EnvelopeID: id, ReceiptSeq: 1, ReceiptType: "release", OperationID: op, Digest: "h" + id, PrevReceiptHash: zeroHash, Receipt: []byte("r" + id)}}
+		if err := v.Complete(ctx, op, acct, rs, id, "release_authorized", true); err != nil {
+			t.Fatal(err)
+		}
+		return rs
+	}
+	old := release("op1", "e1")
+	release("op2", "e2")
+	if err := v.Complete(ctx, "op1", acct, old, "e1", "target_verified", true); err != nil {
+		t.Fatal(err)
+	}
+	if a, _ := v.GetAccount(ctx, acct); a.CurrentEnvelopeID != "e2" {
+		t.Fatalf("current %q after a delayed duplicate, want e2", a.CurrentEnvelopeID)
+	}
+	if r, _ := v.GetRun(ctx, acct, "op1"); r.State != "release_authorized" {
+		t.Fatalf("run state %q after a delayed duplicate", r.State)
+	}
+}
+
+// One chain and one descriptor stay under their caps, so a sync reply always fits a frame
+// (security review of #10).
+func TestChainsAndDescriptorsAreCapped(t *testing.T) {
+	v, acct := vaultAccount(t)
+	ctx := context.Background()
+	if err := v.PutTargetDescriptor(ctx, "td", acct, make([]byte, MaxDescriptor+1)); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("oversized descriptor: %v", err)
+	}
+	ver, _ := v.Reserve(ctx, acct, "op", 0)
+	if err := v.PutEnvelope(ctx, "op", &StoredEnvelope{EnvelopeID: "big", AccountID: acct, SecretVersion: ver, EnvelopeKind: "managed", Digest: "dbig", Envelope: make([]byte, MaxChain+1)}); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("oversized envelope: %v", err)
+	}
+	env := []byte(strings.Repeat("e", MaxChain/2))
+	if err := v.PutEnvelope(ctx, "op", &StoredEnvelope{EnvelopeID: "e", AccountID: acct, SecretVersion: ver, EnvelopeKind: "managed", Digest: "de", Envelope: env}); err != nil {
+		t.Fatal(err)
+	}
+	r := func(seq uint64, prev string, n int) *StoredReceipt {
+		return &StoredReceipt{EnvelopeID: "e", ReceiptSeq: seq, ReceiptType: "commit_target", OperationID: "op", Digest: fmt.Sprint("h", seq), PrevReceiptHash: prev, Receipt: []byte(strings.Repeat("r", n))}
+	}
+	if err := v.Complete(ctx, "op", acct, []*StoredReceipt{r(1, zeroHash, MaxChain/4)}, "", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Complete(ctx, "op", acct, []*StoredReceipt{r(2, "h1", MaxChain/4+1)}, "", "", false); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("receipt over the chain cap: %v", err)
 	}
 }

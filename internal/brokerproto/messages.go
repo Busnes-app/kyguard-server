@@ -9,6 +9,7 @@ import (
 	"github.com/Busnes-app/kyguard-server/internal/cptrust"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto/canonical"
+	"github.com/Busnes-app/kyguard-server/internal/store"
 )
 
 // Paths on the broker listener.
@@ -116,9 +117,10 @@ const (
 	SyncAccountsPage = 4096
 )
 
-// SyncBudget bounds the encoded manifests of one sync page and the encoded chains of one
-// sync_account reply. A page that would be empty carries its first item anyway; one
-// manifest is at most cptrust.MaxManifest, so a page stays under MaxFrame. It is a
+// SyncBudget bounds the encoded manifests of one sync page and the encoded descriptor and
+// chains of one sync_account reply. A page that would be empty carries its first item
+// anyway; one manifest is at most cptrust.MaxManifest and one chain with its descriptor at
+// most store.MaxChain and store.MaxDescriptor, so a page stays under MaxFrame. It is a
 // variable only so tests can lower it.
 var SyncBudget = syncBudget
 
@@ -129,10 +131,12 @@ var SyncChains = 64
 const syncBudget = 2 << 20
 
 // A budget-sized page or one maximal manifest, base64url-encoded, leaves 1 MiB of a frame
-// for JSON framing (a negative constant fails to compile).
+// for JSON framing, and one maximal chain with its descriptor fits the budget (a negative
+// constant fails to compile).
 const (
 	_ = uint(MaxFrame - 1<<20 - syncBudget)
 	_ = uint(MaxFrame - 1<<20 - (cptrust.MaxManifest+2)/3*4)
+	_ = uint(syncBudget - 64<<10 - (store.MaxChain+store.MaxDescriptor+2)/3*4)
 )
 
 // SyncRequest pages through the verified manifests, then the pool's account IDs.
@@ -149,16 +153,14 @@ type SyncReply struct {
 	Done      bool            `json:"done"`
 }
 
-// SyncAccountRequest asks for one account: its current and unterminated chains and, within
-// SyncBudget, the chains above AfterVersion in version order. More means call again with
-// AfterVersion set to the highest version received.
+// SyncAccountRequest asks for one account, within SyncBudget per reply: its current and
+// unterminated chains at or below AfterVersion and every chain above it, in version order,
+// starting above From. More means call again with the same AfterVersion and From set to the
+// highest version received.
 type SyncAccountRequest struct {
 	AccountID    pqcrypto.UUID    `json:"account_id"`
 	AfterVersion pqcrypto.Counter `json:"after_version"`
-	// Continue is set on every request after the first: the current and unterminated
-	// chains at or below AfterVersion came with the first reply, so a continuation carries
-	// only newer chains and always advances.
-	Continue bool `json:"continue,omitzero"`
+	From         pqcrypto.Counter `json:"from,omitzero"`
 }
 
 // AccountState is one account as the Control Plane holds it.
