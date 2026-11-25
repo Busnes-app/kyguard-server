@@ -39,7 +39,9 @@ func (s *Server) readCode(w http.ResponseWriter, r *http.Request) (string, bool)
 
 // stepupAudit writes a step-up audit record; a failed write fails the request.
 func (s *Server) stepupAudit(w http.ResponseWriter, r *http.Request, userID, action, details string) bool {
-	if err := s.store.Audit().LogAudit(context.WithoutCancel(r.Context()), &store.AuditRecord{UserID: userID, Action: action, Resource: "session", Details: details, IPAddress: s.requestIP(r)}); err != nil {
+	if err := detachedWrite(r, func(ctx context.Context) error {
+		return s.store.Audit().LogAudit(ctx, &store.AuditRecord{UserID: userID, Action: action, Resource: "session", Details: details, IPAddress: s.requestIP(r)})
+	}); err != nil {
 		s.writeError(w, http.StatusServiceUnavailable, "Audit unavailable")
 		return false
 	}
@@ -87,8 +89,11 @@ func (s *Server) handleStepupTOTP(w http.ResponseWriter, r *http.Request) {
 		s.codeRefused(w, r, user.ID, err)
 		return
 	}
-	_, _, err = s.sessions.ExchangePending(context.WithoutCancel(r.Context()), w, r, user, sess, factorID, nil,
-		&store.AuditRecord{UserID: user.ID, Action: "auth.stepup", Resource: "session", Details: "factor=totp", IPAddress: s.requestIP(r)})
+	err = detachedWrite(r, func(ctx context.Context) error {
+		_, _, err := s.sessions.ExchangePending(ctx, w, r, user, sess, factorID, nil,
+			&store.AuditRecord{UserID: user.ID, Action: "auth.stepup", Resource: "session", Details: "factor=totp", IPAddress: s.requestIP(r)})
+		return err
+	})
 	s.exchanged(w, err)
 }
 
@@ -142,8 +147,11 @@ func (s *Server) handleStepupEnrollConfirm(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	factor := &store.MFAFactor{ID: "mfa_" + crypto.RandomHex(12), SecretEnc: sess.PendingSecretEnc, LastCounter: counter}
-	_, _, err = s.sessions.ExchangePending(context.WithoutCancel(r.Context()), w, r, user, sess, "", factor,
-		&store.AuditRecord{UserID: user.ID, Action: "auth.factor_enrolled", Resource: "session", Details: "factor=totp", IPAddress: s.requestIP(r)})
+	err = detachedWrite(r, func(ctx context.Context) error {
+		_, _, err := s.sessions.ExchangePending(ctx, w, r, user, sess, "", factor,
+			&store.AuditRecord{UserID: user.ID, Action: "auth.factor_enrolled", Resource: "session", Details: "factor=totp", IPAddress: s.requestIP(r)})
+		return err
+	})
 	if errors.Is(err, store.ErrAlreadyExists) {
 		s.writeError(w, http.StatusConflict, "An authenticator is already enrolled; enter its code")
 		return
