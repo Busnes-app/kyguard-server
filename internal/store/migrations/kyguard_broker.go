@@ -77,6 +77,7 @@ CREATE TABLE accounts (
     health_reason TEXT NOT NULL DEFAULT '',
     created_at {{ts}} NOT NULL
 );
+CREATE INDEX idx_accounts_pool ON accounts(pool_id, id);
 CREATE TABLE target_descriptors (
     digest TEXT PRIMARY KEY,
     account_id TEXT NOT NULL REFERENCES accounts(id),

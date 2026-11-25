@@ -65,11 +65,20 @@ func (l *Listener) account(ctx context.Context, tr *pqcrypto.Trust, b *store.Bro
 	if err != nil {
 		return nil, nil, errNotInPool
 	}
-	p, _ := tr.Policy(id)
-	if a.PoolID != b.PoolID || p == nil || p.AccountKind != pqcrypto.KindManaged || p.PoolID != pqcrypto.UUID(b.PoolID) {
+	p := inPool(tr, b, a)
+	if p == nil {
 		return nil, nil, errNotInPool
 	}
 	return a, p, nil
+}
+
+// inPool returns a's current managed policy if it places a in the broker's pool.
+func inPool(tr *pqcrypto.Trust, b *store.Broker, a *store.Account) *pqcrypto.PolicyManifest {
+	p, _ := tr.Policy(pqcrypto.UUID(a.ID))
+	if a.PoolID != b.PoolID || p == nil || p.AccountKind != pqcrypto.KindManaged || p.PoolID != pqcrypto.UUID(b.PoolID) {
+		return nil
+	}
+	return p
 }
 
 func (l *Listener) sync(ctx context.Context, tr *pqcrypto.Trust, b *store.Broker, body json.RawMessage) (*SyncReply, error) {
@@ -95,25 +104,28 @@ func (l *Listener) sync(ctx context.Context, tr *pqcrypto.Trust, b *store.Broker
 	if len(out.Manifests) > 0 {
 		return out, nil // accounts come once every manifest is delivered
 	}
-	accts, err := l.Store.Vault().PoolAccounts(ctx, b.PoolID)
-	if err != nil {
-		return nil, err
+	// Accounts are read in ID order, a page at a time, and checked as read (PR Reviewer Guide on #10).
+	after := string(req.AccountsAfter)
+	for {
+		accts, err := l.Store.Vault().PoolAccounts(ctx, b.PoolID, after, SyncAccountsPage+1)
+		if err != nil {
+			return nil, err
+		}
+		for _, a := range accts {
+			if inPool(tr, b, a) == nil {
+				continue
+			}
+			if len(out.Accounts) == SyncAccountsPage {
+				return out, nil
+			}
+			out.Accounts = append(out.Accounts, pqcrypto.UUID(a.ID))
+		}
+		if len(accts) <= SyncAccountsPage {
+			out.Done = true
+			return out, nil
+		}
+		after = accts[len(accts)-1].ID
 	}
-	out.Done = true
-	for _, a := range accts {
-		if req.AccountsAfter != "" && a.ID <= string(req.AccountsAfter) {
-			continue
-		}
-		if _, _, err := l.account(ctx, tr, b, pqcrypto.UUID(a.ID)); err != nil {
-			continue
-		}
-		if len(out.Accounts) == SyncAccountsPage {
-			out.Done = false
-			break
-		}
-		out.Accounts = append(out.Accounts, pqcrypto.UUID(a.ID))
-	}
-	return out, nil
 }
 
 func (l *Listener) syncAccount(ctx context.Context, tr *pqcrypto.Trust, b *store.Broker, body json.RawMessage) (*AccountState, error) {

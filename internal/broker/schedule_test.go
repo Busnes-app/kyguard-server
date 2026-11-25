@@ -143,19 +143,20 @@ func TestRefusedAttemptsRetryThenStop(t *testing.T) {
 	}
 }
 
-// The known minimum-age deadline holds the next attempt back.
+// A refusal waits for the known minimum-age deadline. A minimum age equal to the interval
+// still runs, and the target changed the password just now.
 func TestRefusalWaitsForTheMinimumAge(t *testing.T) {
 	start := time.Now().UTC()
 	r := newRig(t, scheduled(start))
 	r.target.refuseAfterCommit = true
-	deadline := start.Add(5 * day)
-	r.target.lastChange, r.target.minAge = start, 5*day
+	now := start.Add(day + time.Hour)
+	r.target.lastChange, r.target.minAge = now, day
 	m := r.machine()
 	defer m.J.Close()
-	clock(m, start.Add(day+time.Hour))
+	clock(m, now)
 	m.Tick(context.Background())
-	if got := r.account(m).NextAttemptAt; !got.Equal(deadline) {
-		t.Fatalf("next_attempt_at %v, want the minimum-age deadline %v", got, deadline)
+	if a := r.account(m); a.Run.Reason != pqcrypto.ReasonRefused || !a.NextAttemptAt.Equal(now.Add(day)) {
+		t.Fatalf("%s: next_attempt_at %v, want the minimum-age deadline %v", a.Run.Reason, a.NextAttemptAt, now.Add(day))
 	}
 }
 
@@ -179,26 +180,31 @@ func TestMinimumAgeAboveTheIntervalRunsNothing(t *testing.T) {
 	}
 }
 
-// The target's minimum age is read at the pre-rotation login, not set by hand: a refusal
-// then waits for the target's deadline, and a minimum age above the interval stops the
-// schedule (PR Reviewer Guide on #12).
+// The target's minimum age is read at the pre-rotation login, not set by hand. One above
+// the interval stops the occurrence before the change is sent, even though the target would
+// accept it: the last change is old enough (PR Reviewer Guide on #12).
 func TestTheTargetsMinimumAgeIsReadAtLogin(t *testing.T) {
 	start := time.Now().UTC()
 	r := newRig(t, scheduled(start))
-	r.target.refuseAfterCommit = true
-	r.target.lastChange, r.target.minAge = start, 3*day
+	r.target.lastChange, r.target.minAge = start.Add(-30*day), 2*day
 	m := r.machine()
 	defer m.J.Close()
-	clock(m, start.Add(day+time.Hour))
-	m.Tick(context.Background())
-	a := r.account(m)
-	if a.MinAgeSeconds != int64(3*day/time.Second) || !a.NextAttemptAt.Equal(start.Add(3*day)) {
-		t.Fatalf("min age %ds, next attempt %v", a.MinAgeSeconds, a.NextAttemptAt)
+	for _, at := range []time.Time{start.Add(day + time.Hour), start.Add(3 * day)} {
+		clock(m, at)
+		m.Tick(context.Background())
+		a := r.account(m)
+		if _, w := r.target.state(); w != 0 || a.Health != broker.HealthRotationFailed || a.HealthReason != broker.ReasonBelowMinAge {
+			t.Fatalf("writes=%d health=%s/%s", w, a.Health, a.HealthReason)
+		}
+		if a.Run == nil || a.Run.State != broker.StateAborted || a.Run.Reason != pqcrypto.ReasonRestartBeforeSend || a.Run.Attempt != 0 {
+			t.Fatalf("run %+v", a.Run)
+		}
+		if a.MinAgeSeconds != int64(2*day/time.Second) || !a.MinAgeDeadline.Equal(start.Add(-28*day)) {
+			t.Fatalf("min age %ds, deadline %v", a.MinAgeSeconds, a.MinAgeDeadline)
+		}
 	}
-	clock(m, start.Add(4*day))
-	m.Tick(context.Background())
-	if a := r.account(m); a.HealthReason != broker.ReasonBelowMinAge || a.Run.Attempt != 0 {
-		t.Fatalf("health %s/%s after attempt %d", a.Health, a.HealthReason, a.Run.Attempt)
+	if ca := r.cpAccount(); ca.HealthReason != broker.ReasonBelowMinAge {
+		t.Fatalf("control plane reason %q", ca.HealthReason)
 	}
 }
 
