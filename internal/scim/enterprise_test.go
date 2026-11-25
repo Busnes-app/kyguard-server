@@ -55,11 +55,16 @@ func TestEnterpriseUserAttributes(t *testing.T) {
 	if _, err := st.Inventory().EnsureDefinition(ctx, &store.AttributeDefinition{ID: "blocker", Entity: store.EntityUser, Key: "title", Label: "T", Type: store.AttrString, Source: store.SourceAdmin}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if w := do("POST", "/scim/v2/Users", map[string]any{"schemas": []string{scim.SchemaUser}, "userName": "fay", "active": true, "title": "CTO"}); w.Code < 400 {
+	if w := do("POST", "/scim/v2/Users", map[string]any{"schemas": []string{scim.SchemaUser, scim.SchemaEnterpriseUser}, "userName": "fay", "active": true, "title": "CTO",
+		scim.SchemaEnterpriseUser: map[string]any{"department": "Ops", "manager": map[string]any{"value": "mgr-1"}}}); w.Code < 400 {
 		t.Fatalf("create with a failing attribute write: %d", w.Code)
 	}
 	if _, err := st.Users().GetUserByUsername(ctx, "fay"); err == nil {
 		t.Fatal("half-created user left behind")
+	}
+	// Nor does it claim the other keys: an admin can still define department.
+	if defs, err := st.Inventory().Definitions(ctx, store.EntityUser); err != nil || len(defs) != 1 {
+		t.Fatalf("a refused create left definitions behind: %d %v", len(defs), err)
 	}
 	// The same holds for a PATCH: its profile change is not written either.
 	{

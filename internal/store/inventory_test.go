@@ -139,9 +139,10 @@ func TestReportFactsNewestRelease(t *testing.T) {
 	}
 }
 
-// Spec §8.2, §9.3: a SCIM write and its synced attributes commit together. The second
-// attribute write fails here (its definition is gone), so the status change, the session
-// revocation and the first attribute must all roll back.
+// Spec §8.2, §9.3: a SCIM write, its synced attributes and the SCIM definitions it creates
+// commit together. The last attribute write fails here (an admin owns title), so the status
+// change, the session revocation, the first attribute and the new manager definition must
+// all roll back.
 func TestSCIMProfileAndAttributesAreAtomic(t *testing.T) {
 	s, inv := inventoryFor(t)
 	ctx := context.Background()
@@ -161,7 +162,10 @@ func TestSCIMProfileAndAttributesAreAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	u.Status = "inactive"
-	u.SCIMAttributes = map[string]string{"department": "Sales", "title": "CTO"} // no title definition
+	if _, err := inv.EnsureDefinition(ctx, &AttributeDefinition{ID: "dt", Entity: EntityUser, Key: "title", Label: "T", Type: AttrString, Source: SourceAdmin}, nil); err != nil {
+		t.Fatal(err)
+	}
+	u.SCIMAttributes = map[string]string{"department": "Sales", "manager": "m1", "title": "CTO"}
 	if err := s.Users().UpdateSCIMProfile(ctx, u, "user", "active", u.SSOSubject); err == nil {
 		t.Fatal("update with a failing attribute write succeeded")
 	}
@@ -174,5 +178,18 @@ func TestSCIMProfileAndAttributesAreAtomic(t *testing.T) {
 	}
 	if vals, _ := inv.Values(ctx, EntityUser); vals["usr_a"]["department"] != "Ops" {
 		t.Fatalf("first attribute kept: %v", vals["usr_a"])
+	}
+	if defs, _ := inv.Definitions(ctx, EntityUser); len(defs) != 2 {
+		t.Fatalf("a rolled-back write left a definition: %d", len(defs))
+	}
+	// Without the admin title, the same write creates the missing definitions itself.
+	if err := inv.DeleteDefinition(ctx, "dt", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Users().UpdateSCIMProfile(ctx, u, "user", "active", u.SSOSubject); err != nil {
+		t.Fatal(err)
+	}
+	if vals, _ := inv.Values(ctx, EntityUser); vals["usr_a"]["title"] != "CTO" || vals["usr_a"]["manager"] != "m1" {
+		t.Fatalf("values %v", vals["usr_a"])
 	}
 }

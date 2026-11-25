@@ -26,9 +26,9 @@ Owns local persistence adapters and bearer authentication; the library owns `/sc
   user attributes with `source = 'scim'` (spec §8.2): create and PUT set all three (an
   omitted one is cleared), PATCH changes only what its operations touch (paths with or
   without the extension URI, `manager.value`, and path-less value maps). Values are trimmed,
-  stripped of control characters and cut to 256 characters. `prepare` ensures the SCIM definitions before any
-  user write, so a request whose attributes cannot be written changes nothing (create,
-  adoption, PUT, PATCH). The handler sets `User.SCIMAttributes`, and the store writes
+  stripped of control characters and cut to 256 characters. `prepare` refuses, before any write, a
+  request touching a key an admin defined; it writes nothing itself, so a refused request
+  changes nothing (create, adoption, PUT, PATCH), not even a definition. The handler sets `User.SCIMAttributes`, and the store writes
   them (with their audit rows) in the same transaction as the create, adoption or update,
   so a failure at any point leaves the user, its sessions and its attributes unchanged. Manager sub-attributes other than `value` are ignored. Delete is `Inventory().ForgetUser`: in one transaction
   the accounts it owned become unowned, its values go and the user row goes
