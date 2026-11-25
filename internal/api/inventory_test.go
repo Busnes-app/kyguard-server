@@ -58,6 +58,11 @@ func TestInventoryWritesNeedAnAdmin(t *testing.T) {
 		t.Errorf("user reading definitions: %d", w.Code)
 	}
 
+	for _, body := range []string{`{"name":"x"}]`, `{"name":"x"} {}`, `{"name":"x"}"y"`} {
+		if w := sendJSON(srv, admin, "POST", "/api/assets", body); w.Code != http.StatusBadRequest {
+			t.Fatalf("trailing data %s: %d", body, w.Code)
+		}
+	}
 	var asset store.Asset
 	created(t, sendJSON(srv, admin, "POST", "/api/assets", `{"name":"dc1.example.test"}`), &asset)
 	var acct store.InventoryAccount

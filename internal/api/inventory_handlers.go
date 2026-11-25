@@ -50,7 +50,8 @@ func decodeStrict(r *http.Request, v any) error {
 	if err := dec.Decode(v); err != nil {
 		return err
 	}
-	if dec.More() {
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); err != io.EOF {
 		return errors.New("trailing data")
 	}
 	return nil
