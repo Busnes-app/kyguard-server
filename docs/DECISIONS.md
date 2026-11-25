@@ -169,6 +169,11 @@ contradicts itself. Each names its section. The most secure reading wins.
 45. §3.7 (broker copy). The broker keeps every envelope and receipt chain it has seen, not
     only the current one; sync adopts a Control Plane chain only if it extends the
     broker's copy byte for byte.
+46a. §3.3 (target change). Phase 1A rotates and checks out only while the current envelope's
+    sealing policy pins the same descriptor as the current policy; otherwise health is
+    `needs_enrollment` and nothing is sent. Recovery probes the descriptor of the intent's
+    own envelope. Deferring a descriptor-changing policy while an intent or lease is open
+    (the full §3.3 rule) is not built yet.
 61. §4.1 (sync frame bound). `cptrust.Submit` refuses a manifest over 512 KiB
     (`MaxManifest`), so any stored manifest fits a 4 MiB channel frame base64url-encoded. A
     `sync` page carries at most 64 manifests whose encoded size stays within `SyncBudget`

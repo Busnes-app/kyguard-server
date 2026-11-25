@@ -10,6 +10,7 @@ import (
 	"github.com/Busnes-app/kyguard-server/internal/broker"
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
+	"github.com/Busnes-app/kyguard-server/internal/pqcrypto/pqtest"
 )
 
 var due = time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC)
@@ -48,7 +49,7 @@ func TestRotationReachesReleaseAuthorized(t *testing.T) {
 	if ca.CurrentEnvelopeID != string(env.EnvelopeID) || r.cpLock() != "" || ca.Health != broker.HealthHealthy {
 		t.Fatalf("control plane current=%s lock=%s health=%s", ca.CurrentEnvelopeID, r.cpLock(), ca.Health)
 	}
-	if run, _ := r.cp.Store.Vault().GetRun(context.Background(), string(a.Run.OperationID)); run == nil || run.State != "release_authorized" {
+	if run, _ := r.cp.Store.Vault().GetRun(context.Background(), string(r.pol.AccountID), string(a.Run.OperationID)); run == nil || run.State != "release_authorized" {
 		t.Fatalf("control plane run %+v", run)
 	}
 	// The next rotation opens the new current envelope.
@@ -302,9 +303,18 @@ func TestSyncRefusesRollbackForksAndStaleChains(t *testing.T) {
 		t.Fatalf("rotate after the policy change: %v", err)
 	}
 
-	real, err := r.cpw.Sync(ctx, 0)
-	if err != nil || !real.Done {
-		t.Fatal(err)
+	real := &brokerproto.SyncReply{}
+	for req := (brokerproto.SyncRequest{}); ; {
+		page, err := r.cpw.Sync(ctx, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		real.Manifests, real.Accounts = append(real.Manifests, page.Manifests...), append(real.Accounts, page.Accounts...)
+		if page.Done {
+			real.Done = true
+			break
+		}
+		req.ManifestsAfter += len(page.Manifests)
 	}
 	realAcct, err := r.cpw.SyncAccount(ctx, r.pol.AccountID, 0)
 	if err != nil {
@@ -322,7 +332,7 @@ func TestSyncRefusesRollbackForksAndStaleChains(t *testing.T) {
 	last.Receipts = last.Receipts[:1] // the latest release is missing
 	st.Chains[len(st.Chains)-1] = last
 	m.CP = &wrapCP{ControlPlane: r.cpw,
-		sync: func(context.Context, int) (*brokerproto.SyncReply, error) { return &stale, nil },
+		sync: func(context.Context, brokerproto.SyncRequest) (*brokerproto.SyncReply, error) { return &stale, nil },
 		account: func(context.Context, pqcrypto.UUID, pqcrypto.Counter) (*brokerproto.AccountState, error) {
 			return &st, nil
 		}}
@@ -394,5 +404,65 @@ func TestSyncFollowsEveryPage(t *testing.T) {
 		if p, _ := m.Trust.Policy(id); p == nil {
 			t.Fatalf("policy of %s not synced", id)
 		}
+	}
+}
+
+// moveTarget signs policy epoch 2 pointing the account at another host.
+func moveTarget(t *testing.T, r *rig) {
+	t.Helper()
+	raw, dg := r.cp.Dep.SSHTarget(t, r.pol.AccountID, pqtest.UUID(), "db2.example.test", 22, "svc", pqcrypto.HexID(strings.Repeat("cd", 32)))
+	if err := r.cp.Store.Vault().PutTargetDescriptor(context.Background(), string(dg), string(r.pol.AccountID), raw); err != nil {
+		t.Fatal(err)
+	}
+	p2 := *r.pol
+	p2.Signatures, p2.Epoch, p2.TargetDescriptorDigest = nil, 2, dg
+	r.cp.Submit(r.cp.Dep.Signed(t, &p2))
+}
+
+// §3.3, §13 1A acceptance test 6 (security review of #11): after the descriptor changes,
+// the envelope sealed for the old target is never sent to the new one.
+func TestDescriptorChangeNeedsEnrollment(t *testing.T) {
+	r := newRig(t)
+	moveTarget(t, r)
+	m := r.machine()
+	defer m.J.Close()
+	if err := m.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); !errors.Is(err, broker.ErrNeedsEnrollment) {
+		t.Fatalf("got %v", err)
+	}
+	if len(r.target.hosts) != 0 {
+		t.Fatalf("logged into %v", r.target.hosts)
+	}
+	if a := r.account(m); a.Health != broker.HealthNeedsEnrollment {
+		t.Fatalf("health %s", a.Health)
+	}
+}
+
+// Recovery probes the target the intent was for, not a descriptor that arrived since.
+func TestRecoveryProbesTheOriginalTarget(t *testing.T) {
+	r := newRig(t)
+	m := r.machine()
+	m.Hook = func(p string) error {
+		if p == "after_write" {
+			return errors.New("kill")
+		}
+		return nil
+	}
+	m.Rotate(context.Background(), r.pol.AccountID, 0, due)
+	m.J.Close()
+	moveTarget(t, r)
+	m2 := r.machine()
+	defer m2.J.Close()
+	if err := m2.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	r.target.hosts = nil
+	if err := m2.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.target.hosts) != 1 || r.target.hosts[0] != "db1.example.test" {
+		t.Fatalf("probed %v", r.target.hosts)
 	}
 }

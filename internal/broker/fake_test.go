@@ -23,7 +23,8 @@ type fakeTarget struct {
 	changed  int // pwdLastSet stand-in
 	writes   int // changes that reached the target
 	logins   map[string]int
-	failed   int // denied logins
+	failed   int      // denied logins
+	hosts    []string // descriptor hosts logged into
 	// Faults.
 	refuseBeforeCommit bool  // e.g. an unrecognized prompt
 	refuseAfterCommit  bool  // e.g. password policy
@@ -44,14 +45,20 @@ func (f *fakeTarget) login(pw []byte) error {
 	return nil
 }
 
-func (f *fakeTarget) Login(_ context.Context, _ *pqcrypto.TargetDescriptor, pw []byte) (broker.Session, error) {
+func (f *fakeTarget) Login(_ context.Context, d *pqcrypto.TargetDescriptor, pw []byte) (broker.Session, error) {
+	f.mu.Lock()
+	f.hosts = append(f.hosts, d.Endpoint.Host)
+	f.mu.Unlock()
 	if err := f.login(pw); err != nil {
 		return nil, err
 	}
 	return &fakeSession{f}, nil
 }
 
-func (f *fakeTarget) Verify(_ context.Context, _ *pqcrypto.TargetDescriptor, pw []byte, baseline string) error {
+func (f *fakeTarget) Verify(_ context.Context, d *pqcrypto.TargetDescriptor, pw []byte, baseline string) error {
+	f.mu.Lock()
+	f.hosts = append(f.hosts, d.Endpoint.Host)
+	f.mu.Unlock()
 	if err := f.login(pw); err != nil {
 		return err
 	}
@@ -226,7 +233,7 @@ type wrapCP struct {
 	broker.ControlPlane
 	intent  func(ctx context.Context, raw []byte) error
 	reserve func(ctx context.Context, account, op pqcrypto.UUID, reported pqcrypto.Counter) (pqcrypto.Counter, error)
-	sync    func(ctx context.Context, after int) (*brokerproto.SyncReply, error)
+	sync    func(ctx context.Context, req brokerproto.SyncRequest) (*brokerproto.SyncReply, error)
 	account func(ctx context.Context, id pqcrypto.UUID, after pqcrypto.Counter) (*brokerproto.AccountState, error)
 	// receiptsErr fails every receipts delivery while set.
 	receiptsErr error
@@ -253,11 +260,11 @@ func (w *wrapCP) Reserve(ctx context.Context, account, op pqcrypto.UUID, reporte
 	return w.ControlPlane.Reserve(ctx, account, op, reported)
 }
 
-func (w *wrapCP) Sync(ctx context.Context, after int) (*brokerproto.SyncReply, error) {
+func (w *wrapCP) Sync(ctx context.Context, req brokerproto.SyncRequest) (*brokerproto.SyncReply, error) {
 	if w.sync != nil {
-		return w.sync(ctx, after)
+		return w.sync(ctx, req)
 	}
-	return w.ControlPlane.Sync(ctx, after)
+	return w.ControlPlane.Sync(ctx, req)
 }
 
 func (w *wrapCP) SyncAccount(ctx context.Context, id pqcrypto.UUID, after pqcrypto.Counter) (*brokerproto.AccountState, error) {

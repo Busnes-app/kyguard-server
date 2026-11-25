@@ -63,6 +63,7 @@ var (
 	ErrNotActive       = errors.New("broker: this broker is not the active member of the account's pool")
 	ErrStaleVersion    = errors.New("broker: reserved secret_version is not above the highest seen")
 	ErrNoDescriptor    = errors.New("broker: no verified target descriptor for the account's policy")
+	ErrNeedsEnrollment = errors.New("broker: the current credential was sealed for another target; enroll at the new one")
 	errNoAck           = errors.New("broker: no Control Plane acknowledgement of the intent")
 	passwordAlphabet   = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!@"
 	passwordLength     = 32
@@ -129,17 +130,9 @@ func (m *Machine) rotationContext(a *Account) (*rotationContext, error) {
 	if pool == nil || pool.Active() == nil || pool.Active().BrokerID != m.ID {
 		return nil, ErrNotActive
 	}
-	raw := m.J.Descriptor(p.TargetDescriptorDigest)
-	if raw == nil {
-		return nil, ErrNoDescriptor
-	}
-	td, dg, err := pqcrypto.DecodeTargetDescriptor(raw)
-	if err != nil || dg.Hex() != p.TargetDescriptorDigest {
-		return nil, ErrNoDescriptor
-	}
-	conn := m.Connectors[td.ConnectorType]
-	if conn == nil {
-		return nil, fmt.Errorf("broker: no connector for %s", td.ConnectorType)
+	td, conn, err := m.descriptor(p.TargetDescriptorDigest)
+	if err != nil {
+		return nil, err
 	}
 	chains, err := m.chains(a)
 	if err != nil {
@@ -149,7 +142,28 @@ func (m *Machine) rotationContext(a *Account) (*rotationContext, error) {
 	if cur == nil {
 		return nil, ErrNoCurrent
 	}
+	// A credential sealed for another target is never sent to this one (§3.3).
+	if cur.Envelope.Policy.TargetDescriptorDigest != p.TargetDescriptorDigest {
+		return nil, ErrNeedsEnrollment
+	}
 	return &rotationContext{policy: p, digest: d, target: td, current: cur, conn: conn}, nil
+}
+
+// descriptor returns a verified descriptor by digest and its connector.
+func (m *Machine) descriptor(digest pqcrypto.HexID) (*pqcrypto.TargetDescriptor, Connector, error) {
+	raw := m.J.Descriptor(digest)
+	if raw == nil {
+		return nil, nil, ErrNoDescriptor
+	}
+	td, dg, err := pqcrypto.DecodeTargetDescriptor(raw)
+	if err != nil || dg.Hex() != digest {
+		return nil, nil, ErrNoDescriptor
+	}
+	conn := m.Connectors[td.ConnectorType]
+	if conn == nil {
+		return nil, nil, fmt.Errorf("broker: no connector for %s", td.ConnectorType)
+	}
+	return td, conn, nil
 }
 
 // open unwraps an envelope sealed to this broker. The caller wipes the result.
@@ -178,6 +192,13 @@ func (m *Machine) Rotate(ctx context.Context, account pqcrypto.UUID, occurrence 
 		return ErrBlocked
 	}
 	rc, err := m.rotationContext(a)
+	if errors.Is(err, ErrNeedsEnrollment) && a.Health != HealthNeedsEnrollment {
+		a.Health, a.HealthReason = HealthNeedsEnrollment, "the target descriptor changed"
+		if serr := m.J.Save(a); serr != nil {
+			return serr
+		}
+		m.report(ctx, a, "")
+	}
 	if err != nil {
 		return err
 	}
@@ -556,13 +577,20 @@ func (m *Machine) recover(ctx context.Context, a *Account) error {
 		return err
 	}
 	m.report(ctx, a, StateWriteOutcomeUnknown)
-	rc, err := m.rotationContext(a)
-	if errors.Is(err, ErrNotActive) {
+	if p, _ := m.Trust.Policy(a.ID); p == nil || m.Trust.Pool(p.PoolID) == nil || m.Trust.Pool(p.PoolID).Active() == nil || m.Trust.Pool(p.PoolID).Active().BrokerID != m.ID {
 		return m.quarantine(ctx, a, HealthQuarantined, "an intent of a broker that is no longer active")
 	}
+	// The probe goes to the target the intent was for: the descriptor its envelope's sealing
+	// policy pins, whatever the current policy says now.
+	env, err := m.Trust.VerifyEnvelope(r.NewEnvelope, pqcrypto.EnvelopeContext{})
 	if err != nil {
 		return err
 	}
+	td, conn, err := m.descriptor(env.Policy.TargetDescriptorDigest)
+	if err != nil {
+		return err
+	}
+	rc := &rotationContext{policy: env.Policy, target: td, conn: conn}
 	var in brokerproto.Intent
 	if _, err := canonical.Decode(r.Intent, &in); err != nil {
 		return err
