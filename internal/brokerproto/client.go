@@ -109,6 +109,6 @@ func Dial(ctx context.Context, listenerURL string, ca *x509.Certificate, client 
 		}
 		return nil, err
 	}
-	c.SetReadLimit(1 << 20)
+	c.SetReadLimit(MaxFrame)
 	return c, nil
 }

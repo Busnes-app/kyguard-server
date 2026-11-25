@@ -183,3 +183,41 @@ Numbered separately: these came from the parallel crypto stack.
     leaving younger ones to a replica that may still be answering.
 38. §9.2 (migration numbering). Broker-stack migrations take versions from 100 so the two
     parallel stacks never reuse a version; they run after every Phase 0 migration.
+39. §9.2, §8.1 (minimal accounts). The broker stack's migration 101 creates `assets` and
+    `accounts` with only the columns it needs (`pool_id`, `current_envelope_id`,
+    `min_password_age_seconds`, `owner_user_id`, `status`, the version high-water mark and
+    the broker-reported `health`); the inventory work adds the rest.
+40. §4.3 rule 7 (completion). The Control Plane derives the outcome of a receipts request
+    from the verified receipts: `release` makes its envelope current, marks the run
+    `release_authorized` and deletes the operation's lock; `abort` marks it `aborted` and
+    deletes the lock; `commit_target` marks it `target_verified`. The broker's own claims
+    about state are never trusted.
+41. §4.1 (channel scope). Every channel request is re-authorized: the broker must be its
+    pool's active member at that moment, and the account's current policy must be managed
+    and name that pool.
+61. §4.1 (sync frame bound). `cptrust.Submit` refuses a manifest over 512 KiB
+    (`MaxManifest`), so any stored manifest fits a 4 MiB channel frame base64url-encoded. A
+    `sync` page carries at most 64 manifests whose encoded size stays within `SyncBudget`
+    (2 MiB), and always at least one, so every page advances.
+62. §4.1 (sync read and reply bound). A `sync_account` page is the chains above the
+    request's `from`, in version order: the open ones at or below the broker's version
+    (current, or without `abort`, `release` or `vault_commit`), then every newer one. It
+    reads at most `SyncChains + 1` (65) chains and the whole reply, descriptor included,
+    stays within `SyncBudget`; a page always carries one chain. The store caps one chain
+    (envelope plus receipts) at 256 KiB and a descriptor at 64 KiB (`store.ErrTooLarge`), so
+    a one-chain page always fits a frame and every continuation advances. A `sync` page reads
+    at most `SyncPage` manifests. A `receipts` request reads only the chains its receipts
+    name.
+70. §4.1 (pushes). A Control Plane push that finds the broker's 16-slot queue full is
+    dropped and logged, never waited for, so results for pending calls keep flowing. A
+    dropped push is a lost relay: nothing was persisted, and the CLI retries or the
+    reservation expires.
+71. §3.5 (duplicate completion). A completion whose receipts are all already stored is a
+    retry and changes no derived state (current envelope, run state, lock). The current
+    envelope only ever moves to a higher `secret_version`.
+77. §3.5, §3.6 (chain room for completion). The spec bounds neither a chain's size nor
+    `standing_recipient_principal_ids`. A policy may name at most 32 standing recipients
+    (`pqcrypto.MaxStandingRecipients`; refused as `invalid_body`), and the Control Plane
+    stores an envelope only if it leaves 96 KiB of the 256 KiB chain (`store.MaxEnvelope`).
+    That room holds `commit_target` plus a `release` with all 32 wraps, so an admitted
+    rotation can always finish and give back its lock.

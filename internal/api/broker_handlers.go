@@ -21,8 +21,6 @@ import (
 // PairingTokenTTL is the lifetime of a broker pairing token (§4.1 pairing step 1).
 const PairingTokenTTL = 10 * time.Minute
 
-const maxManifestBody = 512 << 10
-
 func (s *Server) brokerRoutes() {
 	// TODO(hawthorn §7.5): classify + step-up (5-minute window for broker and pairing actions).
 	s.mux.HandleFunc("POST /api/broker-pools", s.requireAdmin(s.handleCreatePool))
@@ -100,7 +98,7 @@ func (s *Server) handleCreatePairingToken(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleSubmitManifest(w http.ResponseWriter, r *http.Request) {
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxManifestBody))
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, cptrust.MaxManifest))
 	if err != nil {
 		s.writeError(w, http.StatusRequestEntityTooLarge, "manifest too large")
 		return

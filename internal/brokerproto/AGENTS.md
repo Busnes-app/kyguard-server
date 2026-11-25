@@ -28,6 +28,24 @@ Owns `/broker/v1/*`. It is never mounted on the main mux. Signed-object rules ar
 - One channel per broker: a reconnect replaces the map entry under the listener lock and
   closes the old connection after unlocking. Never block (a close handshake, a write) while
   holding it.
+- Channel RPC (`rpc.go`, `vault.go`): broker requests carry an ID and get one `result`;
+  Control Plane pushes carry ID 0. Signed objects travel as base64url of their canonical
+  bytes. Every request re-checks that the broker is its pool's active member and that the
+  account's current managed policy names that pool. The Control Plane verifies every
+  envelope (`New: true`, signed by this broker, a rotation envelope) and every new receipt
+  (`Trust.Append`, `New: true`, the request's operation) before storing it, and derives the
+  current envelope, run state and lock release from the verified receipts alone, never
+  from the broker's word. Refusals are stable codes (`locked`, `conflict`, pqcrypto codes).
+- Frames are at most `MaxFrame` (4 MiB) on both ends. `sync` reads and sends at most
+  `SyncPage` manifests within `SyncBudget` encoded bytes, always one (a manifest is at most
+  `cptrust.MaxManifest`), and lists the pool's accounts on the last page. `sync_account`
+  pages, from `from` in version order, the open chains at or below the broker's version and
+  then every newer one: at most `SyncChains` and, descriptor included, `SyncBudget`, always
+  one chain (the store caps a chain at `store.MaxChain` and a descriptor at
+  `store.MaxDescriptor`). Never return or read a whole history for one request: use
+  `OpenChains`, `ChainsAfter`, `Chain` and `ManifestsPage`, never `Chains` (decision 62).
+- The reader never blocks on `Pushes`: a push that finds the queue full is dropped
+  (decision 70).
 - `CreateCA` never replaces existing files; `LoadCA` refuses a key that is not the
   certificate's.
 

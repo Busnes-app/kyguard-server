@@ -5,10 +5,15 @@ package brokertest
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/tls"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/Busnes-app/ky-primitives/recoverykey"
 
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
 	"github.com/Busnes-app/kyguard-server/internal/cptrust"
@@ -95,4 +100,89 @@ func (c *CP) AdmitPool(epoch pqcrypto.Counter, members ...pqcrypto.BrokerMember)
 		c.T.Fatal(err)
 	}
 	return raw
+}
+
+// Broker is a paired test broker driven directly over the channel.
+type Broker struct {
+	ID     pqcrypto.UUID
+	TLS    ed25519.PrivateKey
+	Sig    *pqcrypto.SigningKey
+	Enc    recoverykey.PrivateKey
+	Paired *brokerproto.Paired
+	Conn   *brokerproto.Conn
+}
+
+// PairBroker pairs a new broker against the listener; it is not admitted until AdmitPool
+// lists it.
+func (c *CP) PairBroker() *Broker {
+	c.T.Helper()
+	_, k, _ := ed25519.GenerateKey(rand.Reader)
+	sig, err := pqcrypto.GenerateSigningKey()
+	if err != nil {
+		c.T.Fatal(err)
+	}
+	enc, err := recoverykey.Generate()
+	if err != nil {
+		c.T.Fatal(err)
+	}
+	tok, err := brokerproto.ParseToken(c.Token(c.Srv, time.Minute))
+	if err != nil {
+		c.T.Fatal(err)
+	}
+	p, err := brokerproto.Pair(context.Background(), tok, c.Dep.Fingerprint, k, sig.Public(), enc.Public().Bytes())
+	if err != nil {
+		c.T.Fatal(err)
+	}
+	return &Broker{ID: p.BrokerID, TLS: k, Sig: sig, Enc: enc, Paired: p}
+}
+
+// Member lists b in a pool manifest.
+func (b *Broker) Member(status string) pqcrypto.BrokerMember {
+	return (&pqtest.Broker{ID: b.ID, Sig: b.Sig, Enc: b.Enc, CertSHA256: brokerproto.CertSHA256(b.Paired.Cert.Raw)}).Member(status)
+}
+
+// Dial opens the channel; it fails unless the broker is admitted.
+func (c *CP) Dial(b *Broker) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	ws, err := brokerproto.Dial(ctx, c.Srv.URL, b.Paired.CACert, tls.Certificate{Certificate: [][]byte{b.Paired.Cert.Raw}, PrivateKey: b.TLS})
+	if err != nil {
+		cancel()
+		return err
+	}
+	b.Conn = brokerproto.NewConn(ctx, ws)
+	c.T.Cleanup(cancel)
+	return nil
+}
+
+// Account creates a managed account in the pool with an SSH descriptor and a signed policy
+// at epoch 1, and returns the policy (mutated by edit before signing, if given).
+func (c *CP) Account(edit func(*pqcrypto.PolicyManifest)) *pqcrypto.PolicyManifest {
+	c.T.Helper()
+	ctx := context.Background()
+	acct, asset := pqtest.UUID(), pqtest.UUID()
+	v := c.Store.Vault()
+	if err := v.CreateAsset(ctx, &store.Asset{ID: string(asset), Name: "host"}); err != nil {
+		c.T.Fatal(err)
+	}
+	if err := v.CreateAccount(ctx, &store.Account{ID: string(acct), AssetID: string(asset), Name: "svc", AccountKind: pqcrypto.KindManaged, PoolID: string(c.Pool)}); err != nil {
+		c.T.Fatal(err)
+	}
+	raw, dg := c.Dep.SSHTarget(c.T, acct, asset, "db1.example.test", 22, "svc", pqcrypto.HexID(strings.Repeat("ab", 32)))
+	if err := v.PutTargetDescriptor(ctx, string(dg), string(acct), raw); err != nil {
+		c.T.Fatal(err)
+	}
+	p := c.Dep.ManagedPolicy(acct, c.Pool, 1, dg)
+	if edit != nil {
+		edit(p)
+	}
+	c.Submit(c.Dep.Signed(c.T, p))
+	return p
+}
+
+// Submit admits a signed manifest on the Control Plane.
+func (c *CP) Submit(raw []byte) {
+	c.T.Helper()
+	if _, _, err := c.L.Trust.Submit(context.Background(), raw, "custodian", ""); err != nil {
+		c.T.Fatal(err)
+	}
 }
