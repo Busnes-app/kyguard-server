@@ -69,6 +69,10 @@ Owns data models, store interfaces (`UserStore`, `SessionStore`, `GroupStore`, `
   displaced; a reservation still `reserved` after 15 minutes is restored by
   `ExpireEnrollments` (and lazily, in its own transaction, before any reserve or accept);
   `accepted` never expires; `Complete(..., LockRestore)` reinstates the displaced holder.
+- Checkout (migration 103): `checkout_leases` mirrors broker leases with a partial unique
+  index allowing one non-closed lease per account; a closed lease never reopens.
+  `access_transactions` doubles as the CLI's relay mailbox (challenge, purpose, delivery
+  wrap, result).
 
 ## Verification
 - `go test -v ./internal/store/...`

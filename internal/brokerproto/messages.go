@@ -103,8 +103,16 @@ const (
 	MsgStatus      = "status"       // StatusRequest
 	MsgAccept      = "accept"       // AcceptRequest: §4.5 step 2 acceptance CAS
 
+	MsgChallenge = "challenge" // ChallengeRequest: a single-use challenge for the CLI (§3.6)
+	MsgLease     = "lease"     // LeaseRequest: mirror a checkout lease
+	MsgDelivery  = "delivery"  // DeliveryRequest: the user wrap of a checkout
+	MsgTxResult  = "tx_result" // TxResultRequest: how the broker ended a transaction
+
 	// Control Plane pushes.
-	MsgEnroll = "enroll" // EnrollPush: a relayed enroll transaction and its candidate
+	MsgEnroll  = "enroll"  // EnrollPush: a relayed enroll transaction and its candidate
+	MsgTx      = "tx"      // TxPush: vault_checkout, standing_release or manual_rotation
+	MsgProof   = "proof"   // ProofPush: a possession proof for a challenge
+	MsgCheckin = "checkin" // CheckinPush: the lease holder asks for a check-in challenge
 )
 
 // Signed objects travel base64url-encoded so their canonical bytes survive any JSON
@@ -263,4 +271,51 @@ func (r *EnrollReservation) Digest() (pqcrypto.Digest, error) {
 		PrincipalID  pqcrypto.UUID `json:"principal_id"`
 		IssuedAt     pqcrypto.Time `json:"issued_at"`
 	}{c.DeploymentID, c.AccountID, c.RequestID, c.PrincipalID, c.IssuedAt})
+}
+
+// TxPush relays an access transaction.
+type TxPush struct {
+	Tx pqcrypto.B64 `json:"tx"`
+}
+
+// ProofPush relays a possession proof.
+type ProofPush struct {
+	RequestID pqcrypto.UUID `json:"request_id"`
+	Proof     pqcrypto.B64  `json:"proof"`
+}
+
+// CheckinPush asks for a check-in challenge for a lease.
+type CheckinPush struct {
+	RequestID pqcrypto.UUID `json:"request_id"`
+}
+
+// ChallengeRequest posts a single-use challenge for the requester's CLI.
+type ChallengeRequest struct {
+	RequestID pqcrypto.UUID `json:"request_id"`
+	Challenge pqcrypto.B64  `json:"challenge"`
+	Purpose   string        `json:"purpose"`
+}
+
+// LeaseRequest mirrors a lease to checkout_leases.
+type LeaseRequest struct {
+	RequestID     pqcrypto.UUID    `json:"request_id"`
+	AccountID     pqcrypto.UUID    `json:"account_id"`
+	SecretVersion pqcrypto.Counter `json:"secret_version"`
+	State         string           `json:"state"`
+	CloseReason   string           `json:"close_reason,omitzero"`
+	OpenedAt      pqcrypto.Time    `json:"opened_at"`
+	ExpiresAt     pqcrypto.Time    `json:"expires_at"`
+}
+
+// DeliveryRequest carries the checkout wrap: the DEK sealed to the requester's enc_key_id
+// with the DEK-wrap AAD (§3.6 step 4). It is not a receipt.
+type DeliveryRequest struct {
+	RequestID pqcrypto.UUID      `json:"request_id"`
+	Wrap      pqcrypto.Recipient `json:"wrap"`
+}
+
+// TxResultRequest reports the end of a transaction to the CLI: "ok" or a refusal code.
+type TxResultRequest struct {
+	RequestID pqcrypto.UUID `json:"request_id"`
+	Result    string        `json:"result"`
 }

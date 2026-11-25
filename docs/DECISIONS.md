@@ -211,3 +211,14 @@ contradicts itself. Each names its section. The most secure reading wins.
     `enroll_reservation`, at most 5 minutes old); otherwise 403 and no lock is taken. It
     stops anyone who is not an enroller from holding the account's lock for 15 minutes; it
     authorizes nothing at the broker.
+56. §3.6 step 4 (verification failure at delivery). Only a deterministic authentication
+    failure quarantines; an unreachable target also delivers nothing and closes the lease
+    (reason `target_unavailable`) but does not quarantine, since nothing was learned about
+    the credential.
+57. §3.4 (`manual_rotation`). It runs under `opid(request_id, 0)` and burns `request_id` in
+    the same journal write as `prepared`. Inside the minimum age it is refused
+    (`ErrMinAge`) after resetting the refusal counter and setting `next_attempt_at` to the
+    deadline, so the schedule resumes there.
+58. §3.6 (relay mailbox). The CLI collects challenges, deliveries and refusals from
+    `access_transactions`; any session can read a mailbox, which reveals nothing usable: a
+    challenge needs the transaction's `cnf` key and a delivery the requester's key.

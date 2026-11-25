@@ -78,6 +78,12 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   checks it again, binds exactly once only after the Control Plane accepted, and commits
   `vault_commit` with `abort` (`superseded_by_reenrollment`) on every unterminated envelope,
   which is the only way out of quarantine.
+- Checkout and leases (spec §3.4, §3.6): `vault_checkout` with a single-use challenge and a
+  possession proof opens a lease, verifies the credential once and wraps it to the
+  requester's key only; check-in or expiry starts the lease's cleanup rotation, the only
+  rotation path until it releases; scheduled rotations wait; `manual_rotation` runs a
+  rotation or re-arms a pending cleanup. `cli.NewTransaction`, `Proof` and `OpenDelivery`
+  are the CLI's half.
 
 ### Upgrade impact
 
@@ -92,6 +98,8 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   is a new dependency.
 - Migration 101 adds `assets`, `accounts`, `target_descriptors`, `secret_envelopes`,
   `envelope_receipts`, `rotation_locks` and `rotation_runs`; no data migrates.
+- Migration 103 adds `checkout_leases` and the relay mailbox columns of
+  `access_transactions`; no data migrates.
 - Migration 102 adds enrollment columns to `rotation_locks` and `access_transactions`; no
   data migrates.
 - `github.com/go-ldap/ldap/v3` is a new dependency (the AD connector); CI gains a

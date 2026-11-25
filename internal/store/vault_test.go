@@ -142,3 +142,29 @@ func TestEnrollmentReservation(t *testing.T) {
 		t.Fatalf("restore gave %q", op)
 	}
 }
+
+// §3.6 step 3: at most one non-closed lease per account, as a database constraint; a
+// closed lease never reopens.
+func TestOneOpenLeasePerAccount(t *testing.T) {
+	v, acct := vaultAccount(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	l := func(id, state string) *Lease {
+		return &Lease{RequestID: id, AccountID: acct, BrokerID: "b", SecretVersion: 1, State: state, OpenedAt: now, ExpiresAt: now.Add(time.Hour)}
+	}
+	if err := v.MirrorLease(ctx, l("r1", "active")); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.MirrorLease(ctx, l("r2", "active")); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second open lease: %v", err)
+	}
+	if err := v.MirrorLease(ctx, l("r1", "closed")); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.MirrorLease(ctx, l("r1", "active")); !errors.Is(err, ErrConflict) {
+		t.Fatalf("reopened: %v", err)
+	}
+	if err := v.MirrorLease(ctx, l("r2", "active")); err != nil {
+		t.Fatalf("after close: %v", err)
+	}
+}
