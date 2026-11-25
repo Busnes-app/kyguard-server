@@ -73,3 +73,52 @@ contradicts itself. Each names its section. The most secure reading wins.
     enrollment candidate, and `superseded_by_reenrollment` at the next seq of any unterminated
     envelope. A vaulted `rewrap_user` signer must already be a user recipient (initial or
     added by an earlier rewrap).
+20. §3.1, §3.2 rule 6 (key files). Argon2id comes from `golang.org/x/crypto/argon2`, the
+    implementation `ky-primitives/password` uses, at `password.DefaultParams()`. It derives
+    an AES-256-GCM key that seals the seeds; the clear header (kind, ID, key IDs, KDF
+    parameters) is the AAD, so it cannot be edited without the passphrase. New passphrases
+    need at least 12 characters.
+21. §3.2 rule 2 (`kyguard-cli init`). Every custodian signs both epoch-1 manifests, not just
+    M, and init verifies the bundle against its own fingerprint before writing it.
+22. §3.2 rules 3 and 5 (`trust`). Replacing a pin with a different fingerprint needs
+    `--replace`; a failed `trust` leaves no state behind.
+23. §3.2 rule 3 (manifest intake). `kyguard-cli import` is how the CLI accepts manifests
+    offline and records their high-water marks (the spec names no command for it). It
+    alerts on equivocation.
+24. §3.2 rule 4 (`sign`). The CLI refuses to sign a managed policy without a target
+    descriptor whose recomputed digest, account and deployment match the policy, and
+    refuses a signing key outside the current custodian set.
+25. §3.3, §13 (`enroll`). Phase 0 enrolls a principal's first key only; adding or rotating
+    keys, which needs self-signatures by the existing active keys, comes later.
+26. §7.6 (Control Plane client). The CLI reaches the Control Plane only through
+    `cli.Client`. The session-backed HTTP implementation arrives with `kyguard-cli login`,
+    together with the Control Plane's draft and manifest endpoints; Phase 0 commands take
+    files.
+27. §3.1, §9.4 (decrypt boundary). `TestNothingInTheServerDecrypts` exempts exactly one
+    function outside the restore command: `internal/cli/keyfile.go` `openKeyFile`. It
+    rebuilds a user's own X-Wing key from that user's passphrase-sealed key file with
+    `recoverykey.FromSeed` (§3.1 names `recoverykey` for these keys); it is part of
+    `kyguard-cli`, not the server, and never handles the suite recovery key.
+28. §3.2 rules 3 and 5 (`trust`, same fingerprint). Re-pinning the fingerprint already
+    pinned changes nothing, with or without `--replace`: every accepted manifest and
+    signing commitment stays. A different fingerprint with `--replace` keeps this CLI's
+    signing commitments too, since they only ever refuse more.
+29. §3.2 rules 3 and 4, §3.7 rule 1 (`sign`, below quorum). The spec's high-water mark
+    covers accepted manifests only. `kyguard-cli` also persists, before any signature
+    leaves, the highest `(epoch, digest)` it has signed per `(type, scope.id)` and refuses
+    a lower epoch or a same-epoch fork against it, even when the earlier draft never
+    reached quorum. The commitment is per CLI state directory, not per custodian key, so
+    custodians sharing one state are bound together (the stricter reading). An abandoned
+    draft is replaced by a draft at the next epoch.
+30. §3.2 rule 4 (`sign`, existing signatures). Before releasing a signature the CLI runs
+    every acceptance check on the signed draft (`pqcrypto.Trust.Check`); only a short
+    custodian quorum may remain. An invalid co-signature, a missing self-signature or a
+    broken successor rule refuses the draft.
+31. §3.2 rule 3 (state concurrency). `trust`, `import`, `enroll` and `sign` hold an
+    exclusive OS file lock on `$KYGUARD_HOME/trust.lock` for the whole command, so
+    concurrent `kyguard-cli` processes run one at a time and none saves a stale snapshot.
+    A second command waits while the first one prompts.
+32. §3.2 rule 4 (`enroll` delivery). Before generating keys, `enroll` checks that the key
+    and draft paths are distinct, absent and in existing directories. It stages both files
+    and links them into place without replacing anything; if the draft cannot be placed,
+    the new key file is removed. A failed Control Plane submission keeps both files.

@@ -202,60 +202,82 @@ func PeekType(raw []byte) (string, error) {
 // epoch is ErrRollback; the same epoch with another digest is ErrEquivocation, which the
 // caller must alert on; the same epoch and digest is an idempotent success.
 func (t *Trust) Accept(raw []byte) (*Record, error) {
-	typ, err := PeekType(raw)
-	if err != nil {
-		return nil, err
+	rec, prev, err := t.verify(raw, false)
+	if err != nil || rec == prev {
+		return rec, err
 	}
-	m, err := newManifest(typ)
-	if err != nil {
-		return nil, err
-	}
-	canon, d, err := decodeSigned(raw, m)
-	if err != nil {
-		return nil, err
-	}
-	if err := m.validate(); err != nil {
-		return nil, err
-	}
-	h := m.head()
-	if h.DeploymentID != t.deployment {
-		return nil, ErrDeployment
-	}
-	key := recordKey{typ, h.Scope.ID}
-	prev := t.records[key]
-	if prev != nil {
-		switch {
-		case h.Epoch < prev.Epoch:
-			return nil, ErrRollback
-		case h.Epoch == prev.Epoch && d != prev.Digest:
-			return nil, ErrEquivocation
-		case h.Epoch == prev.Epoch:
-			return prev, nil // D excludes signatures: the same object, perhaps re-signed
-		}
-	}
-	if err := t.checkSignatures(m, d, prev == nil); err != nil {
-		return nil, err
-	}
-	if err := t.checkSuccessor(m, prev); err != nil {
-		return nil, err
-	}
-	if ke, ok := m.(*KeyEnrollmentManifest); ok {
-		if err := t.checkKeysUnique(ke); err != nil {
-			return nil, err
-		}
-	}
-	rec := &Record{typ, h.Scope.ID, h.Epoch, d, canon, m}
-	t.records[key] = rec
+	t.records[recordKey{rec.Type, rec.ScopeID}] = rec
 	t.order = append(t.order, rec)
-	if p, ok := m.(*PolicyManifest); ok {
-		t.policies[d] = p
+	if p, ok := rec.Manifest.(*PolicyManifest); ok {
+		t.policies[rec.Digest] = p
 	}
 	return rec, nil
 }
 
+// Check runs every Accept check on a draft without recording it. A draft that would be
+// accepted with more custodian signatures returns ErrThreshold; any other error means
+// it can never be accepted, so nobody should add a signature to it.
+func (t *Trust) Check(raw []byte) error {
+	_, _, err := t.verify(raw, true)
+	return err
+}
+
+// verify returns the record raw would become, or prev when it is already current. With
+// partial, a short quorum is reported only after every other check passes.
+func (t *Trust) verify(raw []byte, partial bool) (rec, prev *Record, err error) {
+	typ, err := PeekType(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	m, err := newManifest(typ)
+	if err != nil {
+		return nil, nil, err
+	}
+	canon, d, err := decodeSigned(raw, m)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := m.validate(); err != nil {
+		return nil, nil, err
+	}
+	h := m.head()
+	if h.DeploymentID != t.deployment {
+		return nil, nil, ErrDeployment
+	}
+	prev = t.records[recordKey{typ, h.Scope.ID}]
+	if prev != nil {
+		switch {
+		case h.Epoch < prev.Epoch:
+			return nil, nil, ErrRollback
+		case h.Epoch == prev.Epoch && d != prev.Digest:
+			return nil, nil, ErrEquivocation
+		case h.Epoch == prev.Epoch:
+			return prev, prev, nil // D excludes signatures: the same object, perhaps re-signed
+		}
+	}
+	sigErr := t.checkSignatures(m, d, prev == nil, partial)
+	if sigErr != nil && (!partial || sigErr != ErrThreshold) {
+		return nil, nil, sigErr
+	}
+	if err := t.checkSuccessor(m, prev); err != nil {
+		return nil, nil, err
+	}
+	if ke, ok := m.(*KeyEnrollmentManifest); ok {
+		if err := t.checkKeysUnique(ke); err != nil {
+			return nil, nil, err
+		}
+	}
+	if sigErr != nil {
+		return nil, nil, sigErr
+	}
+	return &Record{typ, h.Scope.ID, h.Epoch, d, canon, m}, prev, nil
+}
+
 // checkSignatures requires M custodians of the persisted set (epoch 1 custodian set: M of
-// itself) and, for key enrollments, a self-signature by every active key.
-func (t *Trust) checkSignatures(m manifest, d Digest, first bool) error {
+// itself) and, for key enrollments, a self-signature by every active key. With partial, a
+// short quorum is ErrThreshold only once every present signature verifies and the
+// self-signatures are complete; without it, ErrThreshold returns first, as Accept always has.
+func (t *Trust) checkSignatures(m manifest, d Digest, first, partial bool) error {
 	var set *CustodianSetManifest
 	if cs, ok := m.(*CustodianSetManifest); ok && first {
 		set = cs // epoch 1, from the bundle
@@ -285,7 +307,8 @@ func (t *Trust) checkSignatures(m manifest, d Digest, first bool) error {
 	if err != nil {
 		return err
 	}
-	if len(owners[RoleCustodian]) < set.Threshold {
+	short := len(owners[RoleCustodian]) < set.Threshold
+	if short && !partial {
 		return ErrThreshold
 	}
 	if isKE {
@@ -298,6 +321,9 @@ func (t *Trust) checkSignatures(m manifest, d Digest, first bool) error {
 				return ErrSelfSignature
 			}
 		}
+	}
+	if short {
+		return ErrThreshold
 	}
 	return nil
 }
@@ -372,3 +398,27 @@ func (t *Trust) checkKeysUnique(ke *KeyEnrollmentManifest) error {
 	}
 	return nil
 }
+
+// DecodeManifest strictly decodes and validates a manifest of a type this binary builds,
+// without trusting it: for review before signing. It returns the manifest and its D.
+func DecodeManifest(raw []byte) (Signed, Digest, error) {
+	typ, err := PeekType(raw)
+	if err != nil {
+		return nil, Digest{}, err
+	}
+	m, err := newManifest(typ)
+	if err != nil {
+		return nil, Digest{}, err
+	}
+	_, d, err := decodeSigned(raw, m)
+	if err != nil {
+		return nil, Digest{}, err
+	}
+	if err := m.validate(); err != nil {
+		return nil, Digest{}, err
+	}
+	return m, d, nil
+}
+
+// HeaderOf returns the header of a signed object.
+func HeaderOf(o Signed) Header { return *o.head() }
