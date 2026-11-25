@@ -57,6 +57,7 @@ func (m *Machine) Tick(ctx context.Context) error {
 		return err
 	}
 	now := m.now()
+	m.refusals(ctx)
 	var cleanups []pqcrypto.UUID
 	for _, a := range accts {
 		m.flush(ctx, a)

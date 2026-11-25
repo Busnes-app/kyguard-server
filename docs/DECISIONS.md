@@ -309,3 +309,12 @@ contradicts itself. Each names its section. The most secure reading wins.
     stores an envelope only if it leaves 96 KiB of the 256 KiB chain (`store.MaxEnvelope`).
     That room holds `commit_target` plus a `release` with all 32 wraps, so an admitted
     rotation can always finish and give back its lock.
+78. §3.6, §4.1 (transaction refusals). A refusal of a relayed transaction, proof or
+    check-in is journaled in a `refusals` bucket keyed by request ID and re-sent by every
+    tick and by recovery until the Control Plane acknowledges it. A refusal the Control
+    Plane rejects (a `RemoteError`, such as an unknown request) is dropped, since it would
+    be rejected again; a later accepted message for the same request drops its refusal.
+    The bucket holds at most 1,024 refusals, so a Control Plane that pushes junk while
+    withholding acknowledgements cannot grow the journal; past that a refusal is sent once.
+    A checkout wrap whose delivery fails is pending, not refused: the lease stays active
+    and the journaled wrap is re-sent.

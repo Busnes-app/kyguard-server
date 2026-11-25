@@ -498,7 +498,8 @@ func TestLeaseUnderAReplacedPolicyDeliversNothing(t *testing.T) {
 }
 
 // Guide on #16 (lost delivery): a delivery the Control Plane did not acknowledge is
-// journaled and re-sent by the next tick, without a second login.
+// journaled and re-sent by the next tick, without a second login. Until then it is pending,
+// not refused: the proof succeeds and no result is published ("Premature refusal").
 func TestLostDeliveryIsResent(t *testing.T) {
 	c := newCheckoutRig(t)
 	ctx := context.Background()
@@ -509,11 +510,11 @@ func TestLostDeliveryIsResent(t *testing.T) {
 		t.Fatal(err)
 	}
 	pop, _ := co.Proof(c.challenge(co.RequestID), pqcrypto.PurposeDeliver)
-	if err := c.m.Proof(ctx, co.RequestID, pop); err == nil {
-		t.Fatal("delivery failure not reported")
+	if err := c.m.Proof(ctx, co.RequestID, pop); err != nil {
+		t.Fatalf("a pending delivery was refused: %v", err)
 	}
-	if d, _ := c.delivery(co.RequestID); d != nil {
-		t.Fatal("delivered")
+	if d, res := c.delivery(co.RequestID); d != nil || res != "" {
+		t.Fatalf("delivered=%v result=%q", d != nil, res)
 	}
 	logins := len(c.target.hosts)
 	w.DeliveryErr = nil
@@ -686,5 +687,51 @@ func TestInterruptedDeliveryClosesTheLease(t *testing.T) {
 	}
 	if w, res := c.delivery(co.RequestID); w != nil || res != "interrupted" {
 		t.Fatalf("delivery=%v result=%q", w, res)
+	}
+}
+
+// A refusal whose result could not be sent is journaled and re-sent by the next tick and by
+// recovery; one the Control Plane rejects is dropped, and a later message for the request
+// supersedes it (Guide on #16, "Lost refusals").
+func TestRefusalsAreJournaledUntilAcknowledged(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	cp := c.m.CP
+	c.m.CP = &failResults{ControlPlane: cp, n: 1}
+	co, other := c.checkoutTx(600), c.checkoutTx(600)
+	c.m.Refused(ctx, co.RequestID, "lease_open")
+	if _, res := c.delivery(co.RequestID); res != "" {
+		t.Fatalf("result %q despite the failed delivery", res)
+	}
+	if err := c.m.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, res := c.delivery(co.RequestID); res != "lease_open" {
+		t.Fatalf("result after the tick %q", res)
+	}
+	// Across a restart, behind a refusal the Control Plane rejects (no such request).
+	c.m.CP = &failResults{ControlPlane: cp, n: 100} // until the restart
+	stale := pqtest.UUID()
+	for stale > other.RequestID { // sent first, so a rejection must not stop the rest
+		stale = pqtest.UUID()
+	}
+	c.m.Refused(ctx, stale, "stale")
+	c.m.Refused(ctx, other.RequestID, "blocked")
+	c.m.Refused(ctx, co.RequestID, "superseded")
+	c.m.Refused(ctx, co.RequestID, "")
+	c.m.J.Close()
+	c.m = c.machine()
+	c.m.Now = func() time.Time { return c.now }
+	if err := c.m.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, res := c.delivery(other.RequestID); res != "blocked" {
+		t.Fatalf("result after recovery %q", res)
+	}
+	if _, res := c.delivery(co.RequestID); res != "lease_open" {
+		t.Fatalf("a superseded refusal was sent: %q", res)
+	}
+	if rs, _ := c.m.J.Refusals(); len(rs) != 0 {
+		t.Fatalf("%d refusals left", len(rs))
 	}
 }

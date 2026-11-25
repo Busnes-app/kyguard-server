@@ -680,6 +680,7 @@ func (m *Machine) Recover(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	m.refusals(ctx)
 	var errs []error
 	for _, a := range accts {
 		if a.Unreported {

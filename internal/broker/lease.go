@@ -256,7 +256,57 @@ func (m *Machine) deliver(ctx context.Context, a *Account, c *Challenge, raw []b
 	if err := m.J.Save(a); err != nil {
 		return err
 	}
-	return m.deliverWrap(ctx, a)
+	// Pending, not refused: the lease is active and flush re-sends the wrap (Guide on #16,
+	// "Premature refusal").
+	if err := m.deliverWrap(ctx, a); err != nil {
+		log.Printf("[BROKER] delivery for lease %s not sent: %v", a.Lease.RequestID, err)
+	}
+	return nil
+}
+
+// Refused journals a transaction's refusal, or with an empty code drops it, and sends every
+// journaled refusal; Tick and Recover re-send them until acknowledged (Guide on #16, "Lost
+// refusals").
+func (m *Machine) Refused(ctx context.Context, id pqcrypto.UUID, code string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if code == "" {
+		if err := m.J.DeleteRefusal(id); err != nil {
+			log.Printf("[BROKER] refusal of %s not dropped: %v", id, err)
+		}
+		return
+	}
+	if err := m.J.PutRefusal(id, code); err != nil {
+		log.Printf("[BROKER] refusal of %s not journaled: %v", id, err)
+		if err := m.CP.TxResult(ctx, brokerproto.TxResultRequest{RequestID: id, Result: code}); err != nil {
+			log.Printf("[BROKER] result for %s not delivered: %v", id, err)
+		}
+	}
+	m.refusals(ctx)
+}
+
+// refusals sends the journaled refusals. One the Control Plane rejects is dropped: it would
+// reject it again.
+func (m *Machine) refusals(ctx context.Context) {
+	rs, err := m.J.Refusals()
+	if err != nil {
+		log.Printf("[BROKER] refusals not read: %v", err)
+		return
+	}
+	for _, x := range rs {
+		err := m.CP.TxResult(ctx, brokerproto.TxResultRequest{RequestID: x.RequestID, Result: x.Result})
+		var rerr brokerproto.RemoteError
+		if err != nil && !errors.As(err, &rerr) {
+			log.Printf("[BROKER] result for %s not delivered: %v", x.RequestID, err)
+			return
+		}
+		if err != nil {
+			log.Printf("[BROKER] result for %s rejected: %v", x.RequestID, err)
+		}
+		if err := m.J.DeleteRefusal(x.RequestID); err != nil {
+			log.Printf("[BROKER] refusal of %s not dropped: %v", x.RequestID, err)
+		}
+	}
 }
 
 // deliverWrap sends a journaled checkout wrap until the Control Plane acknowledges it.
