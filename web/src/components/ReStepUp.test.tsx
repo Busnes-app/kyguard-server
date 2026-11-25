@@ -126,3 +126,26 @@ it('keeps the shell inert while open and gives focus back on close', async () =>
   await waitFor(() => expect(document.activeElement).toBe(origin));
   expect(origin.inert).toBe(false);
 });
+
+// A stalled code check must not trap the user: Cancel stays usable and aborts it.
+it('cancels a stalled code check', async () => {
+  let signal: AbortSignal | undefined;
+  const fetcher = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) !== '/api/auth/stepup/totp') return Promise.resolve(stale());
+    signal = init?.signal ?? undefined;
+    return new Promise<Response>((_, reject) => signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))));
+  });
+  vi.stubGlobal('fetch', fetcher);
+  render(<ReStepUp />);
+  const action = secureFetch('/api/backup/deposit', { method: 'POST' });
+  fireEvent.change(await screen.findByLabelText('Authenticator code'), { target: { value: '123456' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+  await waitFor(() => expect(signal).toBeDefined());
+  const cancel = screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement;
+  expect(cancel.disabled).toBe(false);
+  fireEvent.click(cancel);
+  expect((await action).status).toBe(403);
+  expect(signal?.aborted).toBe(true);
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(screen.queryByRole('alert')).toBeNull();
+});

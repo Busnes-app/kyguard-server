@@ -14,6 +14,8 @@ export function ReStepUp() {
   const waiting = useRef<((ok: boolean) => void)[]>([]);
   const dialog = useRef<HTMLDivElement>(null);
   const returnTo = useRef<HTMLElement | null>(null);
+  // The code check in flight: Cancel aborts it, so a stalled request never traps the user.
+  const inFlight = useRef<AbortController | null>(null);
 
   // While open the shell behind is inert, so Tab and clicks stay in the dialog; on close focus
   // goes back to where it was.
@@ -28,6 +30,8 @@ export function ReStepUp() {
   }, [open]);
 
   const finish = (ok: boolean) => {
+    inFlight.current?.abort();
+    inFlight.current = null;
     const resolvers = waiting.current;
     waiting.current = [];
     setOpen(false);
@@ -53,19 +57,25 @@ export function ReStepUp() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const controller = new AbortController();
+    inFlight.current = controller;
     setBusy(true);
     setError('');
     try {
       const response = await secureFetch('/api/auth/stepup/totp', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }), signal: controller.signal,
       });
+      if (controller.signal.aborted) return;
       if (response.ok) { finish(true); return; }
       const body: unknown = await response.json().catch(() => ({}));
       setError(typeof body === 'object' && body !== null && 'error' in body && typeof body.error === 'string' ? body.error : 'The code was not accepted.');
       setCode('');
     } catch {
-      setError('Could not reach the server. Check the connection and try again.');
-    } finally { setBusy(false); }
+      if (!controller.signal.aborted) setError('Could not reach the server. Check the connection and try again.');
+    } finally {
+      if (inFlight.current === controller) inFlight.current = null;
+      setBusy(false);
+    }
   }
 
   if (!open) return null;
@@ -81,7 +91,7 @@ export function ReStepUp() {
         {error && <p role="alert">{error}</p>}
         <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
           <button type="submit" disabled={busy}>Confirm</button>
-          <button type="button" className="btn-secondary" disabled={busy} onClick={() => finish(false)}>Cancel</button>
+          <button type="button" className="btn-secondary" onClick={() => finish(false)}>Cancel</button>
         </div>
       </form>
     </div>
