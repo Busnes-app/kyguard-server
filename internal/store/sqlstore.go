@@ -28,14 +28,19 @@ type SQLStore struct {
 }
 
 // newSQLStore creates and initializes a SQLStore, running migrations automatically.
-func newSQLStore(ctx context.Context, db *sql.DB, driver string) (*SQLStore, error) {
+func newSQLStore(ctx context.Context, db *sql.DB, driver string, auditKey []byte) (*SQLStore, error) {
 	driver = strings.ToLower(driver)
 	if driver == "postgresql" {
 		driver = "postgres"
 	}
 
-	s := &SQLStore{db: db, driver: driver}
-	apply := func(ctx context.Context) error { return applySchema(ctx, db, driver) }
+	s := &SQLStore{db: db, driver: driver, auditKey: append([]byte(nil), auditKey...)}
+	// The records written before the audit chain are chained inside the migration that adds
+	// it, and nowhere else (adoptLegacyAudit).
+	apply := func(ctx context.Context) error {
+		_, err := applySchema(ctx, db, driver, map[int]func(context.Context, *sql.Tx) error{auditChainMigration: s.adoptLegacyAudit})
+		return err
+	}
 	if driver == "postgres" {
 		// Multiple replicas may start together. Keep schema changes under one owner.
 		for {
@@ -65,18 +70,19 @@ func newSQLStore(ctx context.Context, db *sql.DB, driver string) (*SQLStore, err
 	return s, nil
 }
 
-func applySchema(ctx context.Context, db *sql.DB, driver string) error {
-	if err := migrations.Run(ctx, db, driver); err != nil {
-		return fmt.Errorf("migration failure on driver %s: %w", driver, err)
+func applySchema(ctx context.Context, db *sql.DB, driver string, after map[int]func(context.Context, *sql.Tx) error) ([]int, error) {
+	applied, err := migrations.RunApplied(ctx, db, driver, after)
+	if err != nil {
+		return applied, fmt.Errorf("migration failure on driver %s: %w", driver, err)
 	}
 	clashes, err := migrations.EnsureUsernameIndex(ctx, db)
 	if err != nil {
-		return fmt.Errorf("case-insensitive username index: %w", err)
+		return applied, fmt.Errorf("case-insensitive username index: %w", err)
 	}
 	for _, names := range clashes {
 		log.Printf("[STORE] usernames differ only in letter case: %s. Sign-in picks one of them arbitrarily; rename or remove all but one. New case-variant names are refused.", strings.Join(names, ", "))
 	}
-	return nil
+	return applied, nil
 }
 
 func (s *SQLStore) Users() UserStore                { return s.users }
@@ -775,21 +781,49 @@ func (s *sessionStore) CreateCLICode(ctx context.Context, c *CLICode, audit *Aud
 	return tx.Commit()
 }
 
-func (s *sessionStore) TakeCLICode(ctx context.Context, codeHash string) (*CLICode, error) {
+func (s *sessionStore) RedeemCLICode(ctx context.Context, codeHash string, accept func(*CLICode) (*Session, error)) error {
+	tx, err := s.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	c := CLICode{CodeHash: codeHash}
-	err := s.store.db.QueryRowContext(ctx, s.store.rebind(`DELETE FROM cli_login_codes WHERE code_hash = ? AND expires_at > ?
+	err = tx.QueryRowContext(ctx, s.store.rebind(`DELETE FROM cli_login_codes WHERE code_hash = ? AND expires_at > ?
 RETURNING user_id, sso_issuer, sso_sid, issued_at, mfa_asserted, challenge, expires_at`), codeHash, time.Now().UTC()).
 		Scan(&c.UserID, &c.SSOIssuer, &c.SSOSID, &c.IssuedAt, &c.MFAAsserted, &c.Challenge, &c.ExpiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		// An expired code is spent too: nothing may redeem it later.
-		_, _ = s.store.db.ExecContext(ctx, s.store.rebind(`DELETE FROM cli_login_codes WHERE code_hash = ?`), codeHash)
-		return nil, ErrNotFound
+		_, _ = tx.ExecContext(ctx, s.store.rebind(`DELETE FROM cli_login_codes WHERE code_hash = ?`), codeHash)
+		_ = tx.Commit()
+		return ErrNotFound
 	}
 	if err != nil {
-		return nil, err
+		return err
 	}
 	c.IssuedAt, c.ExpiresAt = c.IssuedAt.UTC(), c.ExpiresAt.UTC()
-	return &c, nil
+	sess, refused := accept(&c)
+	if refused == nil {
+		// The code row this transaction deleted is what orders it against a factor reset:
+		// DeleteFactor deletes the user's codes first, so it waits for this commit and then
+		// deletes the session too, or it ran first and the code is gone. The user lock here
+		// requires the account still active.
+		lock, err := tx.ExecContext(ctx, s.store.rebind(`UPDATE users SET id = id WHERE id = ? AND status = 'active'`), c.UserID)
+		if err != nil {
+			return err
+		}
+		if n, _ := lock.RowsAffected(); n != 1 {
+			refused = ErrNotFound
+		} else if err := s.insertSession(ctx, tx, sess); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil { // a refused attempt still spends the code
+		return err
+	}
+	if refused != nil {
+		return refused
+	}
+	return s.fenceCheck(ctx, sess)
 }
 
 // ---------------------------------------------------------------------

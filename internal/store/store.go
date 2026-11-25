@@ -108,9 +108,11 @@ type SessionStore interface {
 	CleanExpiredSessions(ctx context.Context) error
 	// CreateCLICode stores a CLI login code with audit in one transaction (spec §7.6).
 	CreateCLICode(ctx context.Context, c *CLICode, audit *AuditRecord) error
-	// TakeCLICode deletes the unexpired code with this hash and returns it: a code is
-	// spent by its first redemption attempt. ErrNotFound when there is none.
-	TakeCLICode(ctx context.Context, codeHash string) (*CLICode, error)
+	// RedeemCLICode spends the unexpired code with this hash, right or wrong, and inserts the
+	// session accept builds for it, in the transaction that deleted the code; accept's
+	// error refuses. The logout fences are re-checked after commit. ErrNotFound when there
+	// is no such code.
+	RedeemCLICode(ctx context.Context, codeHash string, accept func(*CLICode) (*Session, error)) error
 	// ExchangeSession replaces a pending session with active (and a first factor when
 	// newFactor is set) in one transaction; see sessionStore.ExchangeSession.
 	ExchangeSession(ctx context.Context, pendingHash, passwordHash string, active *Session, newFactor *MFAFactor) error

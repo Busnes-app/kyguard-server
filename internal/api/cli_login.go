@@ -67,37 +67,25 @@ func (s *Server) handleCLIExchange(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadRequest, "code and code_verifier are required")
 		return
 	}
-	refused := func() {
-		s.writeError(w, http.StatusUnauthorized, "This CLI sign-in code is invalid or expired; run kyguard-cli login again")
-	}
-	ctx := r.Context()
-	code, err := s.store.Sessions().TakeCLICode(ctx, crypto.SHA256Hex([]byte(req.Code)))
-	if errors.Is(err, store.ErrNotFound) {
-		refused()
-		return
-	}
-	if err != nil {
-		s.writeError(w, http.StatusServiceUnavailable, "CLI sign-in temporarily unavailable")
-		return
-	}
 	sum := sha256.Sum256([]byte(req.CodeVerifier))
-	if subtle.ConstantTimeCompare([]byte(base64.RawURLEncoding.EncodeToString(sum[:])), []byte(code.Challenge)) != 1 {
-		refused()
-		return
-	}
-	user, err := s.store.Users().GetUserByID(ctx, code.UserID)
-	if err != nil || user.Status != "active" {
-		refused()
-		return
-	}
+	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
 	var token string
-	err = detachedWrite(r, func(ctx context.Context) error {
-		var err error
-		token, err = s.sessions.IssueCLIPendingSession(ctx, r, user, code,
-			&store.AuditRecord{UserID: user.ID, Action: "auth.cli_login", Resource: "session", IPAddress: s.requestIP(r)})
-		return err
+	err := detachedWrite(r, func(ctx context.Context) error {
+		return s.store.Sessions().RedeemCLICode(ctx, crypto.SHA256Hex([]byte(req.Code)), func(code *store.CLICode) (*store.Session, error) {
+			if subtle.ConstantTimeCompare([]byte(challenge), []byte(code.Challenge)) != 1 {
+				return nil, store.ErrNotFound
+			}
+			// RedeemCLICode holds the user row and requires it active; nothing else is read here,
+			// since a second connection would wait on SQLite's write lock.
+			sess, t := s.sessions.CLIPendingSession(r, code,
+				&store.AuditRecord{UserID: code.UserID, Action: "auth.cli_login", Resource: "session", IPAddress: s.requestIP(r)})
+			token = t
+			return sess, nil
+		})
 	})
 	switch {
+	case errors.Is(err, store.ErrNotFound):
+		s.writeError(w, http.StatusUnauthorized, "This CLI sign-in code is invalid or expired; run kyguard-cli login again")
 	case errors.Is(err, store.ErrSSOSessionEnded):
 		s.writeError(w, http.StatusUnauthorized, "Your identity provider ended this sign-in")
 	case err != nil:

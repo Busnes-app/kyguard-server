@@ -187,9 +187,7 @@ func TestLogoutRacingCLIRedemptionLeavesNoSession(t *testing.T) {
 		wg.Add(2)
 		go func() { // what handleCLIExchange does
 			defer wg.Done()
-			if _, redeemErr = st.Sessions().TakeCLICode(ctx, code.CodeHash); redeemErr == nil {
-				redeemErr = st.Sessions().CreateSession(ctx, sess, "")
-			}
+			redeemErr = st.Sessions().RedeemCLICode(ctx, code.CodeHash, func(*store.CLICode) (*store.Session, error) { return sess, nil })
 		}()
 		go func() {
 			defer wg.Done()
@@ -220,5 +218,23 @@ func TestBrowserExchangeNeverReturnsTheToken(t *testing.T) {
 	w := post(srv, c, "/api/auth/stepup/enroll/confirm", map[string]string{"code": code})
 	if w.Code != http.StatusOK || sessionCookie(w) == nil || bytes.Contains(w.Body.Bytes(), []byte("token")) {
 		t.Fatalf("browser exchange: %d %s", w.Code, w.Body)
+	}
+}
+
+// §7.6 with §7.3 rule 6: a factor reset voids outstanding CLI login codes, so a code issued
+// before the reset redeems nothing afterwards.
+func TestFactorResetVoidsOutstandingCLICodes(t *testing.T) {
+	srv, st, f := ssoServer(t)
+	enroll(t, srv, pending(t, srv, f, "reset-me", "sid-1", mfaClaims))
+	code := cliCode(t, cliCallback(t, srv, f, "reset-me", "sid-2"))
+	u, err := st.Users().GetUserByUsername(context.Background(), "reset-me")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MFA().DeleteFactor(context.Background(), u.ID, &store.AuditRecord{Action: "admin.factor_reset"}); err != nil {
+		t.Fatal(err)
+	}
+	if w := cliExchange(srv, code, cliVerifier); w.Code != http.StatusUnauthorized {
+		t.Fatalf("a pre-reset CLI code after the reset: %d %s", w.Code, w.Body)
 	}
 }
