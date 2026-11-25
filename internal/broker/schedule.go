@@ -65,7 +65,7 @@ func (m *Machine) Tick(ctx context.Context) error {
 		}
 		if a.MinAgeSeconds > p.RotationSchedule.IntervalSeconds {
 			if a.HealthReason != ReasonBelowMinAge {
-				a.Health, a.HealthReason = HealthRotationFailed, ReasonBelowMinAge
+				setHealth(a, HealthRotationFailed, ReasonBelowMinAge)
 				if err := m.J.Save(a); err != nil {
 					errs = append(errs, err)
 				}

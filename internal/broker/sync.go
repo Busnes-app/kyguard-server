@@ -113,7 +113,7 @@ func (m *Machine) acceptManifest(raw []byte) error {
 		// minimum-age deadline and next attempt time carry over (§3.4, §4.4).
 		a.PolicyEpoch, a.PolicyPersistedAt, a.Refusals = rec.Epoch, m.now(), 0
 		if a.HealthReason == ReasonBelowMinAge {
-			a.Health, a.HealthReason = "", ""
+			setHealth(a, "", "")
 		}
 		return m.J.Save(a)
 	}

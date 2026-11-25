@@ -30,6 +30,9 @@ type fakeTarget struct {
 	refuseAfterCommit  bool  // e.g. password policy
 	ambiguous          error // returned after commit
 	applyAmbiguous     bool  // whether the ambiguous write took effect
+	// Reported by PasswordAge.
+	lastChange time.Time
+	minAge     time.Duration
 }
 
 func newTarget(pw string) *fakeTarget { return &fakeTarget{password: pw, logins: map[string]int{}} }
@@ -107,6 +110,12 @@ func (s *fakeSession) Change(_ context.Context, _, pNew []byte, commit func() er
 }
 
 func (s *fakeSession) Close() error { return nil }
+
+func (s *fakeSession) PasswordAge(context.Context) (time.Time, time.Duration, error) {
+	s.f.mu.Lock()
+	defer s.f.mu.Unlock()
+	return s.f.lastChange, s.f.minAge, nil
+}
 
 // rig is a Control Plane, a paired and admitted broker with its journal, one account with
 // an enrolled v1, and a fake target.

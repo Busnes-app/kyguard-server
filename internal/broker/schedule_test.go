@@ -146,12 +146,10 @@ func TestRefusalWaitsForTheMinimumAge(t *testing.T) {
 	start := time.Now().UTC()
 	r := newRig(t, scheduled(start))
 	r.target.refuseAfterCommit = true
+	deadline := start.Add(5 * day)
+	r.target.lastChange, r.target.minAge = start, 5*day
 	m := r.machine()
 	defer m.J.Close()
-	a := r.account(m)
-	deadline := start.Add(5 * day)
-	a.MinAgeDeadline = deadline
-	m.J.Save(a)
 	clock(m, start.Add(day+time.Hour))
 	m.Tick(context.Background())
 	if got := r.account(m).NextAttemptAt; !got.Equal(deadline) {
@@ -176,5 +174,28 @@ func TestMinimumAgeAboveTheIntervalRunsNothing(t *testing.T) {
 	}
 	if ca := r.cpAccount(); ca.HealthReason != broker.ReasonBelowMinAge {
 		t.Fatalf("control plane reason %q", ca.HealthReason)
+	}
+}
+
+// The target's minimum age is read at the pre-rotation login, not set by hand: a refusal
+// then waits for the target's deadline, and a minimum age above the interval stops the
+// schedule (PR Reviewer Guide on #12).
+func TestTheTargetsMinimumAgeIsReadAtLogin(t *testing.T) {
+	start := time.Now().UTC()
+	r := newRig(t, scheduled(start))
+	r.target.refuseAfterCommit = true
+	r.target.lastChange, r.target.minAge = start, 3*day
+	m := r.machine()
+	defer m.J.Close()
+	clock(m, start.Add(day+time.Hour))
+	m.Tick(context.Background())
+	a := r.account(m)
+	if a.MinAgeSeconds != int64(3*day/time.Second) || !a.NextAttemptAt.Equal(start.Add(3*day)) {
+		t.Fatalf("min age %ds, next attempt %v", a.MinAgeSeconds, a.NextAttemptAt)
+	}
+	clock(m, start.Add(4*day))
+	m.Tick(context.Background())
+	if a := r.account(m); a.HealthReason != broker.ReasonBelowMinAge || a.Run.Attempt != 0 {
+		t.Fatalf("health %s/%s after attempt %d", a.Health, a.HealthReason, a.Run.Attempt)
 	}
 }

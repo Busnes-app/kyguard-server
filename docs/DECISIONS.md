@@ -218,3 +218,7 @@ contradicts itself. Each names its section. The most secure reading wins.
 73. §8.1 (health delivery). Every health change sets `Unreported` in the same journal save,
     and only an acknowledged report clears it, so a crash between the save and the report
     still leaves the health to be sent by `Recover`.
+74. §4.4 (minimum age source). Besides enrollment, the broker reads the account's last
+    change and the target's minimum password age at every pre-rotation login, through the
+    connector's `AgeReporter`, so the schedule stop and refusal retries use the target's
+    real values; a connector that cannot read them leaves the journaled values unchanged.
