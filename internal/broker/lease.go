@@ -279,6 +279,7 @@ func (m *Machine) deliverWrap(ctx context.Context, a *Account) error {
 // flush re-sends what the Control Plane has not acknowledged for the account's lease: its
 // state and its delivery. Recover and every scheduler tick call it.
 func (m *Machine) flush(ctx context.Context, a *Account) {
+	m.results(ctx, a)
 	if err := m.mirror(ctx, a); err != nil {
 		return
 	}
@@ -380,10 +381,11 @@ func (m *Machine) manualRotation(ctx context.Context, a *Account, tx *pqcrypto.A
 			return ErrLeaseOpen
 		}
 		a.Lease.NextAttemptAt = next
+		a.Results = append(a.Results, TxResult{RequestID: tx.RequestID, Result: "ok"}) // re-armed
 		if err := m.J.SaveBurn(a, tx.RequestID, tx.ExpiresAt.Time); err != nil {
 			return err
 		}
-		m.txDone(ctx, tx.RequestID, "ok") // the lease's cleanup is re-armed
+		m.results(ctx, a)
 		return nil
 	}
 	a.Refusals = 0
@@ -405,20 +407,35 @@ func (m *Machine) manualRotation(ctx context.Context, a *Account, tx *pqcrypto.A
 	if err := m.start(ctx, a, rc, runSpec{op: op, due: now, burn: tx}); err != nil {
 		return err
 	}
-	// The rotation ended: "ok" once released, else the state it stopped in.
-	res := a.Run.State
-	if res == StateReleaseAuthorized {
-		res = "ok"
-	}
-	m.txDone(ctx, tx.RequestID, res)
+	m.results(ctx, a)
 	return nil
 }
 
-// txDone tells the CLI how a transaction that was not refused ended. The work is
-// journaled, so a lost result is only logged; it must not read as a refusal.
-func (m *Machine) txDone(ctx context.Context, id pqcrypto.UUID, result string) {
-	if err := m.CP.TxResult(ctx, brokerproto.TxResultRequest{RequestID: id, Result: result}); err != nil {
-		log.Printf("[BROKER] result for %s not delivered: %v", id, err)
+// results tells the CLI how its manual_rotation ended, "ok" once released or else the
+// state the run stopped in, and re-sends every queued result until the Control Plane
+// acknowledges it; Tick and Recover call it through flush (Guide on #16, "Lost results").
+func (m *Machine) results(ctx context.Context, a *Account) {
+	r := a.Run
+	changed := false
+	if r != nil && r.Request.Valid() && !r.ResultQueued && (r.Sent && !r.Open() || r.State == StateWriteOutcomeUnknown) {
+		res := r.State
+		if res == StateReleaseAuthorized {
+			res = "ok"
+		}
+		a.Results, r.ResultQueued, changed = append(a.Results, TxResult{RequestID: r.Request, Result: res}), true, true
+	}
+	for len(a.Results) > 0 {
+		x := a.Results[0]
+		if err := m.CP.TxResult(ctx, brokerproto.TxResultRequest{RequestID: x.RequestID, Result: x.Result}); err != nil {
+			log.Printf("[BROKER] result for %s not delivered: %v", x.RequestID, err)
+			break
+		}
+		a.Results, changed = a.Results[1:], true
+	}
+	if changed {
+		if err := m.J.Save(a); err != nil {
+			log.Printf("[BROKER] results of %s not journaled: %v", a.ID, err)
+		}
 	}
 }
 
