@@ -6,10 +6,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Busnes-app/kyguard-server/internal/api"
+	"github.com/Busnes-app/kyguard-server/internal/auth"
+	"github.com/Busnes-app/kyguard-server/internal/crypto"
 	"github.com/Busnes-app/kyguard-server/internal/sso"
 	"github.com/Busnes-app/kyguard-server/internal/store"
 )
@@ -67,7 +70,7 @@ func TestIssuerIsPartOfTheIdentity(t *testing.T) {
 	if kyLogin.Code != http.StatusFound {
 		t.Fatalf("KySignOn login: %d %s", kyLogin.Code, kyLogin.Body)
 	}
-	oidcLogin := ssoLoginVia(t, srv, other, "oidc", "same-sub", "shared-sid", "same-sub-oidc")
+	oidcLogin := ssoLoginVia(t, srv, other, "oidc", "same-sub", "shared-sid", "same-sub-oidc", nil)
 	if oidcLogin.Code != http.StatusFound {
 		t.Fatalf("OIDC login: %d %s", oidcLogin.Code, oidcLogin.Body)
 	}
@@ -88,8 +91,58 @@ func TestIssuerIsPartOfTheIdentity(t *testing.T) {
 	}
 }
 
+// §7.3: a generic OIDC sign-in, even an admin's with fresh IdP MFA, yields only a pending
+// session. It names its user and signs out, and authorizes nothing else until TOTP step-up.
+func TestOIDCSignInIsPendingUntilStepUp(t *testing.T) {
+	srv, st, cfg := setupTestServer(t)
+	f := newFakeKySignOn(t)
+	cfg.SSO.GenericOIDCIssuer, cfg.SSO.GenericOIDCClientID, cfg.SSO.AutoProvision = f.issuer, "client", true
+	srv = api.NewServer(cfg, st)
+
+	w := ssoLoginVia(t, srv, f, "oidc", "ada-sub", "sid-ada", "ada", map[string]any{"roles": []string{"admin"}, "amr": []string{"pwd", "otp"}})
+	c := sessionCookie(w)
+	if w.Code != http.StatusFound || c == nil {
+		t.Fatalf("OIDC callback: %d %s", w.Code, w.Body)
+	}
+	sess, err := st.Sessions().GetSession(context.Background(), crypto.SHA256Hex([]byte(c.Value)))
+	if err != nil || sess.Stage != store.StagePending || time.Until(sess.ExpiresAt) > auth.PendingTTL {
+		t.Fatalf("OIDC session %+v %v, want pending for at most %s", sess, err, auth.PendingTTL)
+	}
+	if !signedIn(srv, c) {
+		t.Fatal("a pending session cannot name its user")
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+	req.AddCookie(c)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if strings.Contains(rec.Body.String(), "db_driver") {
+		t.Error("a pending session read the signed-in settings")
+	}
+	for _, path := range []string{"/api/admin/users", "/api/backup/status"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.AddCookie(c)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("pending session on %s: %d, want 401", path, rec.Code)
+		}
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
+	for _, ck := range w.Result().Cookies() {
+		req.AddCookie(ck)
+		if ck.Name == auth.CSRFCookieName {
+			req.Header.Set(auth.HeaderCSRF, ck.Value)
+		}
+	}
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || signedIn(srv, c) {
+		t.Fatalf("logout: %d %s, or it left the pending session", rec.Code, rec.Body)
+	}
+}
+
 // ssoLoginVia is ssoLoginClaims against the named provider's routes, with a username.
-func ssoLoginVia(t *testing.T, srv *api.Server, f *fakeKySignOn, provider, sub, sid, username string) *httptest.ResponseRecorder {
+func ssoLoginVia(t *testing.T, srv *api.Server, f *fakeKySignOn, provider, sub, sid, username string, extra map[string]any) *httptest.ResponseRecorder {
 	t.Helper()
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/sso/"+provider+"/login", nil))
@@ -98,7 +151,11 @@ func ssoLoginVia(t *testing.T, srv *api.Server, f *fakeKySignOn, provider, sub, 
 		t.Fatalf("%s login redirect: %d %s", provider, w.Code, w.Body.String())
 	}
 	q := loc.Query()
-	f.idToken = f.sign(t, "", map[string]any{"sub": sub, "sid": sid, "nonce": q.Get("nonce"), "preferred_username": username, "auth_time": time.Now().Unix()})
+	claims := map[string]any{"sub": sub, "sid": sid, "nonce": q.Get("nonce"), "preferred_username": username, "auth_time": time.Now().Unix()}
+	for k, v := range extra {
+		claims[k] = v
+	}
+	f.idToken = f.sign(t, "", claims)
 	req := httptest.NewRequest(http.MethodGet, "/api/sso/"+provider+"/callback?code=c&state="+q.Get("state"), nil)
 	for _, c := range w.Result().Cookies() {
 		req.AddCookie(c)

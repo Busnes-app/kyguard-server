@@ -21,6 +21,18 @@ const (
 
 var ErrPasswordChangeRequired = errors.New("password change required")
 
+// ErrStepUpRequired refuses a pending session anywhere but its own routes (spec §7.3).
+var ErrStepUpRequired = errors.New("TOTP step-up required")
+
+// PendingTTL is how long a pending session waits for its TOTP step-up (spec §7.3).
+const PendingTTL = 5 * time.Minute
+
+// pendingAllowed is what a pending session authenticates: its identity and sign-out.
+func pendingAllowed(r *http.Request) bool {
+	return (r.Method == http.MethodGet && r.URL.Path == "/api/auth/me") ||
+		(r.Method == http.MethodPost && r.URL.Path == "/api/auth/logout")
+}
+
 // CookieName is the name a cookie has on this server: with host cookies (an https app URL,
 // config.SecurityConfig.HostCookies) it carries the __Host- prefix, which
 // the browser accepts only from this host (Secure, Path=/, no Domain), so a sibling subdomain
@@ -50,7 +62,7 @@ const BreakGlassTTL = 30 * time.Minute
 // IssueSession creates an active session for credentials verified just now and writes the
 // HttpOnly cookie + CSRF token.
 func (sm *SessionManager) IssueSession(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User) (*store.Session, string, error) {
-	return sm.issue(ctx, w, r, user, time.Now().UTC(), "", "", 0, nil, "", nil)
+	return sm.issue(ctx, w, r, user, time.Now().UTC(), "", "", 0, nil, "", nil, store.StageActive)
 }
 
 // IssueBreakGlassSession issues the session for a break-glass login whose password and TOTP
@@ -59,18 +71,19 @@ func (sm *SessionManager) IssueSession(ctx context.Context, w http.ResponseWrite
 // commits.
 func (sm *SessionManager) IssueBreakGlassSession(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User, factorID string, audit *store.AuditRecord) (*store.Session, string, error) {
 	now := time.Now().UTC()
-	return sm.issue(ctx, w, r, user, now, "", "", BreakGlassTTL, &now, factorID, audit)
+	return sm.issue(ctx, w, r, user, now, "", "", BreakGlassTTL, &now, factorID, audit, store.StageActive)
 }
 
-// IssueSSOSession issues a session for an SSO login the issuer names by sid and dates it by
-// the ID token's issuedAt, so a back-channel logout for that (issuer, sid) or (issuer,
-// subject) ends it.
+// IssueSSOSession issues the pending session an SSO login gets (spec §7.3): it only names its
+// user until a local TOTP step-up exchanges it, and ends after PendingTTL. It is bound to the
+// login the issuer names by sid and dated by the ID token's issuedAt, so a back-channel
+// logout for that (issuer, sid) or (issuer, subject) ends it.
 // It fails with store.ErrSSOSessionEnded when the provider already ended that login.
 func (sm *SessionManager) IssueSSOSession(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User, issuer, sid string, issuedAt time.Time) (*store.Session, string, error) {
-	return sm.issue(ctx, w, r, user, issuedAt.UTC(), issuer, sid, 0, nil, "", nil)
+	return sm.issue(ctx, w, r, user, issuedAt.UTC(), issuer, sid, PendingTTL, nil, "", nil, store.StagePending)
 }
 
-func (sm *SessionManager) issue(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User, authenticatedAt time.Time, issuer, sid string, ttl time.Duration, stepupAt *time.Time, factorID string, audit *store.AuditRecord) (*store.Session, string, error) {
+func (sm *SessionManager) issue(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User, authenticatedAt time.Time, issuer, sid string, ttl time.Duration, stepupAt *time.Time, factorID string, audit *store.AuditRecord, stage string) (*store.Session, string, error) {
 	rawToken := crypto.RandomHex(32)
 	tokenHash := crypto.SHA256Hex([]byte(rawToken))
 
@@ -90,6 +103,7 @@ func (sm *SessionManager) issue(ctx context.Context, w http.ResponseWriter, r *h
 		ExpiresAt: time.Now().UTC().Add(ttl),
 		SSOSID:    sid,
 		SSOIssuer: issuer,
+		Stage:     stage,
 		StepupAt:  stepupAt,
 		FactorID:  factorID,
 		Audit:     audit,
@@ -169,6 +183,9 @@ func (sm *SessionManager) AuthenticateRequest(r *http.Request) (*store.User, *st
 		return nil, nil, err
 	}
 
+	if sess.Stage == store.StagePending && !pendingAllowed(r) {
+		return nil, nil, ErrStepUpRequired
+	}
 	// A restricted session never authorizes product operations or private settings.
 	if user.MustChangePassword && !((r.Method == http.MethodGet && r.URL.Path == "/api/auth/me") || (r.Method == http.MethodPost && (r.URL.Path == "/api/auth/change-password" || r.URL.Path == "/api/auth/logout"))) {
 		return nil, nil, ErrPasswordChangeRequired
