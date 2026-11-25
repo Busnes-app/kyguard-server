@@ -62,7 +62,7 @@ refused deposit does not remove the local copy.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `KY_BACKUP_DIR` | empty (off) | Directory for sealed local copies, `<escaped app name>.<capsule-id>.kycap` at mode 0600 (`Busnes_2eapp.cap-Busnes.app-<n>.kycap` by default: bytes outside `[A-Za-z0-9-]` in the app name are hex-escaped). Pruning removes only this application's own prefix. |
+| `KY_BACKUP_DIR` | empty (off) | Directory for sealed local copies, `<escaped app name>.<capsule-id>.kycap` at mode 0600 (`KyGuard.cap-KyGuard-<n>.kycap` by default: bytes outside `[A-Za-z0-9-]` in the app name are hex-escaped). Pruning removes only this application's own prefix. |
 | `KY_BACKUP_KEEP` | `7` | Local copies to retain; below 1 refuses startup. |
 | `KY_BACKUP_DEPOSIT_INTERVAL` | `24h` | Default schedule only. The admin screen's setting wins; `0` is off; 15 minutes to 366 days otherwise. |
 | `KY_BACKUP_ALLOW_PRIVATE_RECOVERY` | `false` | Admit a KyRecovery on an RFC1918 or CGNAT address behind your own TLS proxy. Loopback, link-local and other reserved ranges stay refused; HTTPS stays required. Logged at startup and on the pairing audit row. |
@@ -86,7 +86,7 @@ already in `.env`; there is no default, the block refuses to guess. An exported 
   && t=$(mktemp ./.env.XXXXXX) && { grep -v -e '^COMPOSE_FILE=' -e '^KY_DNS=' -e '^KY_BACKUP_ALLOW_PRIVATE_RECOVERY=' .env || [ $? -eq 1 ]; } > "$t" \
   && printf 'COMPOSE_FILE=%s\nKY_DNS=%s\nKY_BACKUP_ALLOW_PRIVATE_RECOVERY=true\n' "$cf" "$dns" >> "$t" && mv "$t" .env)
 docker compose up -d --force-recreate
-docker inspect ky_server_base --format '{{.HostConfig.Dns}}'   # must print the resolver you chose
+docker inspect kyguard-server --format '{{.HostConfig.Dns}}'   # must print the resolver you chose
 ```
 
 Turning it off: remove the resolver and the flag, strip only `docker-compose.lan-dns.yml` from

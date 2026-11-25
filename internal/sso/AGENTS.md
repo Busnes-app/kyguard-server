@@ -1,10 +1,10 @@
 # SSO
 
 ## Purpose
-Provides unified Single Sign-On federation for KySignOn, Generic OpenID Connect (Google, Microsoft Entra ID, Okta, Keycloak), and SAML 2.0 Service Provider (SP).
+Provides Single Sign-On federation for KySignOn and one generic OpenID Connect profile (spec §7.2). SAML is removed: it cannot carry the `max_age` and `auth_time` guarantees step-up needs.
 
 ## Ownership
-Owns the application adapters around OAuth/OIDC login, verified back-channel logout and SAML metadata publication. KyIdentity directory synchronization belongs to the SCIM connector, not a webhook.
+Owns the application adapters around OAuth/OIDC login and verified back-channel logout. KyIdentity directory synchronization belongs to the SCIM connector, not a webhook.
 
 ## Local Contracts
 - PKCE with `S256` is enforced on all OAuth/OIDC authorization requests.
@@ -21,7 +21,7 @@ Owns the application adapters around OAuth/OIDC login, verified back-channel log
 - When `fips140.Enabled()`, issuer/authorization/token/JWKS endpoints require
   HTTPS without URL credentials; discovery/token redirects are refused. Preserve
   caller TLS trust roots and ordinary verification. This mode is process-wide.
-- SAML assertion parsing is not implemented locally; metadata XML uses `encoding/xml` and no ACS route is exposed until a maintained SAML service-provider library is configured.
+- No SAML code, route or setting: `/saml/*` answers 404 (`TestSAMLRoutesAreGone`).
 - `VerifyLogoutToken` (`backchannel.go`) reuses the ID-token verifier, then requires
   `iat`, `sub` or `sid`, the back-channel logout event as a JSON object and no `nonce`;
   a present `typ` must be `logout+jwt`. Every failure is `ErrInvalidLogoutToken`.

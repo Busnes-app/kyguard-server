@@ -1,7 +1,7 @@
 # Config
 
 ## Purpose
-Manages environment and file-based configuration loading, defaults, and type conversions for ky_server_base.
+Manages environment and file-based configuration loading, defaults, and type conversions for kyguard-server.
 
 ## Ownership
 Owns environment variable parsing, configuration validation, default fallbacks, and security key generations.

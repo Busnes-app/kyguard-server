@@ -1,5 +1,5 @@
 # Binaries
-ky_server_base
+/kyguard-server
 /server
 *.exe
 *.dll

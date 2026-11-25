@@ -56,7 +56,7 @@ func main() {
 			runRestore(os.Args[2:])
 			return
 		case "version":
-			fmt.Println("ky_server_base v1.0.0 (Busnes.app base platform)")
+			fmt.Println("kyguard-server v0.1.0 (KyGuard PAM Control Plane)")
 			return
 		}
 	}
@@ -602,7 +602,7 @@ func runRestore(args []string) {
 	target := fs.String("to", "", "empty directory to restore into")
 	service := fs.String("service", "", "expected service name (default: $KY_APP_NAME)")
 	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, "Usage: ky_server_base restore -capsule <file.kycap> -to <dir> [-service <name>]\n\n"+
+		fmt.Fprint(os.Stderr, "Usage: kyguard-server restore -capsule <file.kycap> -to <dir> [-service <name>]\n\n"+
 			"Custodian shares are read from stdin, one ky2-... share per line, and never from\n"+
 			"the command line: argv is world-readable and lands in shell history.\n\n")
 		fs.PrintDefaults()

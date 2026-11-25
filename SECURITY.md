@@ -1,11 +1,11 @@
 # Security Policy
 
-ky_server_base is the shared scaffold for suite servers. Its defaults and shared code (auth, SSO, storage, backup) become the defaults of every server built from it, so its trust boundaries are inherited broadly.
+KyGuard is a privileged access management platform: it relays and stores sealed credentials for other systems, so a flaw here can expose them. Its design and trust boundaries are in `docs/SPEC.md` §2 and §11.
 
 ## Reporting vulnerabilities
 
 Report security vulnerabilities privately through GitHub Security Advisories:
-<https://github.com/Busnes-app/ky-server-base/security/advisories>. Do not open a public issue.
+<https://github.com/Busnes-app/kyguard-server/security/advisories>. Do not open a public issue.
 Include the affected area, reproduction steps, impact, and affected versions.
 We aim to acknowledge reports within two business days and will coordinate a fix
 and disclosure.

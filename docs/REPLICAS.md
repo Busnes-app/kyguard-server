@@ -171,7 +171,7 @@ and backed up. Nothing below prints a secret.
    `KY_DB_DSN` for the bundled database
    (`postgres://ky_server:<KY_POSTGRES_PASSWORD>@postgres:5432/ky_server?sslmode=disable`).
    Keep an existing working `KY_APP_NAME`: it is also the KyRecovery service label.
-   New installs default to `Busnes.app`; labels must match
+   New installs default to `KyGuard`; labels must match
    `[A-Za-z0-9][A-Za-z0-9_.-]{0,63}` and contain no `..`.
    Append `docker-compose.replicas.yml` last to `COMPOSE_FILE`;
    `docker compose config --quiet` names anything missing.
@@ -207,14 +207,13 @@ and backed up. Nothing below prints a secret.
 
 ### Service identity and older capsules
 
-The Compose app name is now configurable and defaults to the binary's wire-valid
-`Busnes.app`, replacing the old hardcoded `Busnes.app Base`. Preserve a working named
-pairing's exact label. For a deliberate rename, pause scheduled backups and follow the
+The Compose app name is configurable and defaults to the binary's wire-valid
+`KyGuard`. Preserve a working named pairing's exact label. For a deliberate rename, pause scheduled backups and follow the
 shared-setting rotation procedure below. Start one replica, unpair and pair with a new code
 for that label while retaining the same pinned public key. Revoke the previous remote token
 on KyRecovery, verify a deposit, then restore the schedule and remaining replicas.
 Old local capsules retain their original manifest service: restore one made under the old
-Compose default with `-service 'Busnes.app Base'`; never rewrite a capsule or its key.
+name with `-service '<old name>'`; never rewrite a capsule or its key.
 A timeout during pinning or pairing does not prove failure: inspect Backup status and the
 audit log before retrying or requesting another single-use code.
 
@@ -267,7 +266,7 @@ never shown by the settings API or logged; `restore` removes it from a restored 
 2. Change the value everywhere it is configured.
 3. Run once, with the new configuration:
    `docker compose run --rm --no-deps app accept-replica-config`
-   (bare binary: `ky_server_base accept-replica-config`). It rewrites the record and audits
+   (bare binary: `kyguard-server accept-replica-config`). It rewrites the record and audits
    `admin.replica_config_accepted` with the changed field names.
 4. Start the replicas. One still holding the old value refuses to start.
 
@@ -398,8 +397,8 @@ the restore drill.
    direct binary install, with that variable already exported:
 
    ```bash
-   ./ky_server_base migrate-postgres --source ./data/ky_server.db --check
-   ./ky_server_base migrate-postgres --source ./data/ky_server.db
+   ./kyguard-server migrate-postgres --source ./data/ky_server.db --check
+   ./kyguard-server migrate-postgres --source ./data/ky_server.db
    ```
 
    The command identifies the original scaffold migration history, makes a private SQLite

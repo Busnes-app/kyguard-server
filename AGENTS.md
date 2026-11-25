@@ -1,3 +1,18 @@
+# KyGuard
+
+KyGuard is a privileged access management platform built on `ky_server_base`. The normative
+design is [docs/SPEC.md](docs/SPEC.md) (v2.4, signed off by the council).
+
+- Scope: build only the spec's Phase 0 and Phase 1A sections. Later phases get a paragraph
+  in the spec and nothing in code. Appendix D is non-normative: build nothing from it.
+- The spec wins over the inherited base guides below. §7.1 reverses two base rules
+  deliberately: KyGuard has local TOTP (break-glass login and step-up) and per-route step-up.
+- Where the spec is silent or contradicts itself, take the most secure reading and record it
+  in [docs/DECISIONS.md](docs/DECISIONS.md) with the section number.
+- Crypto is stdlib only (`crypto/mldsa`, `crypto/ed25519`, `crypto/hpke`, `crypto/hkdf`,
+  `crypto/sha256`) plus `ky-primitives`; no `circl`, no custom primitives (§3.1).
+- Every security property in the spec's acceptance tests has a test that fails without the fix.
+
 
 # DOX framework
 
@@ -101,12 +116,9 @@ CI (`.github/workflows/ci.yml`) runs on every push and every non-draft pull requ
 - `govulncheck` and `npm run audit`: strict production audit plus full high/critical audit,
   with the single dated development-tool exception in `docs/NPM-AUDIT.md`
 - `scripts/smoke-test.sh`: runs the built binary and asserts CLI, auth, session, and SPA behavior
-- `scripts/test_ky_init.py`: runs the initializer against the current Compose template;
-  a product gets its own overridable recovery service label, and a changed template
-  refuses before creating target files. Runs in `make smoke` and the hosted smoke job.
 - Docker image build and container HTTP check
 - Chromium regressions against the built server: production CSP/worker, themes, responsive layout and keyboard dialogs; the browser job gates publishing.
-- On a push to `master` that passes every job (`reuse` included in `publish.needs`), `publish` pushes the exact image the Docker check ran against (handed over as an artifact, no rebuild) to `ghcr.io/busnes-app/ky-server-base:<commit sha>`, attests it and verifies the attestation pinned to this workflow on `master`; `promote` then moves `:latest` to that digest, only at the tip of `master`, and asserts the tag resolves to the attested digest. `docker-compose.yml` names the published image and never builds; source installs add `docker-compose.build.yml` to the `COMPOSE_FILE` chain in `.env` (overlay tags `ky_server_base:local`) so every compose command, recovery docs included, uses the local build.
+- On a push to `main` that passes every job (`reuse` included in `publish.needs`), `publish` pushes the exact image the Docker check ran against (handed over as an artifact, no rebuild) to `ghcr.io/busnes-app/kyguard-server:<commit sha>`, attests it and verifies the attestation pinned to this workflow on `main`; `promote` then moves `:latest` to that digest, only at the tip of `main`, and asserts the tag resolves to the attested digest. `docker-compose.yml` names the published image and never builds; source installs add `docker-compose.build.yml` to the `COMPOSE_FILE` chain in `.env` (overlay tags `kyguard-server:local`) so every compose command, recovery docs included, uses the local build.
 
 - `replicas` (`needs: docker`): `scripts/check-replicas-compose.py` renders the replica overlay merges, then `e2e/compose_test.go` (`KY_E2E_COMPOSE=1`) drives `docker-compose.replicas.yml` with the exact image the `docker` job tested (its `tested-image` artifact, no rebuild): replica SIGKILL and graceful stop under load, elected-worker death, the shared capsule archive across retention, `down`/`up` and scaling, PostgreSQL pause (every in-flight request answered within 10 s) and stop, shared lockout/logout and a PostgreSQL restore drill with the runbook's own commands. It is in `publish.needs`.
 
@@ -126,8 +138,8 @@ overlay merges with synthetic inputs and starts no containers.
 - [internal/config/AGENTS.md](internal/config/AGENTS.md): Configuration management and environment loader.
 - [internal/store/AGENTS.md](internal/store/AGENTS.md): Pluggable database abstraction layer (SQLite & PostgreSQL).
 - [internal/crypto/AGENTS.md](internal/crypto/AGENTS.md): Cryptographic primitives (AES-256-GCM, HMAC, SHA-256, randomness, PKCE).
-- [internal/auth/AGENTS.md](internal/auth/AGENTS.md): Authentication, sessions, client addresses and CAPTCHA (MFA is KyIdentity's).
-- [internal/sso/AGENTS.md](internal/sso/AGENTS.md): Single Sign-On federation (KySignOn, OIDC, SAML 2.0).
+- [internal/auth/AGENTS.md](internal/auth/AGENTS.md): Authentication, sessions, local TOTP step-up, client addresses and CAPTCHA.
+- [internal/sso/AGENTS.md](internal/sso/AGENTS.md): Single Sign-On federation (KySignOn, generic OIDC).
 - [internal/scim/AGENTS.md](internal/scim/AGENTS.md): SCIM 2.0 user and group provisioning engine.
 - [internal/backup/AGENTS.md](internal/backup/AGENTS.md): Product-side adapters over `ky-primitives/recoveryclient`: payload collection, drill checks, settings and sealer glue.
 - [internal/testdb/AGENTS.md](internal/testdb/AGENTS.md): Test-only isolated database provisioning (SQLite or PostgreSQL).
@@ -182,6 +194,3 @@ retained encryption/recovery keys to satisfy the profile.
 `docs/NPM-AUDIT.md` owns frontend audit scope, temporary advisory acceptance and removal.
 Keep new advisories/production exposure failing; exception expiry requires reviewed changes.
 
-`scripts/ky-init.sh` owns product scaffolding: app names must be valid KyRecovery service
-labels. Preserve Compose's `KY_APP_NAME` override while replacing its default with the
-product name; refuse an unknown template before creating the target.

@@ -13,7 +13,7 @@ type User struct {
 	PasswordHash string `json:"-"`            // Never serialized to JSON
 	Role         string `json:"role"`         // "admin", "user", "manager"
 	Status       string `json:"status"`       // "active", "suspended", "inactive"
-	SSOProvider  string `json:"sso_provider"` // "local", "kysignon", "oidc", "saml", "scim"
+	SSOProvider  string `json:"sso_provider"` // "local", "kysignon", "oidc", "scim"
 	SSOSubject   string `json:"sso_subject,omitempty"`
 	// SCIMManaged marks an account SCIM created; SCIM can see and change only these. It
 	// survives adoption by a KyIdentity sign-in, which switches SSOProvider to "kysignon".

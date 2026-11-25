@@ -21,7 +21,7 @@ type IdentityClaims struct {
 	Role              string `json:"role,omitempty"`
 	// Roles is KyIdentity's per-app `roles` claim; nil when the ID token has none.
 	Roles    []string `json:"roles,omitempty"`
-	Provider string   `json:"provider"` // "kysignon", "oidc", "saml"
+	Provider string   `json:"provider"` // "kysignon", "oidc"
 	// SessionID is the provider's ID token `sid`; back-channel logout names the login by it.
 	SessionID string `json:"sid,omitempty"`
 	// IssuedAt is the ID token's iat: when the provider vouched for this login.

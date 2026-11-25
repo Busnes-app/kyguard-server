@@ -2,7 +2,7 @@
 
 [Overview](../README.md) · [Restore runbook](RESTORE.md) · [Contributing](../CONTRIBUTING.md)
 
-This is the argument that ky-server-base meets its security requirements: what it protects, from
+This is the argument that KyGuard's `ky_server_base` foundation meets its security requirements: what it protects, from
 whom, where the trust boundaries are, and why the design and the code hold at each one. Every
 Busnes.app server is built from this scaffold, so each product inherits this case and adds its
 own. The binding contracts live in [AGENTS.md](../AGENTS.md) and the package `AGENTS.md` files
@@ -46,8 +46,7 @@ Out of scope: an attacker who runs code on the host or holds both the database a
    with PKCE S256 and a nonce (`internal/sso/oauth.go`). The incompatible directory webhook is retired; KyIdentity uses the SCIM
    connector below. KyIdentity
    back-channel logout tokens are verified like ID tokens plus the logout-token claims
-   (`internal/sso/backchannel.go`). No SAML
-   assertion route is exposed.
+   (`internal/sso/backchannel.go`). SAML is removed (spec §7.2).
 3. **SCIM clients → server.** A bearer token compared in constant time; SCIM sees only the accounts it
    created or safely adopted from KyIdentity and cannot grant admin unless `KY_SCIM_ALLOW_ADMIN` (`internal/scim/handler.go`).
    Adoption matches the immutable subject first; a username match with a different

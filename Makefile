@@ -7,8 +7,8 @@ build-web:
 	@cd web && npm ci && npm run build
 
 build:
-	@echo "==> Compiling ky_server_base binary..."
-	@go build -o ky_server_base ./cmd/server
+	@echo "==> Compiling kyguard-server binary..."
+	@go build -o kyguard-server ./cmd/server
 
 test:
 	@echo "==> Running test suite..."
@@ -28,8 +28,8 @@ test-postgres:
 # test removes its own project; relays stay off in every throwaway container.
 test-replicas:
 	@python3 scripts/check-replicas-compose.py
-	@docker build -t ky_server_base:local .
-	@KY_E2E_COMPOSE=1 KY_IMAGE=ky_server_base:local PUSH_RELAY_URL= APNS_RELAY_URL= go test -count=1 -v -timeout 30m ./e2e
+	@docker build -t kyguard-server:local .
+	@KY_E2E_COMPOSE=1 KY_IMAGE=kyguard-server:local PUSH_RELAY_URL= APNS_RELAY_URL= go test -count=1 -v -timeout 30m ./e2e
 
 test-web:
 	@echo "==> Running frontend test suite..."
@@ -50,7 +50,6 @@ lint:
 	@go vet ./...
 
 smoke: build
-	@python3 -B -m unittest discover -s scripts -p test_ky_init.py
 	@./scripts/smoke-test.sh
 
 notes-check:
@@ -61,10 +60,10 @@ ci: notes-check tidy-check lint test-race test-web audit-web smoke
 	@echo "==> Local CI checks passed"
 
 run: build
-	@./ky_server_base
+	@./kyguard-server
 
 docker-build:
-	@docker build -t ky_server_base .
+	@docker build -t kyguard-server .
 
 clean:
-	@rm -rf ky_server_base web/dist web/node_modules coverage.out
+	@rm -rf kyguard-server web/dist web/node_modules coverage.out

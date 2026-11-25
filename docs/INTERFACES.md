@@ -159,7 +159,7 @@ Sources: [SSO handlers](../internal/api/sso_handlers.go),
 | GET `/api/sso/kysignon/login` | Browser; no body | 302 to provider authorization URL; five-minute HttpOnly PKCE/nonce cookies |
 | GET `/api/sso/kysignon/callback` | Provider query `code`, `state`; matching PKCE/nonce cookies | 302 to `/` and session/CSRF cookies |
 | POST `/api/sso/kysignon/backchannel-logout` | Provider server; form body `logout_token` (≤16 KiB) | 200, `Cache-Control: no-store`; 400 `{"error":"invalid_request"}` for any token that fails verification |
-| GET `/saml/metadata` | Anonymous; no body | 200 XML service-provider metadata |
+| any `/saml/*` | Anonymous | 404: SAML is removed (spec §7.2) |
 
 The callback verifies provider tokens, PKCE and nonce. Invalid state/nonce is 400;
 failed exchange is 401. A subject with no KyIdentity account adopts the SCIM account
@@ -176,9 +176,8 @@ sign-in (401). A role change
 revokes the account's other sessions in the same transaction and is audited as
 `sso.role_changed`; only the role is written, so a concurrent directory edit stays, and a
 concurrent role or status change is 409 (sign in again). Only
-KyIdentity rows are reached, so local accounts never change. The scaffold constructs generic OIDC and SAML helpers, but registers
-no generic OIDC login/callback or SAML assertion-consumer handler. In particular,
-the `/saml/acs` URL named in the metadata is not an implemented login route here.
+KyIdentity rows are reached, so local accounts never change. The server constructs a generic OIDC
+helper but does not yet register its login or callback route.
 
 Back-channel logout follows OpenID Connect Back-Channel Logout 1.0. The token must
 carry KySignOn's signature, this client as audience, an unexpired `exp`, an `iat`, a
@@ -398,7 +397,7 @@ and data directory as the server unless noted. Do not run them against a live da
 directory without following the [restore runbook](RESTORE.md). Diagnostic messages
 normally go to stderr. Setup/operational failures return a nonzero exit status.
 
-| Invocation after `ky_server_base` | Inputs and effect | Output |
+| Invocation after `kyguard-server` | Inputs and effect | Output |
 |---|---|---|
 | No subcommand | Load environment, open store, bootstrap if empty, serve HTTP and run configured backup schedule | Startup/operation logs; listener defaults to `:8080` |
 | `migrate-postgres [--source PATH] [--check]` | Stopped SQLite source and empty PostgreSQL target from `KY_MIGRATE_POSTGRES_DSN`; the source directory must be writable (lock and private snapshot); verify a private snapshot and copy transactionally; check-only rolls back target rows. A source pin with no `recovery_public_key` record is recorded from the `recovery.pub` beside the source; a pin without that file is refused before anything is copied | JSON row counts and a cutover reminder on stdout; nonzero on failure |
@@ -408,7 +407,7 @@ normally go to stderr. Setup/operational failures return a nonzero exit status.
 | `backup-drill` | Collect the payload (SQLite file, or a PostgreSQL snapshot); seal/open with throwaway keys and check restore recipe | Human summary on stdout with PASSED/FAILED and per-check results; exit status 1 when the drill FAILED |
 | `export-capsule [-out PATH]` | Require suite pin; seal payload to custodian public key; default output `<capsule-id>.kycap` | File plus capsule/key/size confirmation on stderr |
 | `deposit` | Seal once and deliver to configured destinations | Audit record; remote success logs capsule/time/digest on stderr; failures on stderr; no JSON stdout contract |
-| `restore -capsule PATH -to DIRECTORY [-service NAME]` | Read custodian shares from stdin, one `ky2-…` line each; target must be empty; expected service defaults to `KY_APP_NAME`, then `Busnes.app` | Authenticated manifest/restore result on stdout; optional terminal prompt on stderr. In the restored database, in one transaction: the backup schedule off (`backup_interval_sec` = 0), every `sessions` row deleted and the `replica_config_fingerprint` row deleted; it prints all three. The admin turns the schedule back on |
+| `restore -capsule PATH -to DIRECTORY [-service NAME]` | Read custodian shares from stdin, one `ky2-…` line each; target must be empty; expected service defaults to `KY_APP_NAME`, then `KyGuard` | Authenticated manifest/restore result on stdout; optional terminal prompt on stderr. In the restored database, in one transaction: the backup schedule off (`backup_interval_sec` = 0), every `sessions` row deleted and the `replica_config_fingerprint` row deleted; it prints all three. The admin turns the schedule back on |
 
 `init-admin` currently takes its password in argv, so it can be visible in process
 listings or shell history. Custodian shares are accepted only on stdin. `backup-drill`
@@ -432,7 +431,7 @@ reader in the binary. The shipped `docker-compose.yml` passes its `.env` to the 
 | `KY_HOST` | `0.0.0.0` | HTTP listener address; use network/proxy controls in production |
 | `KY_PORT` / `PORT` | `8080` | Integer listener port; KY_PORT wins |
 | `KY_APP_URL` | `http://localhost:<port>` | External application origin, redirects and SCIM base URL. Set it to the public URL: behind a proxy that rewrites `Host`, a browser sign-in whose `Origin` matches neither is refused as cross-site |
-| `KY_APP_NAME` | `Busnes.app` | Application and capsule service identity; preserve it for restore |
+| `KY_APP_NAME` | `KyGuard` | Application and capsule service identity; preserve it for restore |
 | `KY_ENV` | `development` | `production` requires a session secret and defaults to Secure cookies |
 | `KY_DB_DRIVER` | `sqlite` | Persistent-file SQLite (`sqlite3` alias) or `postgres` (`postgresql`/`pgx` aliases); other drivers are not implemented |
 | `KY_DATA_DIR` | `./data` | Local database/key directory |
@@ -453,7 +452,6 @@ reader in the binary. The shipped `docker-compose.yml` passes its `.env` to the 
 | `KY_KYSIGNON_HMAC_SECRET` | Empty | Deprecated, accepted and ignored; a nonempty value logs a startup warning to migrate KyIdentity to the SCIM connector |
 | `KY_SSO_AUTO_PROVISION` | `true` | Allow a validated KySignOn login to create a local user |
 | `KY_OIDC_ISSUER`, `KY_OIDC_CLIENT_ID`, `KY_OIDC_SECRET` | Empty | Generic OIDC helper configuration; no public login/callback routes are wired |
-| `KY_SAML_ENTITY_ID`, `KY_SAML_METADATA_URL` | Empty | SAML helper configuration; only local metadata output is wired |
 | `KY_SCIM_ENABLED` | `true` | Enable authenticated provisioning |
 | `KY_SCIM_TOKEN` | Fresh random 24-byte hex on each SQLite load | Provisioning bearer credential; required explicitly with PostgreSQL when SCIM is enabled, identical across replicas |
 | `KY_SCIM_ALLOW_ADMIN` | `false` | Let SCIM grant the `admin` role |

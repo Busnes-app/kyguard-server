@@ -1,12 +1,12 @@
 # Code of Conduct
 
-ky_server_base handles the foundation every suite server is built on. Getting
+KyGuard guards privileged credentials for the systems it manages. Getting
 that right takes people who disagree with each other in public and keep showing
 up anyway. This document exists so that disagreement stays about the work.
 
 ## Our Commitment
 
-Everyone who contributes to ky_server_base — code, documentation, bug reports, security
+Everyone who contributes to KyGuard — code, documentation, bug reports, security
 findings, translations, or a question in an issue — is welcome here regardless
 of age, body size, visible or invisible disability, ethnicity, sex
 characteristics, gender identity and expression, level of experience,
@@ -54,7 +54,7 @@ interchangeable would be lying about what it is.
 
 ## Hostile Reviews Are About Code, Never People
 
-ky_server_base deliberately runs adversarial review: human reviewers, and AI reviewers
+KyGuard deliberately runs adversarial review: human reviewers, and AI reviewers
 running skills that are *instructed* to be unimpressed with your work. Every PR
 gets torn at on purpose, because the alternative is finding out from a user
 whose server inherited a flaw from this base. See
@@ -84,7 +84,7 @@ real, push back on what isn't. Nobody here got a clean first review.
 
 This applies in every project space — issues, pull requests, discussions,
 commit messages, code comments, the wiki, and any chat or event where you are
-representing ky_server_base. It also applies to behaviour outside these spaces when
+representing KyGuard. It also applies to behaviour outside these spaces when
 that behaviour is directed at a member of this community because of their
 participation here.
 
@@ -104,7 +104,7 @@ someone else, and you may report an incident you witnessed but were not the
 target of.
 
 **Security vulnerabilities are not a Code of Conduct matter.** Report those
-through [GitHub Security Advisories](https://github.com/Busnes-app/ky-server-base/security/advisories),
+through [GitHub Security Advisories](https://github.com/Busnes-app/kyguard-server/security/advisories),
 as described in [SECURITY.md](SECURITY.md).
 
 ## Enforcement

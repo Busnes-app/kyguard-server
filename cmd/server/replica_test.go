@@ -83,8 +83,6 @@ func TestReplicaWithADifferentSharedFieldIsRefused(t *testing.T) {
 		"KY_OIDC_ISSUER":                   func(c *config.Config) { c.SSO.GenericOIDCIssuer = secret },
 		"KY_OIDC_CLIENT_ID":                func(c *config.Config) { c.SSO.GenericOIDCClientID = secret },
 		"KY_OIDC_SECRET":                   func(c *config.Config) { c.SSO.GenericOIDCSecret = secret },
-		"KY_SAML_ENTITY_ID":                func(c *config.Config) { c.SSO.SAMLEntityID = secret },
-		"KY_SAML_METADATA_URL":             func(c *config.Config) { c.SSO.SAMLMetadataURL = secret },
 		"KY_SSO_AUTO_PROVISION":            func(c *config.Config) { c.SSO.AutoProvision = false },
 		"KY_CAPTCHA_PROVIDER":              func(c *config.Config) { c.Captcha.Provider = secret },
 		"KY_CAPTCHA_SITE_KEY":              func(c *config.Config) { c.Captcha.SiteKey = secret },

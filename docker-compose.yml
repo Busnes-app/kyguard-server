@@ -16,18 +16,18 @@ services:
     # again. A source install is unaffected: the build overlay's image wins over this pin.
 #   Images built before 2026-09-16 cannot be verified by name any more (their owner is no longer held by this project); pin a later commit or build from source with docker-compose.build.yml.
     #   sha=<full commit sha you intend to run, e.g. $(git rev-parse origin/master)>
-    #   d=$(docker buildx imagetools inspect ghcr.io/busnes-app/ky-server-base:$sha --format '{{.Manifest.Digest}}') \
-    #     && gh attestation verify "oci://ghcr.io/busnes-app/ky-server-base@$d" --repo Busnes-app/ky-server-base \
-    #          --cert-identity https://github.com/Busnes-app/ky-server-base/.github/workflows/ci.yml@refs/heads/master \
-    #     && [ "$(gh attestation verify "oci://ghcr.io/busnes-app/ky-server-base@$d" --repo Busnes-app/ky-server-base \
-    #          --cert-identity https://github.com/Busnes-app/ky-server-base/.github/workflows/ci.yml@refs/heads/master \
+    #   d=$(docker buildx imagetools inspect ghcr.io/busnes-app/kyguard-server:$sha --format '{{.Manifest.Digest}}') \
+    #     && gh attestation verify "oci://ghcr.io/busnes-app/kyguard-server@$d" --repo Busnes-app/kyguard-server \
+    #          --cert-identity https://github.com/Busnes-app/kyguard-server/.github/workflows/ci.yml@refs/heads/main \
+    #     && [ "$(gh attestation verify "oci://ghcr.io/busnes-app/kyguard-server@$d" --repo Busnes-app/kyguard-server \
+    #          --cert-identity https://github.com/Busnes-app/kyguard-server/.github/workflows/ci.yml@refs/heads/main \
     #          --format json --jq '.[0].verificationResult.statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit')" = "$sha" ] \
     #     && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KY_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
-    #         && echo "KY_IMAGE=ghcr.io/busnes-app/ky-server-base@$d" >> "$t" && mv "$t" .env) \
-    #     && grep -qxF "KY_IMAGE=ghcr.io/busnes-app/ky-server-base@$d" .env
-    image: ${KY_IMAGE:-ghcr.io/busnes-app/ky-server-base:latest}
+    #         && echo "KY_IMAGE=ghcr.io/busnes-app/kyguard-server@$d" >> "$t" && mv "$t" .env) \
+    #     && grep -qxF "KY_IMAGE=ghcr.io/busnes-app/kyguard-server@$d" .env
+    image: ${KY_IMAGE:-ghcr.io/busnes-app/kyguard-server:latest}
     pull_policy: missing
-    container_name: ky_server_base
+    container_name: kyguard-server
     restart: unless-stopped
     # Covers cmd/server's readinessDrainDelay (5s at 503), shutdownTimeout (5s HTTP drain) and
     # backupWaitTimeout (10s for an interrupted backup to record its outcome). Docker's
@@ -47,7 +47,7 @@ services:
       - KY_PORT=8080
       - KY_HOST=0.0.0.0
       # Also the KyRecovery service label; keep an existing valid identity unchanged.
-      - KY_APP_NAME=${KY_APP_NAME:-Busnes.app}
+      - KY_APP_NAME=${KY_APP_NAME:-KyGuard}
       - KY_APP_URL=${KY_APP_URL:-http://localhost:8080}
       - KY_DB_DRIVER=sqlite
       - KY_DATA_DIR=/app/data

@@ -181,8 +181,3 @@ func (s *Server) handleKySignOnBackchannelLogout(w http.ResponseWriter, r *http.
 	})
 	w.WriteHeader(http.StatusOK)
 }
-
-func (s *Server) handleSAMLMetadata(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/xml")
-	_, _ = w.Write([]byte(s.saml.GenerateMetadata()))
-}
