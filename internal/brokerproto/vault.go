@@ -186,6 +186,10 @@ func (l *Listener) envelope(ctx context.Context, tr *pqcrypto.Trust, b *store.Br
 	if err := decode(body, &req); err != nil {
 		return err
 	}
+	// Re-sending a stored envelope is a no-op, even after the policy has moved on.
+	if have, err := l.Store.Vault().EnvelopeByDigest(ctx, digestOf(req.Envelope)); err == nil && slices.Equal(have, req.Envelope) {
+		return nil
+	}
 	v, err := tr.VerifyEnvelope(req.Envelope, pqcrypto.EnvelopeContext{New: true})
 	if err != nil {
 		return err
@@ -327,3 +331,16 @@ func (l *Listener) status(ctx context.Context, tr *pqcrypto.Trust, b *store.Brok
 
 // encoded is the base64url size of b plus JSON framing.
 func encoded(b []byte) int { return (len(b)+2)/3*4 + 8 }
+
+// digestOf is D(envelope) of canonical bytes, or "" if they do not decode.
+func digestOf(raw []byte) string {
+	var e pqcrypto.SecretEnvelope
+	if _, err := canonical.Decode(raw, &e); err != nil {
+		return ""
+	}
+	d, err := pqcrypto.ObjDigest(&e)
+	if err != nil {
+		return ""
+	}
+	return string(d.Hex())
+}
