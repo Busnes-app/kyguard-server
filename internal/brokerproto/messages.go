@@ -113,8 +113,8 @@ const MaxFrame = 4 << 20
 // SyncPage is the most manifests one sync reply carries.
 const SyncPage = 64
 
-// SyncAccountsPage is the most account IDs one sync reply carries, and so about the most
-// accounts it reads. It is a variable only so tests can lower it.
+// SyncAccountsPage is the most account rows one sync page reads, and so the most account
+// IDs it carries. It is a variable only so tests can lower it.
 var SyncAccountsPage = 4096
 
 // SyncBudget bounds the encoded manifests of one sync page and the encoded descriptor and
@@ -150,7 +150,9 @@ type SyncRequest struct {
 type SyncReply struct {
 	Manifests []pqcrypto.B64  `json:"manifests"`
 	Accounts  []pqcrypto.UUID `json:"accounts"`
-	Done      bool            `json:"done"`
+	// AccountsNext, while not Done, is the AccountsAfter of the next page.
+	AccountsNext pqcrypto.UUID `json:"accounts_next,omitzero"`
+	Done         bool          `json:"done"`
 }
 
 // SyncAccountRequest asks for one account, within SyncBudget per reply: its current and
