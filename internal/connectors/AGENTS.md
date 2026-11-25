@@ -15,6 +15,8 @@ Owns how a broker talks to a target. The rotation order, journaling and quaranti
   host as server name; SSH checks `ssh_host_key_sha256` in the host-key callback before any
   authentication. The `Dial` field exists for tests that map the descriptor host to a
   container; production leaves it nil.
+- Every operation observes its context: cancellation or a deadline closes the target
+  connection rather than waiting for the connector's fixed timeout.
 - `Session.Change` calls `commit` immediately before the first byte of the new password
   leaves and sends nothing if it fails.
 - Return `broker.ErrAuthFailed` only for a deterministic authentication failure and

@@ -40,14 +40,15 @@ func (c *Connector) timeout() time.Duration {
 }
 
 // open dials ldaps://host:port from the descriptor and completes the TLS handshake against
-// the pinned CA and hostname.
-func (c *Connector) open(ctx context.Context, d *pqcrypto.TargetDescriptor) (*ldap.Conn, error) {
+// the pinned CA and hostname. It also returns the raw connection, which watch closes when
+// an operation's context ends.
+func (c *Connector) open(ctx context.Context, d *pqcrypto.TargetDescriptor) (*ldap.Conn, net.Conn, error) {
 	if d.ConnectorType != pqcrypto.ConnectorADLDAPS {
-		return nil, errors.New("adldaps: not an ad_ldaps descriptor")
+		return nil, nil, errors.New("adldaps: not an ad_ldaps descriptor")
 	}
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM([]byte(d.Endpoint.TLSCAPEM)) {
-		return nil, errors.New("adldaps: descriptor tls_ca_pem holds no certificate")
+		return nil, nil, errors.New("adldaps: descriptor tls_ca_pem holds no certificate")
 	}
 	dial := c.Dial
 	if dial == nil {
@@ -55,19 +56,25 @@ func (c *Connector) open(ctx context.Context, d *pqcrypto.TargetDescriptor) (*ld
 	}
 	raw, err := dial(ctx, "tcp", net.JoinHostPort(d.Endpoint.Host, strconv.Itoa(d.Endpoint.Port)))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	tc := tls.Client(raw, &tls.Config{RootCAs: roots, ServerName: d.Endpoint.Host, MinVersion: tls.VersionTLS12})
 	hctx, cancel := context.WithTimeout(ctx, c.timeout())
 	defer cancel()
 	if err := tc.HandshakeContext(hctx); err != nil {
 		raw.Close()
-		return nil, err
+		return nil, nil, err
 	}
 	l := ldap.NewConn(tc, true)
 	l.SetTimeout(c.timeout())
 	l.Start()
-	return l, nil
+	return l, raw, nil
+}
+
+// watch closes raw if ctx ends before the returned stop is called: go-ldap requests observe
+// only the fixed timeout, so cancellation must end them by closing the connection.
+func watch(ctx context.Context, raw net.Conn) (stop func() bool) {
+	return context.AfterFunc(ctx, func() { raw.Close() })
 }
 
 // bind is a simple bind; LDAP invalidCredentials (49, including AD 52e) is deterministic.
@@ -84,15 +91,18 @@ func bind(l *ldap.Conn, dn string, password []byte) error {
 
 // Login binds as authenticated_target_identity.
 func (c *Connector) Login(ctx context.Context, d *pqcrypto.TargetDescriptor, password []byte) (broker.Session, error) {
-	l, err := c.open(ctx, d)
+	l, raw, err := c.open(ctx, d)
 	if err != nil {
 		return nil, err
 	}
-	if err := bind(l, d.AuthenticatedTargetIdentity, password); err != nil {
+	stop := watch(ctx, raw)
+	err = bind(l, d.AuthenticatedTargetIdentity, password)
+	stop()
+	if err != nil {
 		l.Close()
 		return nil, err
 	}
-	return &session{l: l, dn: d.AuthenticatedTargetIdentity}, nil
+	return &session{l: l, raw: raw, dn: d.AuthenticatedTargetIdentity}, nil
 }
 
 // Verify binds again with the new password on the same host and checks that pwdLastSet
@@ -107,7 +117,7 @@ func (c *Connector) Verify(ctx context.Context, d *pqcrypto.TargetDescriptor, pa
 	if err != nil {
 		return err
 	}
-	now, _, err := s.(*session).read()
+	now, _, err := s.(*session).read(ctx)
 	if err != nil {
 		return err
 	}
@@ -118,12 +128,14 @@ func (c *Connector) Verify(ctx context.Context, d *pqcrypto.TargetDescriptor, pa
 }
 
 type session struct {
-	l  *ldap.Conn
-	dn string
+	l   *ldap.Conn
+	raw net.Conn
+	dn  string
 }
 
 // read returns pwdLastSet and msDS-KeyVersionNumber of the account's own object.
-func (s *session) read() (pwdLastSet, kvno int64, err error) {
+func (s *session) read(ctx context.Context) (pwdLastSet, kvno int64, err error) {
+	defer watch(ctx, s.raw)()
 	res, err := s.l.Search(ldap.NewSearchRequest(s.dn, ldap.ScopeBaseObject, ldap.NeverDerefAliases, 1, 30, false,
 		"(objectClass=*)", []string{"pwdLastSet", "msDS-KeyVersionNumber"}, nil))
 	if err != nil {
@@ -147,8 +159,8 @@ func parseBaseline(b string) (pwdLastSet, kvno int64, err error) {
 	return pwdLastSet, kvno, nil
 }
 
-func (s *session) Baseline(context.Context) (string, error) {
-	p, k, err := s.read()
+func (s *session) Baseline(ctx context.Context) (string, error) {
+	p, k, err := s.read(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -157,9 +169,16 @@ func (s *session) Baseline(context.Context) (string, error) {
 
 // Change sends one modify on unicodePwd: delete the old value and add the new one, each the
 // UTF-16LE encoding of the double-quoted password.
-func (s *session) Change(_ context.Context, oldPassword, newPassword []byte, commit func() error) error {
+func (s *session) Change(ctx context.Context, oldPassword, newPassword []byte, commit func() error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := commit(); err != nil {
 		return err
+	}
+	defer watch(ctx, s.raw)()
+	if err := ctx.Err(); err != nil {
+		return err // committed, but no modify starts after cancellation
 	}
 	oldV, newV := unicodePwd(oldPassword), unicodePwd(newPassword)
 	defer clear(oldV)
@@ -179,8 +198,9 @@ func (s *session) Change(_ context.Context, oldPassword, newPassword []byte, com
 func (s *session) Close() error { return s.l.Close() }
 
 // PasswordAge reports the account's last change and the domain's minPwdAge (§4.4).
-func (s *session) PasswordAge(context.Context) (time.Time, time.Duration, error) {
-	last, _, err := s.read()
+func (s *session) PasswordAge(ctx context.Context) (time.Time, time.Duration, error) {
+	defer watch(ctx, s.raw)()
+	last, _, err := s.read(ctx)
 	if err != nil {
 		return time.Time{}, 0, err
 	}

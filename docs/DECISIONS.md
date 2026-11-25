@@ -208,6 +208,10 @@ contradicts itself. Each names its section. The most secure reading wins.
 64. §8.1, §4.3 rule 6 (health delivery). A health report that fails is journaled as
     unreported and sent again by every `Recover` (startup and reconnect) until one is
     acknowledged, so a quarantine is never left unknown to the Control Plane.
+66. §4.4 (connector cancellation). Every target operation observes its context: the
+    `ad_ldaps` connector closes the connection when the context ends during a bind, search
+    or modify (go-ldap requests otherwise wait for the fixed timeout), and `Change` sends
+    no modify once the context has ended, checked again after the intent commits.
 70. §4.1 (pushes). A Control Plane push that finds the broker's 16-slot queue full is
     dropped and logged, never waited for, so results for pending calls keep flowing. A
     dropped push is a lost relay: nothing was persisted, and the CLI retries or the
