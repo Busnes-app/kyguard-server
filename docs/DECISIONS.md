@@ -211,6 +211,7 @@ contradicts itself. Each names its section. The most secure reading wins.
     `enroll_reservation`, at most 5 minutes old); otherwise 403 and no lock is taken. It
     stops anyone who is not an enroller from holding the account's lock for 15 minutes; it
     authorizes nothing at the broker.
+
 61. §4.1 (sync frame bound). `cptrust.Submit` refuses a manifest over 512 KiB
     (`MaxManifest`), so any stored manifest fits a 4 MiB channel frame base64url-encoded. A
     `sync` page carries at most 64 manifests whose encoded size stays within `SyncBudget`
@@ -245,6 +246,11 @@ contradicts itself. Each names its section. The most secure reading wins.
     `ad_ldaps` connector closes the connection when the context ends during a bind, search
     or modify (go-ldap requests otherwise wait for the fixed timeout), and `Change` sends
     no modify once the context has ended, checked again after the intent commits.
+68. §4.5 step 3 (receipt delivery). Enrollment receipts journaled but not acknowledged by
+    the Control Plane are re-sent by every scheduler tick as well as by recovery, so a
+    transient delivery failure on an open channel does not leave the enrollment open (and
+    rotation blocked) until the next reconnect. The re-send never binds again; resubmitting
+    the enrollment is a replay and is refused.
 70. §4.1 (pushes). A Control Plane push that finds the broker's 16-slot queue full is
     dropped and logged, never waited for, so results for pending calls keep flowing. A
     dropped push is a lost relay: nothing was persisted, and the CLI retries or the

@@ -58,6 +58,14 @@ func (m *Machine) Tick(ctx context.Context) error {
 	}
 	now := m.now()
 	for _, a := range accts {
+		// Journaled enrollment receipts the Control Plane has not acknowledged block
+		// rotation; re-send them, never verifying again.
+		if a.Enrollment.Open() && len(a.Enrollment.Receipts) > 0 {
+			if err := m.enrollSend(ctx, a); err != nil {
+				errs = append(errs, err)
+			}
+			continue
+		}
 		// A run left reserving by a lost reply is settled first, so its lock never blocks
 		// the schedule until the next reconnect (decision 72).
 		if a.Run != nil && a.Run.State == StateReserving {

@@ -269,6 +269,46 @@ func TestEnrollmentResendsWithoutASecondBind(t *testing.T) {
 	}
 }
 
+// failReceipts fails the next n receipt deliveries, as a transient error on an open channel.
+type failReceipts struct {
+	broker.ControlPlane
+	n int
+}
+
+func (f *failReceipts) Receipts(ctx context.Context, op, account pqcrypto.UUID, rs []pqcrypto.B64) error {
+	if f.n > 0 {
+		f.n--
+		return errors.New("transient")
+	}
+	return f.ControlPlane.Receipts(ctx, op, account, rs)
+}
+
+// A receipt delivery that fails while the channel stays open is retried by the next
+// scheduler tick, with no reconnect and no second bind (PR #15 review).
+func TestEnrollmentReceiptsRetryOnTheNextTick(t *testing.T) {
+	r := newEnrollRig(t, true)
+	m := r.machine()
+	defer m.J.Close()
+	quarantineV2(t, r, m)
+	r.target.password = "Reset-By-Operator-1!"
+	m.CP = &failReceipts{ControlPlane: m.CP, n: 1}
+	if _, err := r.enroll(m, "Reset-By-Operator-1!"); err == nil {
+		t.Fatal("the first delivery did not fail")
+	}
+	if a := r.account(m); !a.Enrollment.Open() || r.cpLock() == "" {
+		t.Fatalf("delivered: sent=%v lock=%q", a.Enrollment.Sent, r.cpLock())
+	}
+	if err := m.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if a := r.account(m); a.Quarantined || !a.Enrollment.Sent || r.cpLock() != "" {
+		t.Fatalf("after the tick: quarantined=%v sent=%v lock=%q", a.Quarantined, a.Enrollment.Sent, r.cpLock())
+	}
+	if n := r.target.logins["Reset-By-Operator-1!"]; n != 1 {
+		t.Fatalf("%d binds", n)
+	}
+}
+
 // §13 1A acceptance test 4: an acceptance withheld past 15 minutes expires the
 // reservation; the broker never binds and the stuck rotation's lock is restored. A failed
 // enrollment restores it too.

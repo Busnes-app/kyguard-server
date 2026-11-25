@@ -57,7 +57,9 @@ the wire and TLS are `internal/brokerproto`'s.
   bind) → journal `accept_ack` and burn `request_id` together → journal verify-start → one
   login → commit (abort `superseded_by_reenrollment` on every unterminated envelope, the
   stuck run's included, plus `vault_commit`) or fail (abort `enrollment_failed` on the
-  candidate only). A restart never binds twice. An open enrollment blocks rotation.
+  candidate only). A restart never binds twice. An open enrollment blocks rotation; its
+  journaled, unacknowledged receipts are re-sent by every `Tick` (and `Recover`), never
+  verifying again (DECISIONS 68).
   Lease reset evidence (§4.5 step 3) arrives with checkout leases.
 - `Machine.Hook` is a test-only crash point; it must never be set in production.
 - Connectors implement `Connector`/`Session` (`connector.go`); `ErrAuthFailed` and
