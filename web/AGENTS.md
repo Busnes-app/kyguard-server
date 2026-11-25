@@ -25,6 +25,15 @@ Owns user interface components, service worker caching, PWA installation manifes
 - `Settings.tsx` shows administrators the Office networks card: one network per line, saved through PUT `/api/settings/rate-limit-networks` with `secureFetch`, the server's refusal shown verbatim, the environment's networks read-only and the exempted count. Other roles never request the route.
 - `SCIMAdmin.tsx` lists every account (with its source: Local, KyIdentity or SCIM) from the admin route GET `/api/admin/users`, 50 per page, shows the load error instead of an empty directory, and shows the token field only when a real token is supplied; otherwise it asks for `KY_SCIM_TOKEN`.
 
+- KyGuard reporting screens (spec §8, §10): `pages/Accounts.tsx` is the one reporting page:
+  filters (class, health, pool, account and owner attributes) feed one query string shared
+  by the table, the traffic light and the Export CSV/JSON links (plain `GET` downloads of
+  `/api/reports/scorecard?format=`), and admins get inventory controls there.
+  `Attributes.tsx` (SCIM ones read-only), `Policies.tsx` (drafts with their digest for
+  `kyguard-cli sign`; admin only), `Jobs.tsx` (admin only); the Overview shows the traffic
+  light, health counts and a 1-of-1 Custodian warning. No screen handles a credential or
+  signs anything. Shared fetch helpers and API shapes live in `src/reporting.ts`.
+
 ## Verification
 - `npm run audit` runs the shared audit gate and regression checks; `../docs/NPM-AUDIT.md`
   owns its scoped, expiring build-tool exception.

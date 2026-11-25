@@ -1,0 +1,250 @@
+import React, { useMemo, useState } from 'react';
+import { Download, Plus, X } from 'lucide-react';
+import { ClassBadge, HealthBadge, TrafficLight } from '../components/TrafficLight';
+import { secureFetch } from '../api';
+import { AttributeDefinition, CLASS_LABEL, HEALTH_LABEL, Scorecard, ScoreRow, scorecardURL, send, useJSON } from '../reporting';
+
+// Accounts is the one reporting page (spec §8.3, §10 item 2): obvious filters, the traffic
+// light for exactly those filters, the inventory table and one-click CSV/JSON export.
+export const Accounts: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
+  const [filter, setFilter] = useState<Record<string, string>>({});
+  const card = useJSON<Scorecard>(scorecardURL(filter));
+  // Filter choices come from the unfiltered set, so picking one never hides the others.
+  const all = useJSON<Scorecard>(scorecardURL({}));
+  const defs = useJSON<Record<string, AttributeDefinition[]>>('/api/attributes');
+  const label = (entity: string, key: string) => defs.data?.[entity]?.find((d) => d.key === key)?.label || key;
+  const [open, setOpen] = useState<string>('');
+  const set = (k: string, v: string) => setFilter((f) => ({ ...f, [k]: v }));
+
+  const choices = useMemo(() => {
+    const rows = all.data?.rows || [];
+    const vals = (pick: (r: ScoreRow) => string) => [...new Set(rows.map(pick).filter(Boolean))].sort();
+    return {
+      pools: vals((r) => r.pool_id),
+      attrs: (all.data?.account_attribute_keys || []).map((k) => ({ key: 'attr.' + k, label: label('account', k), values: vals((r) => r.attributes[k]) })),
+      owner: (all.data?.owner_attribute_keys || []).map((k) => ({ key: 'owner.' + k, label: 'Owner ' + label('user', k).toLowerCase(), values: vals((r) => r.owner_attributes[k]) })),
+    };
+  }, [all.data, defs.data]);
+  const reload = () => { card.reload(); all.reload(); };
+  const active = Object.values(filter).some(Boolean);
+
+  return (
+    <div className="dr-page kg-wide">
+      <div className="dr-header">
+        <h1>Accounts</h1>
+        <div className="dr-actions">
+          <a className="btn btn-secondary" href={scorecardURL(filter, 'csv')} download><Download size={16} />Export CSV</a>
+          <a className="btn btn-secondary" href={scorecardURL(filter, 'json')} download><Download size={16} />Export JSON</a>
+        </div>
+      </div>
+      <p className="page-intro">Every privileged account by control level. Exports contain exactly the rows shown and are audited.</p>
+
+      <div className="panel kg-filters" role="search">
+        <label className="dr-field">Class
+          <select value={filter.class || ''} onChange={(e) => set('class', e.target.value)}>
+            <option value="">All</option>
+            {Object.entries(CLASS_LABEL).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </label>
+        <label className="dr-field">Health
+          <select value={filter.health || ''} onChange={(e) => set('health', e.target.value)}>
+            <option value="">All</option>
+            {Object.entries(HEALTH_LABEL).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </label>
+        {choices.pools.length > 0 && (
+          <label className="dr-field">Pool
+            <select value={filter.pool || ''} onChange={(e) => set('pool', e.target.value)}>
+              <option value="">All</option>
+              {choices.pools.map((p) => <option key={p} value={p}>{p.slice(0, 8)}</option>)}
+            </select>
+          </label>
+        )}
+        {[...choices.attrs, ...choices.owner].map((a) => (
+          <label key={a.key} className="dr-field">{a.label}
+            <select value={filter[a.key] || ''} onChange={(e) => set(a.key, e.target.value)}>
+              <option value="">All</option>
+              {a.values.map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </label>
+        ))}
+        {active && <button type="button" className="btn-secondary kg-clear" onClick={() => setFilter({})}><X size={14} />Clear</button>}
+      </div>
+
+      {card.error && <p role="alert" className="dr-alert dr-alert-error">{card.error}</p>}
+      {card.data && (
+        <>
+          <div className="panel dr-section"><TrafficLight totals={card.data.totals} onPick={(c) => set('class', c)} /></div>
+          {isAdmin && <AddAccount onDone={reload} />}
+          <div className="panel kg-scroll">
+            {card.data.rows.length === 0 ? (
+              <p className="dr-hint">{active ? 'No accounts match these filters.' : 'No accounts yet.'}</p>
+            ) : (
+              <table className="kg-table">
+                <thead>
+                  <tr>
+                    <th>Account</th><th>Class</th><th>Health</th><th>Owner</th><th>Kind</th><th>Min age</th><th>Target</th>
+                    {card.data.account_attribute_keys.map((k) => <th key={k}>{label('account', k)}</th>)}
+                    {card.data.owner_attribute_keys.map((k) => <th key={'o' + k}>Owner {label('user', k).toLowerCase()}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {card.data.rows.map((r) => (
+                    <tr key={r.account_id}>
+                      <td>
+                        {isAdmin ? <button type="button" className="kg-link" onClick={() => setOpen(r.account_id)}>{r.asset} / {r.name}</button> : <span>{r.asset} / {r.name}</span>}
+                      </td>
+                      <td><ClassBadge value={r.class} /></td>
+                      <td><HealthBadge value={r.health} reason={r.health_reason} /></td>
+                      <td>{r.owner || '—'}</td>
+                      <td>{r.account_kind}</td>
+                      <td>{r.min_password_age_seconds == null ? '—' : `${Math.round(r.min_password_age_seconds / 3600)} h`}</td>
+                      <td className="dr-mono" title={r.target_descriptor_digest}>{r.target_descriptor_digest ? r.target_descriptor_digest.slice(0, 12) : '—'}</td>
+                      {card.data!.account_attribute_keys.map((k) => <td key={k}>{r.attributes[k] || '—'}</td>)}
+                      {card.data!.owner_attribute_keys.map((k) => <td key={'o' + k}>{r.owner_attributes[k] || '—'}</td>)}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </>
+      )}
+      {open && <AccountDetail id={open} onClose={() => { setOpen(''); reload(); }} />}
+    </div>
+  );
+};
+
+const AddAccount: React.FC<{ onDone: () => void }> = ({ onDone }) => {
+  const assets = useJSON<{ ID: string; Name: string }[]>('/api/assets');
+  const [shown, setShown] = useState(false);
+  const [asset, setAsset] = useState('');
+  const [newAsset, setNewAsset] = useState('');
+  const [name, setName] = useState('');
+  const [kind, setKind] = useState<'managed' | 'vaulted'>('managed');
+  const [pool, setPool] = useState('');
+  const [err, setErr] = useState('');
+
+  if (!shown) {
+    return <div className="dr-section"><button type="button" className="btn-secondary" onClick={() => setShown(true)}><Plus size={16} />Add account</button></div>;
+  }
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    let assetID = asset;
+    if (!assetID) {
+      const r = await fetchJSON('POST', '/api/assets', { name: newAsset });
+      if (typeof r === 'string') { setErr(r); return; }
+      assetID = r.ID;
+      assets.reload();
+    }
+    const body: Record<string, string> = { asset_id: assetID, name, account_kind: kind };
+    if (kind === 'managed' && pool) body.pool_id = pool;
+    const fail = await send('POST', '/api/accounts', body);
+    setErr(fail);
+    if (!fail) { setName(''); setShown(false); onDone(); }
+  };
+  return (
+    <form className="panel dr-section" onSubmit={submit} aria-label="Add account">
+      <div className="dr-row">
+        <label className="dr-field">Asset
+          <select value={asset} onChange={(e) => setAsset(e.target.value)}>
+            <option value="">New asset…</option>
+            {(assets.data || []).map((a) => <option key={a.ID} value={a.ID}>{a.Name}</option>)}
+          </select>
+        </label>
+        {!asset && <label className="dr-field">New asset name<input value={newAsset} onChange={(e) => setNewAsset(e.target.value)} required /></label>}
+        <label className="dr-field">Account name<input value={name} onChange={(e) => setName(e.target.value)} required /></label>
+        <label className="dr-field dr-narrow">Kind
+          <select value={kind} onChange={(e) => setKind(e.target.value as 'managed' | 'vaulted')}>
+            <option value="managed">managed</option><option value="vaulted">vaulted</option>
+          </select>
+        </label>
+        {kind === 'managed' && <label className="dr-field">Broker pool ID<input value={pool} onChange={(e) => setPool(e.target.value)} placeholder="optional" /></label>}
+      </div>
+      {err && <p role="alert" className="dr-danger">{err}</p>}
+      <div className="dr-actions"><button type="submit">Add</button><button type="button" className="btn-secondary" onClick={() => setShown(false)}>Cancel</button></div>
+    </form>
+  );
+};
+
+async function fetchJSON(method: string, url: string, body: unknown): Promise<any | string> {
+  const r = await secureFetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  return r.ok ? j : j.error || `HTTP ${r.status}`;
+}
+
+interface Detail {
+  account: { ID: string; Name: string; AccountKind: string; Status: string; asset_name: string; owner_user_id: string; min_password_age_seconds: number | null };
+  descriptors: { digest: string; connector_type: string; authenticated_target_identity: string; host: string; port: number; tls_ca_sha256?: string; ssh_host_key_sha256?: string }[];
+  attributes: Record<string, string>;
+}
+
+// AccountDetail edits inventory metadata. Credentials are never shown or entered here: they
+// live only in kyguard-cli (spec §10).
+const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onClose }) => {
+  const detail = useJSON<Detail>(`/api/accounts/${id}`);
+  const defs = useJSON<Record<string, AttributeDefinition[]>>('/api/attributes');
+  const users = useJSON<{ users: { id: string; username: string }[] }>('/api/admin/users?limit=200');
+  const [err, setErr] = useState('');
+  const act = async (fail: Promise<string>) => { const f = await fail; setErr(f); if (!f) detail.reload(); };
+  const d = detail.data;
+
+  return (
+    <div className="modal-backdrop" role="presentation" onClick={onClose}>
+      <div className="modal-window kg-detail" role="dialog" aria-modal="true" aria-label="Account details" onClick={(e) => e.stopPropagation()}>
+        <div className="panel-header">
+          <h3>{d ? `${d.account.asset_name} / ${d.account.Name}` : 'Account'}</h3>
+          <button type="button" className="btn-secondary" onClick={onClose} aria-label="Close"><X size={16} /></button>
+        </div>
+        {detail.error && <p role="alert" className="dr-danger">{detail.error}</p>}
+        {d && (
+          <div className="dr-stack">
+            <label className="dr-field">Owner
+              <select value={d.account.owner_user_id} onChange={(e) => act(send('PATCH', `/api/accounts/${id}`, { owner_user_id: e.target.value }))}>
+                <option value="">No owner</option>
+                {(users.data?.users || []).map((u) => <option key={u.id} value={u.id}>{u.username}</option>)}
+              </select>
+            </label>
+            {(defs.data?.account || []).map((a) => (
+              <label key={a.id} className="dr-field">{a.label}
+                {a.type === 'enum' ? (
+                  <select value={d.attributes[a.key] || ''} onChange={(e) => act(send('PUT', `/api/attributes/${a.id}/values/${id}`, { value: e.target.value }))}>
+                    <option value="">—</option>
+                    {a.enum_values.map((v) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                ) : (
+                  <input defaultValue={d.attributes[a.key] || ''} onBlur={(e) => { if (e.target.value !== (d.attributes[a.key] || '')) act(send('PUT', `/api/attributes/${a.id}/values/${id}`, { value: e.target.value })); }} />
+                )}
+              </label>
+            ))}
+            <div>
+              <h4 className="kg-sub">Target descriptors</h4>
+              {d.descriptors.length === 0 ? <p className="dr-hint">None uploaded. Upload one with PUT /api/accounts/{id}/target-descriptor.</p> : (
+                <dl className="settings-facts">
+                  {d.descriptors.map((t) => (
+                    <React.Fragment key={t.digest}>
+                      <dt>{t.connector_type}</dt>
+                      <dd>
+                        {t.authenticated_target_identity} @ {t.host}:{t.port}
+                        <div className="dr-mono kg-digest">digest {t.digest}</div>
+                        {t.tls_ca_sha256 && <div className="dr-mono kg-digest">CA SHA-256 {t.tls_ca_sha256}</div>}
+                        {t.ssh_host_key_sha256 && <div className="dr-mono kg-digest">host key SHA-256 {t.ssh_host_key_sha256}</div>}
+                      </dd>
+                    </React.Fragment>
+                  ))}
+                </dl>
+              )}
+            </div>
+            <p className="dr-hint">Minimum password age: {d.account.min_password_age_seconds == null ? 'not reported yet' : `${d.account.min_password_age_seconds} s`}</p>
+            {err && <p role="alert" className="dr-danger">{err}</p>}
+            <div className="dr-actions">
+              {d.account.Status === 'active'
+                ? <button type="button" className="btn-danger" onClick={() => window.confirm('Decommission this account? It leaves the traffic light.') && act(send('PATCH', `/api/accounts/${id}`, { status: 'decommissioned' }))}>Decommission</button>
+                : <button type="button" className="btn-secondary" onClick={() => act(send('PATCH', `/api/accounts/${id}`, { status: 'active' }))}>Reactivate</button>}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};

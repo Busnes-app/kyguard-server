@@ -7,6 +7,10 @@ import { Backup } from './pages/Backup';
 import { SCIMAdmin } from './pages/SCIMAdmin';
 import { Settings } from './pages/Settings';
 import { Appearance } from './pages/Appearance';
+import { Accounts } from './pages/Accounts';
+import { Attributes } from './pages/Attributes';
+import { Policies } from './pages/Policies';
+import { Jobs } from './pages/Jobs';
 import './styles/theme.css';
 import './ky-ui/tokens.css';
 import './ky-ui/navigation.css';
@@ -125,6 +129,10 @@ export const App: React.FC = () => {
 
       <main className="app-main">
         {activeTab === 'dashboard' && <Dashboard settings={settings} user={user} onNavigate={(tab) => setActiveTab(tab)} />}
+        {activeTab === 'accounts' && <Accounts isAdmin={user.role === 'admin'} />}
+        {activeTab === 'attributes' && <Attributes isAdmin={user.role === 'admin'} />}
+        {activeTab === 'policies' && user.role === 'admin' && <Policies isAdmin />}
+        {activeTab === 'jobs' && user.role === 'admin' && <Jobs />}
         {activeTab === 'scim' && <SCIMAdmin />}
         {activeTab === 'backup' && <Backup />}
         {activeTab === 'settings' && <Settings settings={settings} isAdmin={user.role === 'admin'} />}
