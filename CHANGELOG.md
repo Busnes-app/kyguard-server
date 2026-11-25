@@ -13,6 +13,10 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 
 ### Changes
 
+- Restore contract (spec §9.4): capsules carry the internal broker CA (`data/broker-ca.key`,
+  `data/broker-ca.crt`) when present, and refuse to seal half of it; `restore` also deletes CLI
+  login codes and unconsumed broker pairing tokens. The recovery-manifest seal gate is not in this
+  release.
 - Durable intents for external effects (spec §9.3): a KyRecovery pairing claim, a recovery-key
   pin and a deposit each commit an `operation_intents` row (migration 16) before they start; the
   audit record is the completion append, so a failed audit write now answers 500 instead of

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -26,6 +27,30 @@ const encryptionKeyPath = "data/encryption.key"
 // recoveryPubPath is where a restore drops the suite recovery public key, matching the
 // <DataDir>/recovery.pub that recoveryclient.RecoveryKeyPath reads.
 const recoveryPubPath = "data/recovery.pub"
+
+// brokerCAFiles are the internal broker CA key and certificate under <DataDir> (spec §9.4),
+// written by `kyguard-server init`. The capsule carries both or neither.
+var brokerCAFiles = []string{"broker-ca.key", "broker-ca.crt"}
+
+// brokerCA reads the broker CA pair from dir: nil when neither exists, an error when only
+// one does, since a restore could never start brokers with half a CA.
+func brokerCA(dir string) ([]recoveryclient.File, error) {
+	var files []recoveryclient.File
+	for _, name := range brokerCAFiles {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, recoveryclient.File{Path: "data/" + name, Data: data, Mode: 0600})
+	}
+	if len(files) == 1 {
+		return nil, fmt.Errorf("backup: only %s of the broker CA pair is in %s; refusing to seal half a CA", files[0].Path, dir)
+	}
+	return files, nil
+}
 
 // ErrNoDatabaseSnapshot is returned when the payload cannot carry a consistent copy of the
 // database, so a capsule without one is never sealed as if it were a backup.
@@ -106,6 +131,11 @@ func Collect(ctx context.Context, cfg *config.Config, st store.Store, appVersion
 	if pub, err := os.ReadFile(recoveryclient.RecoveryKeyPath(cfg.Database.DataDir)); err == nil {
 		files = append(files, recoveryclient.File{Path: recoveryPubPath, Data: pub, Mode: 0600})
 	}
+	ca, err := brokerCA(cfg.Database.DataDir)
+	if err != nil {
+		return recoveryclient.Payload{}, err
+	}
+	files = append(files, ca...)
 
 	payload := recoveryclient.Payload{
 		ServiceName: cfg.Server.AppName,
@@ -199,6 +229,11 @@ func Members(cfg *config.Config) []string {
 	m := []string{"data/ky_server.db", "config/settings.json", encryptionKeyPath}
 	if _, err := os.Stat(recoveryclient.RecoveryKeyPath(cfg.Database.DataDir)); err == nil {
 		m = append(m, recoveryPubPath)
+	}
+	if ca, err := brokerCA(cfg.Database.DataDir); err == nil {
+		for _, f := range ca {
+			m = append(m, f.Path)
+		}
 	}
 	return m
 }
