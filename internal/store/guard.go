@@ -299,7 +299,10 @@ func (g guardStore) SetIntentState(ctx context.Context, id, from, to string) err
 func (g guardStore) ExpirePendingIntents(ctx context.Context, kind string, cutoff time.Time) (int, error) {
 	n := 0
 	err := g.s.inTx(ctx, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, g.s.rebind(`SELECT operation_id, subject FROM operation_intents WHERE kind = ? AND state = 'pending' AND created_at < ?`), kind, cutoff.UTC())
+		// One statement moves only rows still pending, so a replica's sweep or a pairing
+		// handler that settled one first keeps its outcome, and each row is audited once.
+		rows, err := tx.QueryContext(ctx, g.s.rebind(`UPDATE operation_intents SET state = 'outcome_unknown', updated_at = ?
+WHERE kind = ? AND state = 'pending' AND created_at < ? RETURNING operation_id, subject`), time.Now().UTC(), kind, cutoff.UTC())
 		if err != nil {
 			return err
 		}
@@ -316,11 +319,7 @@ func (g guardStore) ExpirePendingIntents(ctx context.Context, kind string, cutof
 		if err := rows.Err(); err != nil {
 			return err
 		}
-		now := time.Now().UTC()
 		for i, id := range ids {
-			if _, err := tx.ExecContext(ctx, g.s.rebind(`UPDATE operation_intents SET state = 'outcome_unknown', updated_at = ? WHERE operation_id = ?`), now, id); err != nil {
-				return err
-			}
 			if err := g.s.auditTx(ctx, tx, &AuditRecord{UserID: "system", Action: kind + ".outcome_unknown", Resource: "operation:" + id, Details: "subject=" + subjects[i]}); err != nil {
 				return err
 			}

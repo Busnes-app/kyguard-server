@@ -162,4 +162,48 @@ func TestExpirePendingIntentsLeavesYoungOnes(t *testing.T) {
 	if err := g.SetIntentState(ctx, "old", IntentPending, IntentComplete); !errors.Is(err, ErrConflict) {
 		t.Fatalf("an unknown outcome is not completed by a late writer: %v", err)
 	}
+	// A completed intent, however old, is never re-marked or re-audited by a later sweep.
+	seedPool(t, g, "c", now.Add(time.Hour))
+	if err := g.ClaimPairing(ctx, "c", now.Add(-time.Hour), broker("b3"), "done", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.SetIntentState(ctx, "done", IntentPending, IntentComplete); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := g.ExpirePendingIntents(ctx, "pairing", now.Add(time.Hour)); err != nil || n != 1 {
+		t.Fatalf("second sweep %d %v", n, err)
+	}
+	if i, _ := g.GetIntent(ctx, "done"); i.State != IntentComplete {
+		t.Fatalf("a completed intent became %s", i.State)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM audit_records WHERE action = 'pairing.outcome_unknown'`).Scan(&audited); err != nil || audited != 2 {
+		t.Fatalf("audited %d %v", audited, err)
+	}
+}
+
+// Two sweeps racing over the same pending intent settle and audit it once (PR Reviewer
+// Guide on #8).
+func TestConcurrentSweepsSettleAnIntentOnce(t *testing.T) {
+	s, g := guardStoreFor(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	seedPool(t, g, "a", now.Add(time.Hour))
+	if err := g.ClaimPairing(ctx, "a", now.Add(-time.Hour), broker("b1"), "old", nil); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	counts := make([]int, 4)
+	for i := range counts {
+		wg.Go(func() { counts[i], _ = g.ExpirePendingIntents(ctx, "pairing", now.Add(-time.Minute)) })
+	}
+	wg.Wait()
+	total := 0
+	for _, c := range counts {
+		total += c
+	}
+	var audited int
+	s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM audit_records WHERE action = 'pairing.outcome_unknown'`).Scan(&audited)
+	if total != 1 || audited != 1 {
+		t.Fatalf("settled %d times, audited %d", total, audited)
+	}
 }
