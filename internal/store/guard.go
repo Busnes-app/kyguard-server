@@ -40,12 +40,8 @@ type GuardStore interface {
 	GetIntent(ctx context.Context, id string) (*OperationIntent, error)
 }
 
-// Intent states (§9.3).
-const (
-	IntentPending        = "pending"
-	IntentComplete       = "complete"
-	IntentOutcomeUnknown = "outcome_unknown"
-)
+// IntentOutcomeUnknown is the broker stack's name for IntentUnknown (store.go has the states).
+const IntentOutcomeUnknown = IntentUnknown
 
 // BootstrapBundle is the deployment trust root as imported by the operator.
 type BootstrapBundle struct {
