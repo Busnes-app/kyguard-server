@@ -379,3 +379,38 @@ func TestSignRefusesAnotherDeployment(t *testing.T) {
 		t.Fatalf("draft for another deployment: err %v, want ErrDeployment", err)
 	}
 }
+
+func TestEnrollChecksDeliveryBeforeCreatingKeys(t *testing.T) {
+	e := newEnv(t)
+	fp := e.ceremony("ceremony", "3", "2")
+	e.must("trust", fp, "--bundle", e.path("ceremony/bundle.json"))
+	args := []string{"enroll", "--principal-id", string(alice), "--issuer", "https://idp", "--subject", "alice", "--key-out", e.path("a.key")}
+	if err := e.run(args...); !errors.Is(err, ErrNoClient) {
+		t.Fatalf("no draft destination: err %v, want ErrNoClient", err)
+	}
+	if err := os.WriteFile(e.path("taken.json"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.run(append(args, "--draft-out", e.path("taken.json"))...); err == nil {
+		t.Fatal("existing draft file accepted")
+	}
+	if _, err := os.Stat(e.path("a.key")); !os.IsNotExist(err) {
+		t.Fatalf("a key file was created before delivery was possible: %v", err)
+	}
+}
+
+func TestSignDeliversBeforeRaisingHighWater(t *testing.T) {
+	e := newEnv(t)
+	fp := e.ceremony("ceremony", "3", "2")
+	e.must("trust", fp, "--bundle", e.path("ceremony/bundle.json"))
+	half := e.signBy(e.write("p.json", vaultedPolicy(e.pinned(), account, 1, alice)), nil, 1)
+	if err := os.WriteFile(e.path("taken"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.run("sign", "--key", e.path("ceremony/custodian-2.key"), "--draft", half, "--out", e.path("taken")); err == nil {
+		t.Fatal("signed into an existing file")
+	}
+	if e.pinned().Lookup(pqcrypto.TypePolicy, account) != nil {
+		t.Fatal("an undelivered signature raised the local high-water mark")
+	}
+}

@@ -249,6 +249,15 @@ func (a *App) cmdEnroll(ctx context.Context, args []string) error {
 	if tr.Enrollment(pid) != nil {
 		return errors.New("kyguard-cli enroll: this principal is already enrolled; key rotation is a later step")
 	}
+	// Check where the draft goes before any key exists, so a failure strands no key file.
+	if *draftOut == "" && a.Client == nil {
+		return ErrNoClient
+	}
+	for _, p := range []string{*keyOut, *draftOut} {
+		if _, err := os.Lstat(p); p != "" && err == nil {
+			return fmt.Errorf("kyguard-cli enroll: %s already exists", p)
+		}
+	}
 	sk, err := pqcrypto.GenerateSigningKey()
 	if err != nil {
 		return err
@@ -289,6 +298,9 @@ func (a *App) cmdEnroll(ctx context.Context, args []string) error {
 	case *draftOut != "":
 		err = writeNew(*draftOut, draft, 0o644)
 	case a.Client != nil:
+		if err = writeNew(*keyOut+".draft.json", draft, 0o644); err != nil {
+			return err
+		}
 		var id string
 		if id, err = a.Client.SubmitDraft(ctx, draft); err == nil {
 			a.printf("submitted draft %s\n", id)
@@ -403,7 +415,16 @@ func (a *App) cmdSign(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	// A manifest that is now complete is accepted locally, raising the high-water mark.
+	// Deliver first: the local high-water mark rises only once the signature is out, so a
+	// failed write never activates a manifest nobody else has.
+	if *out != "" {
+		err = writeNew(*out, signed, 0o644)
+	} else {
+		err = a.Client.SubmitSignature(ctx, *draftID, signed)
+	}
+	if err != nil {
+		return err
+	}
 	if r, err := tr.Accept(signed); err == nil {
 		bundle, err := a.persistedBundle()
 		if err != nil {
@@ -416,10 +437,7 @@ func (a *App) cmdSign(ctx context.Context, args []string) error {
 	} else {
 		a.printf("signed; not yet complete (%v)\n", err)
 	}
-	if *out != "" {
-		return writeNew(*out, signed, 0o644)
-	}
-	return a.Client.SubmitSignature(ctx, *draftID, signed)
+	return nil
 }
 
 func inCustodianSet(tr *pqcrypto.Trust, k *Key) bool {
