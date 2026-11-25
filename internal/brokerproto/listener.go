@@ -231,6 +231,18 @@ func (l *Listener) handleChannel(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// CloseAll drops every broker channel, so brokers reconnect to another replica at once on
+// shutdown: http.Server.Close leaves hijacked connections open (PR Reviewer Guide on #8).
+func (l *Listener) CloseAll() {
+	l.mu.Lock()
+	cs := l.conns
+	l.conns = nil
+	l.mu.Unlock()
+	for _, c := range cs {
+		c.CloseNow()
+	}
+}
+
 // Send writes one message to a connected broker.
 func (l *Listener) Send(ctx context.Context, broker pqcrypto.UUID, m Message) error {
 	l.mu.Lock()
