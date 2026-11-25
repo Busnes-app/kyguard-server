@@ -197,28 +197,56 @@ func (s *session) Change(ctx context.Context, oldPassword, newPassword []byte, c
 
 func (s *session) Close() error { return s.l.Close() }
 
-// PasswordAge reports the account's last change and the domain's minPwdAge (§4.4).
+// PasswordAge reports the account's last change and its effective minimum age (§4.4): the
+// msDS-MinimumPasswordAge of its resultant fine-grained password policy when it has one,
+// otherwise the domain's minPwdAge. A resultant policy the account cannot read is an error
+// (minimum age unknown), never the domain value (DECISIONS 65).
 func (s *session) PasswordAge(ctx context.Context) (time.Time, time.Duration, error) {
 	defer watch(ctx, s.raw)()
-	last, _, err := s.read(ctx)
+	base := func(dn string, attrs ...string) (*ldap.Entry, error) {
+		res, err := s.l.Search(ldap.NewSearchRequest(dn, ldap.ScopeBaseObject, ldap.NeverDerefAliases, 1, 30, false,
+			"(objectClass=*)", attrs, nil))
+		if err != nil {
+			return nil, err
+		}
+		if len(res.Entries) != 1 {
+			return nil, errors.New("no entry")
+		}
+		return res.Entries[0], nil
+	}
+	acct, err := base(s.dn, "pwdLastSet", "msDS-ResultantPSO")
 	if err != nil {
-		return time.Time{}, 0, err
+		return time.Time{}, 0, fmt.Errorf("adldaps: account object: %w", err)
 	}
-	root, err := s.l.Search(ldap.NewSearchRequest("", ldap.ScopeBaseObject, ldap.NeverDerefAliases, 1, 30, false,
-		"(objectClass=*)", []string{"defaultNamingContext"}, nil))
-	if err != nil || len(root.Entries) != 1 {
-		return time.Time{}, 0, errors.New("adldaps: no rootDSE")
-	}
-	dom, err := s.l.Search(ldap.NewSearchRequest(root.Entries[0].GetAttributeValue("defaultNamingContext"), ldap.ScopeBaseObject,
-		ldap.NeverDerefAliases, 1, 30, false, "(objectClass=*)", []string{"minPwdAge"}, nil))
-	if err != nil || len(dom.Entries) != 1 {
-		return time.Time{}, 0, errors.New("adldaps: no domain object")
-	}
-	min, err := strconv.ParseInt(dom.Entries[0].GetAttributeValue("minPwdAge"), 10, 64)
+	last, err := strconv.ParseInt(acct.GetAttributeValue("pwdLastSet"), 10, 64)
 	if err != nil {
-		return time.Time{}, 0, errors.New("adldaps: minPwdAge")
+		return time.Time{}, 0, fmt.Errorf("adldaps: pwdLastSet: %w", err)
 	}
-	// minPwdAge is a negative count of 100 ns intervals; pwdLastSet a FILETIME.
+	var minAge string
+	if pso := acct.GetAttributeValue("msDS-ResultantPSO"); pso != "" {
+		e, err := base(pso, "msDS-MinimumPasswordAge")
+		if err == nil {
+			minAge = e.GetAttributeValue("msDS-MinimumPasswordAge")
+		}
+		if minAge == "" {
+			return time.Time{}, 0, errors.New("adldaps: the account's password settings object is not readable; minimum age unknown")
+		}
+	} else {
+		root, err := base("", "defaultNamingContext")
+		if err != nil {
+			return time.Time{}, 0, errors.New("adldaps: no rootDSE")
+		}
+		dom, err := base(root.GetAttributeValue("defaultNamingContext"), "minPwdAge")
+		if err != nil {
+			return time.Time{}, 0, errors.New("adldaps: no domain object")
+		}
+		minAge = dom.GetAttributeValue("minPwdAge")
+	}
+	min, err := strconv.ParseInt(minAge, 10, 64)
+	if err != nil {
+		return time.Time{}, 0, errors.New("adldaps: minimum password age")
+	}
+	// Both ages are a negative count of 100 ns intervals; pwdLastSet a FILETIME.
 	return FileTime(last), time.Duration(-min) * 100, nil
 }
 

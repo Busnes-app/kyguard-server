@@ -208,6 +208,16 @@ contradicts itself. Each names its section. The most secure reading wins.
 64. §8.1, §4.3 rule 6 (health delivery). A health report that fails is journaled as
     unreported and sent again by every `Recover` (startup and reconnect) until one is
     acknowledged, so a quarantine is never left unknown to the Control Plane.
+65. §4.4 (AD effective minimum age). `PasswordAge` reports the minimum age of the policy
+    that actually governs the account: when the account's `msDS-ResultantPSO` names a
+    fine-grained password settings object, its `msDS-MinimumPasswordAge`; otherwise the
+    domain's `minPwdAge`. If the account can see its resultant PSO but cannot read the
+    PSO's minimum age (AD's default ACL hides PSOs from ordinary accounts), the minimum age
+    is unknown and `PasswordAge` fails: the domain value could be shorter than the enforced
+    one and schedule retries into refusals that spend the three-refusal limit, so the
+    broker keeps its previously known deadline instead. Deployments that use PSOs grant the
+    account read access to its PSO. A directory that hides `msDS-ResultantPSO` itself is
+    indistinguishable from no PSO, and the domain value is reported.
 66. §4.4 (connector cancellation). Every target operation observes its context: the
     `ad_ldaps` connector closes the connection when the context ends during a bind, search
     or modify (go-ldap requests otherwise wait for the fixed timeout), and `Change` sends

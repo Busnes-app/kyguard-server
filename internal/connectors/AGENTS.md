@@ -24,7 +24,9 @@ Owns how a broker talks to a target. The rotation order, journaling and quaranti
 - `adldaps`: simple bind only (empty passwords refused), LDAPS only, TLS 1.2 minimum;
   baseline is `pwdLastSet` and `msDS-KeyVersionNumber`; verify is a fresh bind plus
   `pwdLastSet` advancing; LDAP 49 is `ErrAuthFailed`, 19 and 53 on the modify are
-  `ErrRefused`; `PasswordAge` reads `pwdLastSet` and the domain `minPwdAge`.
+  `ErrRefused`; `PasswordAge` reads `pwdLastSet` and the minimum age of the account's
+  resultant PSO (`msDS-ResultantPSO`), failing if that PSO is unreadable, or the domain
+  `minPwdAge` when there is none (DECISIONS 65).
 
 ## Verification
 - `KY_TEST_DOCKER=1 go test -race ./internal/connectors/...` (CI job `connectors`; on Major
