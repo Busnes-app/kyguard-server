@@ -110,3 +110,7 @@ contradicts itself. Each names its section. The most secure reading wins.
    redemption's pending session goes through `CreateSession`, which inserts, commits and then
    re-checks both fences against the original `iat`. After step-up, a bearer caller gets the new
    active token in the body; a cookie caller never does, so page script cannot read it.
+19h. §7.3 rule 6 (web re-step-up). `secureFetch` turns a 403 `stepup_stale` into a code prompt
+   (the shell's `ReStepUp` dialog posts it to `/api/auth/stepup/totp`). On success it sends the
+   original request once more; on cancel the caller gets the 403 as before. Every other 403 goes
+   straight to the caller.
