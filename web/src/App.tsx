@@ -116,8 +116,12 @@ export const App: React.FC = () => {
   if (stepUp) {
     return <StepUp state={stepUp} onLogout={handleLogout} onDone={async () => {
       // The exchange replaced the session cookie; read the active session and its settings.
-      const me = await fetch('/api/auth/me').then((r) => r.json()).catch(() => null);
-      if (me?.authenticated) { setUser(me.user); setStepUp(me.stepup ?? null); }
+      // A failed read rejects, and StepUp offers to retry it rather than another code.
+      const r = await fetch('/api/auth/me');
+      if (!r.ok) throw new Error('session check failed');
+      const me = await r.json();
+      if (!me?.authenticated) { setUser(null); setStepUp(null); return; }
+      setUser(me.user); setStepUp(me.stepup ?? null);
       void loadSettings();
     }} />;
   }
