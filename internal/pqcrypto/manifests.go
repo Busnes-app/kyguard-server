@@ -231,12 +231,19 @@ type PolicyManifest struct {
 	Sigs
 }
 
+// MaxStandingRecipients bounds a policy's standing recipients, so a release receipt with
+// all their wraps always fits the chain room the store keeps (store.MaxEnvelope).
+const MaxStandingRecipients = 32
+
 func (m *PolicyManifest) validate() error {
 	if err := checkHeader(&m.Header, TypePolicy, ScopeAccount, RoleCustodian); err != nil {
 		return err
 	}
 	if m.Scope.ID != m.AccountID || m.AllowedUserPrincipalIDs == nil || m.AllowedApproverPrincipalIDs == nil ||
 		m.RequiredApproverCount < 0 || m.MaxCheckoutTTLSeconds < 0 {
+		return ErrBody
+	}
+	if len(m.StandingRecipientPrincipalIDs) > MaxStandingRecipients {
 		return ErrBody
 	}
 	for _, l := range [][]UUID{m.AllowedUserPrincipalIDs, m.AllowedApproverPrincipalIDs, m.EnrollerPrincipalIDs, m.StandingRecipientPrincipalIDs} {

@@ -244,3 +244,9 @@ contradicts itself. Each names its section. The most secure reading wins.
     change and the target's minimum password age at every pre-rotation login, through the
     connector's `AgeReporter`, so the schedule stop and refusal retries use the target's
     real values; a connector that cannot read them leaves the journaled values unchanged.
+77. §3.5, §3.6 (chain room for completion). The spec bounds neither a chain's size nor
+    `standing_recipient_principal_ids`. A policy may name at most 32 standing recipients
+    (`pqcrypto.MaxStandingRecipients`; refused as `invalid_body`), and the Control Plane
+    stores an envelope only if it leaves 96 KiB of the 256 KiB chain (`store.MaxEnvelope`).
+    That room holds `commit_target` plus a `release` with all 32 wraps, so an admitted
+    rotation can always finish and give back its lock.
