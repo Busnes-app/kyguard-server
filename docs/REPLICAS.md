@@ -45,7 +45,9 @@ The base Compose service has a `/readyz` healthcheck (busybox `wget`, already in
 2. Set the same shared configuration on every replica: `KY_APP_NAME`, `KY_APP_URL`, `KY_ENV`,
    `KY_SESSION_SECRET`, the encryption key, SCIM settings and `KY_SCIM_TOKEN`, every SSO
    setting, CAPTCHA settings, cookie settings, `KY_RATE_LIMIT_EXEMPT_NETWORKS`,
-   `KY_BACKUP_DEPOSIT_INTERVAL` and `KY_BACKUP_ALLOW_PRIVATE_RECOVERY`. PostgreSQL requires an
+   `KY_BACKUP_DEPOSIT_INTERVAL`, `KY_BACKUP_ALLOW_PRIVATE_RECOVERY` and the broker listener
+   settings (`KY_BROKER_LISTEN`, `KY_BROKER_HOSTNAME`, `KY_MIN_BROKER_VERSION`), since every
+   replica's pairing tokens must name the same listener. PostgreSQL requires an
    explicit session secret, and an explicit SCIM token when SCIM is enabled. Supply the same
    retained `KY_ENCRYPTION_KEY` (64 hex characters) to every replica; a new local key cannot
    decrypt existing sealed settings. A replica whose shared configuration differs refuses to

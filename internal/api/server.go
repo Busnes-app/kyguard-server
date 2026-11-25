@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"log"
 	"net/http"
 	"net/netip"
@@ -16,7 +17,9 @@ import (
 	"github.com/Busnes-app/ky-primitives/netallow"
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
 	"github.com/Busnes-app/kyguard-server/internal/auth"
+	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
 	"github.com/Busnes-app/kyguard-server/internal/config"
+	"github.com/Busnes-app/kyguard-server/internal/cptrust"
 	"github.com/Busnes-app/kyguard-server/internal/scim"
 	"github.com/Busnes-app/kyguard-server/internal/sso"
 	"github.com/Busnes-app/kyguard-server/internal/store"
@@ -39,6 +42,10 @@ type Server struct {
 	oidc       *sso.GenericOIDCClient
 	scim       *scim.Server
 	recovery   recoveryClient
+	trust      *cptrust.Trust
+	brokerCA   *brokerproto.CA // nil until kyguard-server init
+	brokerOnce sync.Once
+	broker     *brokerproto.Listener // the one listener; it holds the broker connections
 	mux        *http.ServeMux
 	registered []Route
 	attemptsMu sync.Mutex
@@ -173,6 +180,12 @@ func NewServer(cfg *config.Config, st store.Store) *Server {
 		mux:      http.NewServeMux(),
 		attempts: make(map[string]attemptWindow),
 		powSpent: auth.NewPoWSpent(),
+		trust:    cptrust.New(st),
+	}
+	if ca, err := brokerproto.LoadCA(cfg.Database.DataDir); err == nil {
+		s.brokerCA = ca
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		log.Printf("[BROKER] broker CA not loaded: %v", err)
 	}
 
 	s.stopping, s.stopDetached = context.WithCancel(context.Background())
@@ -352,6 +365,8 @@ func (s *Server) routes() {
 	s.scim.RegisterRoutes(func(pattern string, h http.Handler) { s.route(ClassMachine, pattern, h) })
 
 	// SAML is removed (spec §7.2); keep its old paths out of the SPA fallback.
+	s.brokerRoutes()
+
 	s.route(ClassPublic, "/saml/", http.NotFoundHandler())
 
 	// Embedded React PWA Frontend
@@ -373,16 +388,6 @@ func (s *Server) requireAdmin(h http.HandlerFunc) http.HandlerFunc {
 		}
 		if user.AccountType == store.AccountBreakGlass && sess.BreakGlassReason == "" {
 			s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "State the reason for this break-glass session first", "code": "break_glass_reason_required"})
-			return
-		}
-		h(w, r)
-	}
-}
-
-func (s *Server) requireAuthenticated(h http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if _, _, err := s.sessions.AuthenticateRequest(r); err != nil {
-			s.authFailed(w, err)
 			return
 		}
 		h(w, r)
@@ -522,4 +527,16 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, data any) {
 
 func (s *Server) writeError(w http.ResponseWriter, status int, message string) {
 	s.writeJSON(w, status, map[string]string{"error": message})
+}
+
+// BrokerListener returns the handler for the separate broker listener (§4.1), or nil when
+// kyguard-server init has not created the broker CA or KY_BROKER_HOSTNAME is unset.
+func (s *Server) BrokerListener() *brokerproto.Listener {
+	if s.brokerCA == nil || s.config.Broker.Hostname == "" {
+		return nil
+	}
+	s.brokerOnce.Do(func() {
+		s.broker = &brokerproto.Listener{Store: s.store, Trust: s.trust, CA: s.brokerCA, MinVersion: s.config.Broker.MinVersion}
+	})
+	return s.broker
 }
