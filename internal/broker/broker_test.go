@@ -146,3 +146,26 @@ func TestRunRefusesAnUnpairedHost(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// The identity outlives the journal transaction that read it: a reconnect after the journal
+// grew (and bbolt remapped it) dials with the same certificates.
+func TestIdentityOutlivesTheJournalMapping(t *testing.T) {
+	cp := brokertest.NewCP(t)
+	a, _ := newApp(t)
+	if err := a.Pair(context.Background(), cp.Token(cp.Srv, time.Minute), string(cp.Dep.Fingerprint), ""); err != nil {
+		t.Fatal(err)
+	}
+	j, err := broker.OpenJournal(a.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := j.Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := brokerproto.CertSHA256(bytes.Clone(id.Cert.Raw)) + brokerproto.CertSHA256(bytes.Clone(id.CACert.Raw))
+	j.Close() // unmaps the file
+	if got := brokerproto.CertSHA256(id.Cert.Raw) + brokerproto.CertSHA256(id.CACert.Raw); got != want {
+		t.Fatal("identity certificates changed after the journal closed")
+	}
+}
