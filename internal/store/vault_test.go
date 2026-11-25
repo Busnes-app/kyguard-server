@@ -534,18 +534,26 @@ func TestTheLargestEnvelopeCanStillBeFinished(t *testing.T) {
 func TestConcurrentIdenticalTxSubmissionsSucceed(t *testing.T) {
 	v, a := vaultAccount(t)
 	ctx := context.Background()
-	var wg sync.WaitGroup
-	errs := make([]error, 16)
-	for i := range errs {
-		wg.Go(func() { errs[i] = v.PutTx(ctx, "req", a, "enroll", "d", []byte(`{"tx":1}`)) })
-	}
-	wg.Wait()
-	for i, err := range errs {
-		if err != nil {
-			t.Fatalf("submission %d: %v", i, err)
+	for round := range 20 {
+		id := fmt.Sprintf("req-%d", round)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		errs := make([]error, 16)
+		for i := range errs {
+			wg.Go(func() {
+				<-start
+				errs[i] = v.PutTx(ctx, id, a, "enroll", "d-"+id, []byte(id))
+			})
+		}
+		close(start)
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("round %d, submission %d: %v", round, i, err)
+			}
 		}
 	}
-	if err := v.PutTx(ctx, "req", a, "enroll", "d2", []byte(`{"tx":2}`)); !errors.Is(err, ErrConflict) {
+	if err := v.PutTx(ctx, "req-0", a, "enroll", "d-other", []byte("other")); !errors.Is(err, ErrConflict) {
 		t.Fatalf("another transaction under the same request ID: %v", err)
 	}
 }

@@ -807,11 +807,16 @@ func (v vaultStore) PutTx(ctx context.Context, requestID, accountID, actionType,
 	// succeed, and a different transaction under the same request ID is a conflict (Guide
 	// on #15, "Concurrent retries").
 	if _, err := v.s.db.ExecContext(ctx, v.s.rebind(`INSERT INTO access_transactions (request_id, account_id, action_type, digest, tx, created_at) VALUES (?, ?, ?, ?, ?, ?)
- ON CONFLICT (request_id) DO NOTHING`), requestID, accountID, actionType, digest, string(raw), time.Now().UTC()); err != nil {
+ ON CONFLICT DO NOTHING`), requestID, accountID, actionType, digest, string(raw), time.Now().UTC()); err != nil {
 		return err
 	}
+	// No conflict target: request_id and digest are both unique, and PostgreSQL raises a
+	// concurrent clash on a unique index the target does not name.
 	var have string
-	if err := v.s.db.QueryRowContext(ctx, v.s.rebind(`SELECT tx FROM access_transactions WHERE request_id = ?`), requestID).Scan(&have); err != nil {
+	err := v.s.db.QueryRowContext(ctx, v.s.rebind(`SELECT tx FROM access_transactions WHERE request_id = ?`), requestID).Scan(&have)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrConflict // the digest belongs to another request
+	} else if err != nil {
 		return err
 	}
 	if have != string(raw) {
