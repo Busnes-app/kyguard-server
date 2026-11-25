@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Busnes-app/kyguard-server/internal/broker"
+	"github.com/Busnes-app/kyguard-server/internal/broker/brokerrig"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
 )
 
@@ -206,9 +207,9 @@ func TestTheTargetsMinimumAgeIsReadAtLogin(t *testing.T) {
 func TestTickSettlesALostReservation(t *testing.T) {
 	start := time.Now().UTC()
 	r := newRig(t, scheduled(start))
-	real := r.cpw
+	real := r.CPW
 	lost := true
-	r.cpw = &wrapCP{ControlPlane: real, reserve: func(ctx context.Context, account, op pqcrypto.UUID, reported pqcrypto.Counter) (pqcrypto.Counter, error) {
+	r.CPW = &brokerrig.WrapCP{ControlPlane: real, OnReserve: func(ctx context.Context, account, op pqcrypto.UUID, reported pqcrypto.Counter) (pqcrypto.Counter, error) {
 		v, err := real.Reserve(ctx, account, op, reported)
 		if lost {
 			lost = false
