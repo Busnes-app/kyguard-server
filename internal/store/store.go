@@ -100,8 +100,9 @@ type SessionStore interface {
 	// EndSSOSession ends every session of an SSO login and fences its sid until fenceUntil.
 	EndSSOSession(ctx context.Context, sid string, fenceUntil time.Time) error
 	CleanExpiredSessions(ctx context.Context) error
-	// SetBreakGlassReason records the reason once; ErrConflict when one is already set.
-	SetBreakGlassReason(ctx context.Context, tokenHash, reason string) error
+	// SetBreakGlassReason records the reason once, with its audit record in the same
+	// transaction; ErrConflict when one is already set.
+	SetBreakGlassReason(ctx context.Context, tokenHash, reason string, audit *AuditRecord) error
 }
 
 // GroupStore defines repository operations for SCIM and RBAC groups.

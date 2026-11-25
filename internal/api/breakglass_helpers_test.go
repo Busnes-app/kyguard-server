@@ -38,7 +38,7 @@ func newBreakGlass(t *testing.T, srv *api.Server, st store.Store, username strin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.MFA().CreateBreakGlass(context.Background(), u, &store.MFAFactor{ID: "mfa_" + username, SecretEnc: sealed}); err != nil {
+	if err := st.MFA().CreateBreakGlass(context.Background(), u, &store.MFAFactor{ID: "mfa_" + username, SecretEnc: sealed}, &store.AuditRecord{Action: "break_glass.created"}); err != nil {
 		t.Fatal(err)
 	}
 	return &breakGlass{ID: u.ID, Username: username, Password: breakGlassPassword, Secret: secret}

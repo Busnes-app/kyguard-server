@@ -47,6 +47,11 @@ type Session struct {
 	// BreakGlassReason is the reason a break-glass session gave before its first privileged
 	// action (§7.4).
 	BreakGlassReason string `json:"-"`
+	// FactorID, when set, is the factor whose code authorized this session; CreateSession
+	// refuses it once that factor has been replaced. Not stored.
+	FactorID string `json:"-"`
+	// Audit, when set, is written in the same transaction as the session. Not stored.
+	Audit *AuditRecord `json:"-"`
 }
 
 // MFAFactor is one enrolled local factor. SecretEnc is the TOTP secret sealed under the

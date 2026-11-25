@@ -2,6 +2,8 @@ package api_test
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -141,10 +143,104 @@ func TestSealedFactorIsBoundToItsUser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.MFA().ReplaceFactor(ctx, b.ID, fa.SecretEnc); err != nil {
+	if err := st.MFA().ReplaceFactor(ctx, b.ID, "mfa_copied", fa.SecretEnc, &store.AuditRecord{Action: "test"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := api.FactorsForTest(srv).Check(ctx, b.ID, "", a.Code(t)); err == nil {
+	if _, err := api.FactorsForTest(srv).Check(ctx, b.ID, "", a.Code(t)); err == nil {
 		t.Fatal("alpha's sealed secret verified a code for bravo")
+	}
+}
+
+// A host TOTP reset that lands between a login's code check and its session insert wins: the
+// login, authorized by the replaced factor, gets no session.
+func TestTOTPResetFencesAnInFlightLogin(t *testing.T) {
+	srv, st, cfg := setupTestServer(t)
+	ctx := context.Background()
+	bg := newBreakGlass(t, srv, st, "root")
+	factorID, err := api.FactorsForTest(srv).Check(ctx, bg.ID, "", bg.Code(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, sealed, err := api.FactorsForTest(srv).NewSecret(bg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MFA().ReplaceFactor(ctx, bg.ID, "mfa_new", sealed, &store.AuditRecord{Action: "break_glass.totp_reset"}); err != nil {
+		t.Fatal(err)
+	}
+	user, err := st.Users().GetUserByID(ctx, bg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	_, _, err = auth.NewSessionManager(st, cfg.Security).IssueBreakGlassSession(ctx, w, httptest.NewRequest(http.MethodPost, "/api/auth/login", nil), user, factorID, &store.AuditRecord{Action: "auth.break_glass_login"})
+	if !errors.Is(err, store.ErrNotFound) || len(w.Result().Cookies()) != 0 {
+		t.Fatalf("session from a replaced factor: %v, cookies %v", err, w.Result().Cookies())
+	}
+}
+
+// A sign-in or a reason whose audit record cannot be written leaves nothing behind: no
+// session and no cookies, no recorded reason, and a retry works once auditing does.
+func TestFailedAuditLeavesNoSessionOrReason(t *testing.T) {
+	srv, st, cfg := setupTestServer(t)
+	ctx := context.Background()
+	db, err := sql.Open(map[string]string{"sqlite": "sqlite", "postgres": "pgx"}[cfg.Database.Driver], cfg.Database.DSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	breakAudit := func(on bool) {
+		t.Helper()
+		from, to := "audit_records", "audit_records_off"
+		if !on {
+			from, to = to, from
+		}
+		if _, err := db.Exec("ALTER TABLE " + from + " RENAME TO " + to); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bg := newBreakGlass(t, srv, st, "root")
+	sessions := func() int {
+		var n int
+		if err := db.QueryRow("SELECT COUNT(1) FROM sessions").Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	breakAudit(true)
+	w := loginWithCode(t, srv, "root", bg.Password, bg.Code(t), "192.0.2.1:1")
+	breakAudit(false)
+	if w.Code != http.StatusServiceUnavailable || sessionCookie(w) != nil || sessions() != 0 {
+		t.Fatalf("unaudited sign-in: %d, cookie %v, %d sessions", w.Code, sessionCookie(w), sessions())
+	}
+
+	other := newBreakGlass(t, srv, st, "other")
+	w = loginWithCode(t, srv, "other", other.Password, other.Code(t), "192.0.2.2:1")
+	session := sessionCookie(w)
+	if w.Code != http.StatusOK || session == nil {
+		t.Fatalf("login: %d", w.Code)
+	}
+	reason := func() int {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/break-glass/reason", strings.NewReader(`{"reason":"outage"}`))
+		req.AddCookie(session)
+		req.AddCookie(&http.Cookie{Name: auth.CSRFCookieName, Value: "c"})
+		req.Header.Set(auth.HeaderCSRF, "c")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		return w.Code
+	}
+	breakAudit(true)
+	code := reason()
+	breakAudit(false)
+	sess, err := st.Sessions().GetSession(ctx, crypto.SHA256Hex([]byte(session.Value)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != http.StatusServiceUnavailable || sess.BreakGlassReason != "" {
+		t.Fatalf("unaudited reason: %d, stored %q", code, sess.BreakGlassReason)
+	}
+	if code := reason(); code != http.StatusOK {
+		t.Fatalf("retry after auditing recovered: %d", code)
 	}
 }

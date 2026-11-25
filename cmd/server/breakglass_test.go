@@ -108,7 +108,7 @@ func TestBreakGlassHostCommands(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := factors.Check(ctx, first.ID, "", first.Code(t)); !errors.Is(err, auth.ErrCodeRejected) {
+	if _, err := factors.Check(ctx, first.ID, "", first.Code(t)); !errors.Is(err, auth.ErrCodeRejected) {
 		t.Fatalf("the replaced secret still verifies: %v", err)
 	}
 	if !strings.Contains(out.String(), "otpauth://totp/") {

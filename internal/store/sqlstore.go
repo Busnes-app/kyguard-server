@@ -494,8 +494,24 @@ func (s *sessionStore) CreateSession(ctx context.Context, sess *Session, expecte
 		if sess.Stage == "" {
 			sess.Stage = StageActive
 		}
-		_, err := tx.ExecContext(ctx, s.store.rebind(`INSERT INTO sessions (token_hash, user_id, user_agent, ip_address, created_at, expires_at, sso_sid, stage, stepup_at, break_glass_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), sess.TokenHash, sess.UserID, sess.UserAgent, sess.IPAddress, sess.CreatedAt, sess.ExpiresAt, sess.SSOSID, sess.Stage, nullTime(sess.StepupAt), sess.BreakGlassReason)
-		return err
+		// The user row is locked (withPassword), and ReplaceFactor locks it too: a factor
+		// replaced after this code was checked is seen here and refuses the session.
+		if sess.FactorID != "" {
+			var n int
+			if err := tx.QueryRowContext(ctx, s.store.rebind(`SELECT COUNT(1) FROM mfa_factors WHERE id = ? AND user_id = ?`), sess.FactorID, sess.UserID).Scan(&n); err != nil {
+				return err
+			}
+			if n != 1 {
+				return ErrNotFound
+			}
+		}
+		if _, err := tx.ExecContext(ctx, s.store.rebind(`INSERT INTO sessions (token_hash, user_id, user_agent, ip_address, created_at, expires_at, sso_sid, stage, stepup_at, break_glass_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), sess.TokenHash, sess.UserID, sess.UserAgent, sess.IPAddress, sess.CreatedAt, sess.ExpiresAt, sess.SSOSID, sess.Stage, nullTime(sess.StepupAt), sess.BreakGlassReason); err != nil {
+			return err
+		}
+		if sess.Audit != nil {
+			return s.store.insertAudit(ctx, tx, sess.Audit)
+		}
+		return nil
 	})
 	if err != nil {
 		return err
@@ -608,15 +624,23 @@ func (s *sessionStore) DeleteUserSessions(ctx context.Context, userID string) er
 	return err
 }
 
-func (s *sessionStore) SetBreakGlassReason(ctx context.Context, tokenHash, reason string) error {
-	res, err := s.store.db.ExecContext(ctx, s.store.rebind(`UPDATE sessions SET break_glass_reason = ? WHERE token_hash = ? AND break_glass_reason = ''`), reason, tokenHash)
+func (s *sessionStore) SetBreakGlassReason(ctx context.Context, tokenHash, reason string, audit *AuditRecord) error {
+	tx, err := s.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, s.store.rebind(`UPDATE sessions SET break_glass_reason = ? WHERE token_hash = ? AND break_glass_reason = ''`), reason, tokenHash)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
 		return ErrConflict
 	}
-	return nil
+	if err := s.store.insertAudit(ctx, tx, audit); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *sessionStore) CleanExpiredSessions(ctx context.Context) error {
@@ -822,14 +846,27 @@ type auditStore struct {
 }
 
 func (a *auditStore) LogAudit(ctx context.Context, r *AuditRecord) error {
+	tx, err := a.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := a.store.insertAudit(ctx, tx, r); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// insertAudit writes r inside the caller's transaction, so a state change and its audit
+// record commit or fail together.
+func (s *SQLStore) insertAudit(ctx context.Context, tx *sql.Tx, r *AuditRecord) error {
 	if r.CreatedAt.IsZero() {
 		r.CreatedAt = time.Now().UTC()
 	}
-	q := a.store.rebind(`
+	_, err := tx.ExecContext(ctx, s.rebind(`
 INSERT INTO audit_records (user_id, action, resource, details, ip_address, created_at)
 VALUES (?, ?, ?, ?, ?, ?)
-`)
-	_, err := a.store.db.ExecContext(ctx, q, r.UserID, r.Action, r.Resource, r.Details, r.IPAddress, r.CreatedAt)
+`), r.UserID, r.Action, r.Resource, r.Details, r.IPAddress, r.CreatedAt)
 	return err
 }
 

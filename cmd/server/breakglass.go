@@ -75,13 +75,12 @@ func createBreakGlass(ctx context.Context, cfg *config.Config, st store.Store, u
 	if err != nil {
 		return err
 	}
-	if err := st.MFA().CreateBreakGlass(ctx, user, &store.MFAFactor{ID: "mfa_" + crypto.RandomHex(12), SecretEnc: sealed}); err != nil {
+	// Account, factor and audit record commit together: a failure leaves nothing to clean up.
+	if err := st.MFA().CreateBreakGlass(ctx, user, &store.MFAFactor{ID: "mfa_" + crypto.RandomHex(12), SecretEnc: sealed},
+		&store.AuditRecord{Action: "break_glass.created", Resource: "user", Details: "severity=critical via=host"}); err != nil {
 		if errors.Is(err, store.ErrAlreadyExists) {
 			return fmt.Errorf("refusing: an account named %q already exists", username)
 		}
-		return err
-	}
-	if err := st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: user.ID, Action: "break_glass.created", Resource: "user", Details: "severity=critical via=host"}); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "Break-glass account %q created. Shown once; store both offline.\nPassword: %s\nTOTP: %s\n", username, pass, totp.ProvisioningURI(cfg.Server.AppName, username, secret))
@@ -105,10 +104,8 @@ func resetBreakGlassTOTP(ctx context.Context, cfg *config.Config, st store.Store
 	if err != nil {
 		return err
 	}
-	if err := st.MFA().ReplaceFactor(ctx, user.ID, sealed); err != nil {
-		return err
-	}
-	if err := st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: user.ID, Action: "break_glass.totp_reset", Resource: "user", Details: "severity=critical via=host; sessions revoked"}); err != nil {
+	if err := st.MFA().ReplaceFactor(ctx, user.ID, "mfa_"+crypto.RandomHex(12), sealed,
+		&store.AuditRecord{Action: "break_glass.totp_reset", Resource: "user", Details: "severity=critical via=host; sessions revoked"}); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "TOTP for %q replaced; its sessions are revoked. Shown once.\nTOTP: %s\n", username, totp.ProvisioningURI(cfg.Server.AppName, username, secret))

@@ -63,40 +63,42 @@ func (f *Factors) open(userID, sealed string) (string, error) {
 	return string(secret), nil
 }
 
-// Check verifies code for userID and spends its counter. sessionHash names the pending session
+// Check verifies code for userID and spends its counter, returning the factor ID that
+// matched; a session it authorizes names that ID (store.Session.FactorID). sessionHash names the pending session
 // the code was entered in ("" outside one); that session is deleted at its SessionCodeLimit-th
 // failure. The attempt is counted before the code is looked at, so while a limit is reached
 // even a correct code fails. Only ErrCodeRejected means the code was refused; any other error
 // is a storage failure.
-func (f *Factors) Check(ctx context.Context, userID, sessionHash, code string) error {
+func (f *Factors) Check(ctx context.Context, userID, sessionHash, code string) (string, error) {
 	attempt, perUser, perSession, err := f.store.MFA().ReserveAttempt(ctx, userID, sessionHash, CodeWindow)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if perUser > UserCodeLimit || perSession > SessionCodeLimit {
-		return f.reject(ctx, sessionHash, perSession)
+		return "", f.reject(ctx, sessionHash, perSession)
 	}
 	factor, err := f.store.MFA().GetFactor(ctx, userID, store.FactorTOTP)
 	if errors.Is(err, store.ErrNotFound) {
-		return f.reject(ctx, sessionHash, perSession)
+		return "", f.reject(ctx, sessionHash, perSession)
 	}
 	if err != nil {
-		return err
+		return "", err
 	}
 	secret, err := f.open(userID, factor.SecretEnc)
 	if err != nil {
-		return err
+		return "", err
 	}
 	counter, ok := totp.Validate(secret, code, time.Now())
 	if !ok || counter <= factor.LastCounter {
-		return f.reject(ctx, sessionHash, perSession)
+		return "", f.reject(ctx, sessionHash, perSession)
 	}
+	// By factor ID: a factor replaced since GetFactor has a new ID, so this spends nothing.
 	if err := f.store.MFA().SpendCounter(ctx, factor.ID, counter); errors.Is(err, store.ErrConflict) {
-		return f.reject(ctx, sessionHash, perSession) // a concurrent request spent it first
+		return "", f.reject(ctx, sessionHash, perSession) // spent concurrently, or replaced
 	} else if err != nil {
-		return err
+		return "", err
 	}
-	return f.store.MFA().ReleaseAttempt(ctx, attempt)
+	return factor.ID, f.store.MFA().ReleaseAttempt(ctx, attempt)
 }
 
 func (f *Factors) reject(ctx context.Context, sessionHash string, perSession int) error {
