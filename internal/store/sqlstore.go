@@ -453,6 +453,12 @@ func (u *userStore) listUsers(ctx context.Context, offset, limit int, search str
 	return users, total, rows.Err()
 }
 
+func (u *userStore) CountUnissuedIdentities(ctx context.Context) (int, error) {
+	var n int
+	err := u.store.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM users WHERE sso_subject <> '' AND sso_issuer = ''`).Scan(&n)
+	return n, err
+}
+
 func (u *userStore) CountUsers(ctx context.Context) (int, error) {
 	var count int
 	err := u.store.db.QueryRowContext(ctx, "SELECT COUNT(1) FROM users").Scan(&count)

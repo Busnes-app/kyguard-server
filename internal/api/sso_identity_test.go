@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Busnes-app/kyguard-server/internal/api"
+	"github.com/Busnes-app/kyguard-server/internal/sso"
 	"github.com/Busnes-app/kyguard-server/internal/store"
 )
 
@@ -104,4 +106,30 @@ func ssoLoginVia(t *testing.T, srv *api.Server, f *fakeKySignOn, provider, sub, 
 	w = httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 	return w
+}
+
+// A SCIM externalId correction that lands between the callback's lookup and its adoption
+// must not let the sign-in through for a row that no longer carries the token's identity.
+func TestAdoptionRevalidatesTheIdentity(t *testing.T) {
+	_, st, _ := setupTestServer(t)
+	ctx := context.Background()
+	row := &store.User{ID: "usr_s", Username: "sam", Role: "user", Status: "active", SSOProvider: "scim", SSOSubject: "sub-a", SSOIssuer: "https://idp", SCIMManaged: true}
+	if err := st.Users().CreateUser(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := st.Users().GetUserBySSO(ctx, "https://idp", "sub-a") // the callback's lookup
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, _ := st.Users().GetUserByID(ctx, "usr_s")
+	fresh.SSOSubject = "sub-b"
+	if err := st.Users().UpdateSCIMProfile(ctx, fresh, fresh.Role, fresh.Status, "sub-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sso.AdoptSCIMUser(ctx, st.Users(), stale, "kysignon"); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("adoption of a re-identified row: %v, want ErrConflict", err)
+	}
+	if u, _ := st.Users().GetUserByID(ctx, "usr_s"); u.SSOProvider != "scim" {
+		t.Fatalf("the row was linked anyway: %+v", u)
+	}
 }

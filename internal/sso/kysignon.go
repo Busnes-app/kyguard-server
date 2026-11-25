@@ -51,11 +51,18 @@ func (k *KySignOnClient) VerifyLogoutToken(ctx context.Context, raw string) (*Lo
 // adopted reports whether this call made the link.
 func AdoptSCIMUser(ctx context.Context, users store.UserStore, user *store.User, provider string) (adopted bool, err error) {
 	if err := users.LinkSSOIdentity(ctx, user.ID, user.SSOSubject, "scim", provider); errors.Is(err, store.ErrConflict) {
-		fresh, err := users.GetUserByID(ctx, user.ID) // a concurrent call linked it first
-		if err == nil {
-			*user = *fresh
+		// A concurrent sign-in may have linked it first; accept that only if the row is still
+		// this identity. A changed issuer or subject (a SCIM externalId correction) is a
+		// conflict: the row no longer matches the verified token.
+		fresh, err := users.GetUserByID(ctx, user.ID)
+		if err != nil {
+			return false, err
 		}
-		return false, err
+		if fresh.SSOIssuer != user.SSOIssuer || fresh.SSOSubject != user.SSOSubject || fresh.SSOProvider != provider {
+			return false, store.ErrConflict
+		}
+		*user = *fresh
+		return false, nil
 	} else if err != nil {
 		return false, err
 	}

@@ -36,6 +36,9 @@ contradicts itself. Each names its section. The most secure reading wins.
    `KY_KYSIGNON_ISSUER`, because KyIdentity is both the SCIM source and the KySignOn issuer.
 11. §7.2 (auth_time). An `auth_time` more than one minute in the future is refused like a stale
    one; the spec states only the 120-second age limit.
-12. §7.2 (fence migration). Migration 13 replaces the sid- and provider-keyed fence tables with
+12. §7.2 (legacy identities). A database with SSO subjects but no issuer (rows from before
+   migration 13) is refused at startup with instructions to set `users.sso_issuer`, rather than
+   guessing an issuer. No KyGuard install predates the migration.
+12a. §7.2 (fence migration). Migration 13 replaces the sid- and provider-keyed fence tables with
    issuer-keyed ones instead of converting rows: fences live ten minutes and no KyGuard
    install exists.

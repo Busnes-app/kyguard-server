@@ -134,6 +134,13 @@ func prepareStart(ctx context.Context, cfg *config.Config, st store.Store) error
 	if err := bootstrap(ctx, cfg, st); err != nil {
 		return fmt.Errorf("bootstrap failed: %w", err)
 	}
+	// Identity is (issuer, subject) (spec §7.2). An account from before migration 13 has a
+	// subject but no issuer; sign-in could never find it and would provision a second one.
+	if n, err := st.Users().CountUnissuedIdentities(ctx); err != nil {
+		return err
+	} else if n > 0 {
+		return fmt.Errorf("%d accounts have an SSO subject but no issuer (created before migration 13); set users.sso_issuer for each to its identity provider's issuer, then start again", n)
+	}
 	if n, err := backup.RemoveStaleSnapshots(cfg.Database.DataDir); err != nil {
 		log.Printf("[BACKUP] leftover snapshot scratch under %s not removed: %v", cfg.Database.DataDir, err)
 	} else if n > 0 {

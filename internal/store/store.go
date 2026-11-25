@@ -88,6 +88,9 @@ type UserStore interface {
 	// ListSCIMUsers is ListUsers restricted to accounts SCIM created (SCIMManaged).
 	ListSCIMUsers(ctx context.Context, offset, limit int, search string) ([]*User, int, error)
 	CountUsers(ctx context.Context) (int, error)
+	// CountUnissuedIdentities counts accounts with an SSO subject but no issuer: rows from
+	// before migration 13, which (issuer, subject) lookups cannot reach.
+	CountUnissuedIdentities(ctx context.Context) (int, error)
 }
 
 // SessionStore defines repository operations for active login sessions.

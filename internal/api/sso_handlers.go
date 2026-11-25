@@ -150,6 +150,9 @@ func (s *Server) ssoAccount(r *http.Request, provider string, claims *sso.Identi
 			return nil, http.StatusConflict, fmt.Sprintf("An account named %q already exists here and is not linked to this sign-in. An administrator must rename or remove that account in its directory, or provision it through SCIM with your identity provider subject as its externalId.", claims.PreferredUsername)
 		}
 	}
+	if errors.Is(err, store.ErrConflict) {
+		return nil, http.StatusConflict, "Your account changed while you were signing in. Sign in again."
+	}
 	if err != nil {
 		return nil, http.StatusInternalServerError, "Failed to provision SSO user"
 	}
