@@ -251,6 +251,9 @@ func (m *Machine) start(ctx context.Context, a *Account, rc *rotationContext, sp
 	// A manual_rotation burns its request_id with this first durable state (§3.4 step 6).
 	a.Run = &Run{OperationID: op, PolicyEpoch: rc.policy.Epoch, Occurrence: spec.occurrence, Attempt: spec.attempt, Due: spec.due,
 		State: StateReserving, SeenBefore: a.HighestVersion, OldEnvelopeID: rc.current.Envelope.EnvelopeID, Lease: spec.lease}
+	if spec.burn != nil {
+		a.Run.Request = spec.burn.RequestID
+	}
 	save := m.J.Save
 	if spec.burn != nil {
 		save = func(a *Account) error { return m.J.SaveBurn(a, spec.burn.RequestID, spec.burn.ExpiresAt.Time) }

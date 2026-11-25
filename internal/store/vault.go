@@ -20,13 +20,13 @@ var ErrTooLarge = errors.New("record over its size limit")
 
 // MaxChain bounds an envelope with all its receipts, and MaxDescriptor a target descriptor,
 // in canonical bytes, so one chain and its descriptor always fit one sync reply.
-// MaxEnvelope leaves room in the chain for a terminal receipt (abort, release or
-// vault_commit carry no extra recipients), so a stored envelope can always be finished
-// (security review of #15).
+// MaxEnvelope leaves room in the chain for commit_target and a release carrying a wrap for
+// each of up to pqcrypto.MaxStandingRecipients standing recipients (or one abort or
+// vault_commit), so a stored envelope can always be finished (security reviews of #10, #15).
 const (
 	MaxChain      = 256 << 10
 	MaxDescriptor = 64 << 10
-	MaxEnvelope   = MaxChain - 32<<10
+	MaxEnvelope   = MaxChain - 96<<10
 )
 
 // ErrLeaseOpen refuses a policy that changes the target descriptor of an account with an
@@ -803,22 +803,26 @@ func (v vaultStore) TakePushes(ctx context.Context, brokerID string, limit int, 
 }
 
 func (v vaultStore) PutTx(ctx context.Context, requestID, accountID, actionType, digest string, raw []byte) error {
-	return v.s.inTx(ctx, func(tx *sql.Tx) error {
-		var have string
-		err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT tx FROM access_transactions WHERE request_id = ?`), requestID).Scan(&have)
-		if err == nil {
-			if have == string(raw) {
-				return nil
-			}
-			return ErrConflict
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, v.s.rebind(`INSERT INTO access_transactions (request_id, account_id, action_type, digest, tx, created_at) VALUES (?, ?, ?, ?, ?, ?)`),
-			requestID, accountID, actionType, digest, string(raw), time.Now().UTC())
+	// Insert-or-keep, then compare: two identical submissions racing on PostgreSQL both
+	// succeed, and a different transaction under the same request ID is a conflict (Guide
+	// on #15, "Concurrent retries").
+	if _, err := v.s.db.ExecContext(ctx, v.s.rebind(`INSERT INTO access_transactions (request_id, account_id, action_type, digest, tx, created_at) VALUES (?, ?, ?, ?, ?, ?)
+ ON CONFLICT DO NOTHING`), requestID, accountID, actionType, digest, string(raw), time.Now().UTC()); err != nil {
 		return err
-	})
+	}
+	// No conflict target: request_id and digest are both unique, and PostgreSQL raises a
+	// concurrent clash on a unique index the target does not name.
+	var have string
+	err := v.s.db.QueryRowContext(ctx, v.s.rebind(`SELECT tx FROM access_transactions WHERE request_id = ?`), requestID).Scan(&have)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrConflict // the digest belongs to another request
+	} else if err != nil {
+		return err
+	}
+	if have != string(raw) {
+		return ErrConflict
+	}
+	return nil
 }
 
 func (v vaultStore) SetHealth(ctx context.Context, accountID, health, reason string) error {

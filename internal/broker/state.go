@@ -74,6 +74,8 @@ type Account struct {
 	// DeferredPolicy is a verified policy that changes the target descriptor, held back
 	// while a lease is open and applied once the lease closes (§3.3).
 	DeferredPolicy pqcrypto.B64 `json:"deferred_policy,omitempty"`
+	// Results are transaction outcomes for the CLI, re-sent until acknowledged.
+	Results []TxResult `json:"results,omitempty"`
 }
 
 // Lease states (§3.6).
@@ -172,6 +174,16 @@ type Run struct {
 	Sent     bool           `json:"sent,omitempty"`
 	// Lease is the request ID of the lease this cleanup rotation closes, if any.
 	Lease pqcrypto.UUID `json:"lease,omitempty"`
+	// Request is the manual_rotation this run answers; ResultQueued once its outcome is
+	// in the account's Results.
+	Request      pqcrypto.UUID `json:"request,omitempty"`
+	ResultQueued bool          `json:"result_queued,omitempty"`
+}
+
+// TxResult is a transaction outcome not yet acknowledged by the Control Plane.
+type TxResult struct {
+	RequestID pqcrypto.UUID `json:"request_id"`
+	Result    string        `json:"result"`
 }
 
 // Open reports whether the run still blocks the account (§4.2 blocking rule).
