@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -141,5 +142,75 @@ func TestSettledIntentStaysSettled(t *testing.T) {
 	}
 	if got := lastActions(t, st); len(got) != 1 {
 		t.Fatalf("records %v", got)
+	}
+}
+
+// §9.3: reconciliation replays only an outcome this server noted. A note a database writer
+// without the key edited, or wrote, is rejected: its record is never appended, and the intent
+// ends outcome_unknown with the rejection on record.
+func TestReconcileRejectsAForgedNote(t *testing.T) {
+	for _, forge := range []struct{ name, query string }{
+		{"edited", `UPDATE operation_intents SET outcome = REPLACE(outcome, 'admin.backup_key_pin', 'forged.event')`},
+		{"written", `UPDATE operation_intents SET outcome = '{"state":"complete","record":{"Action":"forged.event"},"mac":"00"}'`},
+	} {
+		t.Run(forge.name, func(t *testing.T) {
+			st, exec := intentsStore(t)
+			ctx := context.Background()
+			if err := st.Audit().LogAudit(ctx, &store.AuditRecord{Action: "seed"}); err != nil {
+				t.Fatal(err)
+			}
+			id, err := st.Intents().Begin(ctx, "pin", "key-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			exec(`UPDATE audit_chain_head SET head_hash = '` + strings.Repeat("f", 64) + `'`)
+			if err := st.Intents().Settle(ctx, id, store.IntentComplete, &store.AuditRecord{UserID: "usr_admin", Action: "admin.backup_key_pin"}); err == nil {
+				t.Fatal("settle with a broken chain succeeded")
+			}
+			exec(`DELETE FROM audit_chain_head`)
+			exec(`DELETE FROM audit_records`)
+			exec(forge.query)
+			if _, err := st.Intents().Reconcile(ctx, "pin", 0); err != nil {
+				t.Fatal(err)
+			}
+			if got := intentState(t, st, id); got != store.IntentUnknown {
+				t.Fatalf("forged note reconciled to %s", got)
+			}
+			if got := lastActions(t, st); len(got) != 1 || got[0] != "operation.outcome_rejected" {
+				t.Fatalf("records %v, want only the rejection", got)
+			}
+		})
+	}
+}
+
+// §9.3: two replicas reconciling the same stale intents append one record per intent.
+func TestConcurrentReconcilersSettleOnce(t *testing.T) {
+	st, _ := intentsStore(t)
+	ctx := context.Background()
+	const intents = 10
+	for range intents {
+		if _, err := st.Intents().Begin(ctx, "pairing", "https://recovery.test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var wg sync.WaitGroup
+	for range 3 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := st.Intents().Reconcile(ctx, "pairing", 0); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	n := 0
+	for _, a := range lastActions(t, st) {
+		if a == "operation.outcome_unknown" {
+			n++
+		}
+	}
+	if n != intents {
+		t.Fatalf("%d outcome records for %d intents", n, intents)
 	}
 }

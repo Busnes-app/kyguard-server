@@ -1,0 +1,110 @@
+[
+  {
+    "name": "key order by UTF-16 code units",
+    "input_b64": "eyJiIjoxLCJhIjoyLCJcdTIwYWMiOjMsIlx1ZDgzZFx1ZGUwMCI6NCwiXHVmYjMzIjo1fQ",
+    "canonical": "{\"a\":2,\"b\":1,\"€\":3,\"😀\":4,\"דּ\":5}",
+    "verdict": "ok"
+  },
+  {
+    "name": "whitespace and escapes normalized",
+    "input_b64": "IHsgInMiIDogIlx1MDA0MVwvXHUwMDFmXHUwMDdmPD4mXG4iICwgInQiOlsgdHJ1ZSxmYWxzZSxudWxsIF0gfSA",
+    "canonical": "{\"s\":\"A/\\u001f\u003c\u003e\u0026\\n\",\"t\":[true,false,null]}",
+    "verdict": "ok"
+  },
+  {
+    "name": "nested objects sorted",
+    "input_b64": "eyJ6Ijp7InkiOjEsIngiOlt7ImIiOjAsImEiOi05MDA3MTk5MjU0NzQwOTkxfV19fQ",
+    "canonical": "{\"z\":{\"x\":[{\"a\":-9007199254740991,\"b\":0}],\"y\":1}}",
+    "verdict": "ok"
+  },
+  {
+    "name": "duplicate key",
+    "input_b64": "eyJhIjoxLCJhIjoyfQ",
+    "verdict": "duplicate_key"
+  },
+  {
+    "name": "duplicate key nested",
+    "input_b64": "eyJvIjp7ImsiOiJ4IiwiayI6IngifX0",
+    "verdict": "duplicate_key"
+  },
+  {
+    "name": "duplicate key via escape",
+    "input_b64": "eyJhIjoxLCJhIjoyfQ",
+    "verdict": "duplicate_key"
+  },
+  {
+    "name": "malformed UTF-8 byte",
+    "input_b64": "eyJhIjoi_yJ9",
+    "verdict": "invalid_utf8"
+  },
+  {
+    "name": "overlong UTF-8",
+    "input_b64": "eyJhIjoiwK8ifQ",
+    "verdict": "invalid_utf8"
+  },
+  {
+    "name": "UTF-8 encoded surrogate",
+    "input_b64": "eyJhIjoi7aCAIn0",
+    "verdict": "invalid_utf8"
+  },
+  {
+    "name": "lone high surrogate escape",
+    "input_b64": "eyJhIjoiXHVkODAwIn0",
+    "verdict": "invalid_utf8"
+  },
+  {
+    "name": "lone low surrogate escape",
+    "input_b64": "eyJhIjoiXHVkYzAweCJ9",
+    "verdict": "invalid_utf8"
+  },
+  {
+    "name": "high surrogate then non-surrogate escape",
+    "input_b64": "eyJhIjoiXHVkODAwXHUwMDQxIn0",
+    "verdict": "invalid_utf8"
+  },
+  {
+    "name": "two low surrogate escapes",
+    "input_b64": "eyJhIjoiXHVkYzAwXHVkYzAwIn0",
+    "verdict": "invalid_utf8"
+  },
+  {
+    "name": "fraction rejected",
+    "input_b64": "eyJhIjoxLjB9",
+    "verdict": "number_out_of_profile"
+  },
+  {
+    "name": "exponent rejected",
+    "input_b64": "eyJhIjoxZTJ9",
+    "verdict": "number_out_of_profile"
+  },
+  {
+    "name": "integer above 2^53-1",
+    "input_b64": "eyJhIjo5MDA3MTk5MjU0NzQwOTkyfQ",
+    "verdict": "number_out_of_profile"
+  },
+  {
+    "name": "negative zero",
+    "input_b64": "eyJhIjotMH0",
+    "verdict": "number_out_of_profile"
+  },
+  {
+    "name": "leading zero number",
+    "input_b64": "eyJhIjowMX0",
+    "verdict": "syntax"
+  },
+  {
+    "name": "trailing data",
+    "input_b64": "eyJhIjoxfSB7fQ",
+    "verdict": "syntax"
+  },
+  {
+    "name": "trailing comma",
+    "input_b64": "eyJhIjoxLH0",
+    "verdict": "syntax"
+  },
+  {
+    "name": "raw control character",
+    "input_b64": "eyJhIjoiASJ9",
+    "verdict": "syntax"
+  }
+]
