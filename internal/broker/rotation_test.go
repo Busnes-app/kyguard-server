@@ -682,3 +682,31 @@ func TestSyncFollowsTheAccountCursor(t *testing.T) {
 		t.Fatalf("a page that does not advance: %v", err)
 	}
 }
+
+// A manifest whose journal append failed is persisted by the next sync, so it survives a
+// restart (Guide on #11, "Lost manifest").
+func TestFailedManifestAppendIsPersistedOnRetry(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	r.cp.Submit(r.cp.Dep.Signed(t, r.cp.Dep.ManagedPolicy(r.pol.AccountID, r.pol.PoolID, 2, r.pol.TargetDescriptorDigest)))
+	m := r.machine()
+	m.Hook = func(p string) error {
+		if p == "append_manifest" {
+			return errors.New("disk full")
+		}
+		return nil
+	}
+	if err := m.Sync(ctx); err == nil {
+		t.Fatal("the failed append was not reported")
+	}
+	m.Hook = nil
+	if err := m.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	m.J.Close()
+	m2 := r.machine()
+	defer m2.J.Close()
+	if p, _ := m2.Trust.Policy(r.pol.AccountID); p == nil || p.Epoch != 2 {
+		t.Fatalf("after a restart the policy is %+v", p)
+	}
+}
