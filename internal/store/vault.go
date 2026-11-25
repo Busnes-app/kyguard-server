@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ErrLocked means another operation holds the account's rotation lock.
@@ -693,8 +695,12 @@ type Push struct {
 }
 
 func (v vaultStore) QueuePush(ctx context.Context, p *Push) error {
-	_, err := v.s.db.ExecContext(ctx, v.s.rebind(`INSERT INTO broker_outbox (broker_id, type, body, expires_at) VALUES (?, ?, ?, ?)`),
-		p.BrokerID, p.Type, string(p.Body), p.ExpiresAt.UTC())
+	id, err := uuid.NewV7() // time-ordered, so pushes go out oldest first
+	if err != nil {
+		return err
+	}
+	_, err = v.s.db.ExecContext(ctx, v.s.rebind(`INSERT INTO broker_outbox (id, broker_id, type, body, expires_at) VALUES (?, ?, ?, ?, ?)`),
+		id.String(), p.BrokerID, p.Type, string(p.Body), p.ExpiresAt.UTC())
 	return err
 }
 
@@ -712,11 +718,10 @@ func (v vaultStore) TakePushes(ctx context.Context, brokerID string, limit int, 
 			return err
 		}
 		defer rows.Close()
-		ids := map[*Push]int64{}
+		ids := map[*Push]string{}
 		for rows.Next() {
 			var p Push
-			var id int64
-			var body string
+			var id, body string
 			if err := rows.Scan(&id, &p.Type, &body, &p.ExpiresAt); err != nil {
 				return err
 			}

@@ -136,7 +136,7 @@ CREATE TABLE access_transactions (
     created_at {{ts}} NOT NULL
 );
 CREATE TABLE broker_outbox (
-    id {{serial}},
+    id TEXT PRIMARY KEY,
     broker_id TEXT NOT NULL,
     type TEXT NOT NULL,
     body TEXT NOT NULL,
@@ -150,7 +150,7 @@ func dialects(version int, name, ddl string) Migration {
 	return Migration{
 		Version:  version,
 		Name:     name,
-		SQLite:   strings.NewReplacer("{{ts}}", "DATETIME", "{{serial}}", "INTEGER PRIMARY KEY AUTOINCREMENT").Replace(ddl),
-		Postgres: strings.NewReplacer("{{ts}}", "TIMESTAMPTZ", "{{serial}}", "BIGSERIAL PRIMARY KEY").Replace(ddl),
+		SQLite:   strings.ReplaceAll(ddl, "{{ts}}", "DATETIME"),
+		Postgres: strings.ReplaceAll(ddl, "{{ts}}", "TIMESTAMPTZ"),
 	}
 }
