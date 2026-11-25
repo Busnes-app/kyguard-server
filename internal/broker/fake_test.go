@@ -123,7 +123,7 @@ type rig struct {
 
 const initialPassword = "initial-Password-0"
 
-func newRig(t *testing.T) *rig {
+func newRig(t *testing.T, edit ...func(*pqcrypto.PolicyManifest)) *rig {
 	t.Helper()
 	cp := brokertest.NewCP(t)
 	b := cp.PairBroker()
@@ -132,7 +132,11 @@ func newRig(t *testing.T) *rig {
 		t.Fatal(err)
 	}
 	r := &rig{t: t, cp: cp, b: b, dir: t.TempDir(), target: newTarget(initialPassword)}
-	r.pol = cp.Account(nil)
+	r.pol = cp.Account(func(p *pqcrypto.PolicyManifest) {
+		for _, e := range edit {
+			e(p)
+		}
+	})
 	j, err := broker.OpenJournal(r.dir)
 	if err != nil {
 		t.Fatal(err)

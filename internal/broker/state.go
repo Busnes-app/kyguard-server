@@ -52,6 +52,11 @@ type Account struct {
 	PolicyPersistedAt time.Time        `json:"policy_persisted_at"`
 	LastConsumedDue   time.Time        `json:"last_consumed_due"`
 	CurrentCommitAt   time.Time        `json:"current_commit_at"`
+	// Refusal retry state (§4.4). The minimum-age deadline carries across policy epochs.
+	Refusals       int       `json:"refusals,omitempty"`
+	NextAttemptAt  time.Time `json:"next_attempt_at"`
+	MinAgeSeconds  int64     `json:"min_age_seconds,omitempty"`
+	MinAgeDeadline time.Time `json:"min_age_deadline"`
 	// Run is the latest rotation attempt.
 	Run *Run `json:"run,omitempty"`
 }

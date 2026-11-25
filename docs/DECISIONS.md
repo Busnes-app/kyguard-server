@@ -174,3 +174,9 @@ contradicts itself. Each names its section. The most secure reading wins.
     `needs_enrollment` and nothing is sent. Recovery probes the descriptor of the intent's
     own envelope. Deferring a descriptor-changing policy while an intent or lease is open
     (the full §3.3 rule) is not built yet.
+46. §3.4 (skipped occurrences). Skipping is implicit: when the latest outstanding occurrence
+    releases, its due time becomes the floor, so every earlier one is no longer
+    outstanding. The broker journals the occurrence each run belongs to, not a skip list.
+47. §4.4 (three refusals). The refusal counter is per account across occurrences and resets
+    on `release` and on a new policy epoch; `next_attempt_at` and the minimum-age deadline
+    carry across epochs.

@@ -150,6 +150,7 @@ func (a *App) serve(ctx context.Context, j *Journal, k *Keys, id pqcrypto.UUID, 
 	if err := m.Recover(cctx); err != nil {
 		log.Printf("[BROKER] recovery: %v", err)
 	}
+	go m.Schedule(cctx, time.Minute, a.Nudges)
 	for msg := range conn.Pushes {
 		switch msg.Type {
 		case brokerproto.MsgNudge:
