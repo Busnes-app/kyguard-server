@@ -238,6 +238,7 @@ func runConfiguredServer(cfg *config.Config) {
 		}
 	}()
 
+	go settleLoop(ctx, st, time.Minute, pairingIntentGrace)
 	brokerServer, err := startBrokerListener(cfg, srv)
 	if err != nil {
 		log.Fatalf("broker listener: %v", err)

@@ -121,3 +121,36 @@ func TestStartRefusesABrokerCAThePairedBrokersDidNotPin(t *testing.T) {
 		t.Fatal("missing CA with paired brokers started")
 	}
 }
+
+// A pairing intent too young to settle at startup is settled by the loop once its grace
+// has passed (PR Reviewer Guide on #8).
+func TestPendingPairingIntentIsSettledAfterItsGrace(t *testing.T) {
+	_, st := guardConfig(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	g := st.Guard()
+	now := time.Now().UTC()
+	g.CreatePool(ctx, &store.BrokerPool{ID: "p", Name: "p", CreatedAt: now}, nil)
+	g.CreatePairingToken(ctx, &store.PairingToken{TokenHash: "t", PoolID: "p", CreatedBy: "a", CreatedAt: now, ExpiresAt: now.Add(time.Minute)}, nil)
+	if err := g.ClaimPairing(ctx, "t", now, &store.Broker{ID: "b", CertSHA256: "c", CASHA256: "ca", SigKeyID: "s", EncKeyID: "e", Version: "0.1.0"}, "i", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := settlePairingIntents(ctx, st, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if i, _ := g.GetIntent(ctx, "i"); i.State != store.IntentPending {
+		t.Fatalf("settled inside its grace: %s", i.State)
+	}
+	go settleLoop(ctx, st, 10*time.Millisecond, 100*time.Millisecond)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		i, err := g.GetIntent(ctx, "i")
+		if err == nil && i.State == store.IntentOutcomeUnknown {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("still %v %v", i, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

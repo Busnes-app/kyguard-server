@@ -137,8 +137,8 @@ contradicts itself. Each names its section. The most secure reading wins.
     certificate's SHA-256 must equal the manifest's `mtls_cert_sha256`, so a second
     internal-CA certificate for a listed `broker_id` is refused.
 37. §9.3 (pairing intent). The pairing intent ends `complete` only when the response was
-    written and flushed; a write error marks it `outcome_unknown` at once. Startup marks
-    intents still `pending` after 2 minutes `outcome_unknown`, leaving younger ones to a
-    replica that may still be answering.
+    written and flushed; a write error marks it `outcome_unknown` at once. Startup, and then
+    a loop every minute, marks intents still `pending` after 2 minutes `outcome_unknown`,
+    leaving younger ones to a replica that may still be answering.
 38. §9.2 (migration numbering). Broker-stack migrations take versions from 100 so the two
     parallel stacks never reuse a version; they run after every Phase 0 migration.

@@ -97,7 +97,12 @@ func checkBrokerCA(ctx context.Context, cfg *config.Config, st store.Store) erro
 			}
 		}
 	}
-	n, err := st.Guard().ExpirePendingIntents(ctx, "pairing", time.Now().Add(-pairingIntentGrace))
+	return settlePairingIntents(ctx, st, pairingIntentGrace)
+}
+
+// settlePairingIntents marks pairing intents pending for longer than grace outcome_unknown.
+func settlePairingIntents(ctx context.Context, st store.Store, grace time.Duration) error {
+	n, err := st.Guard().ExpirePendingIntents(ctx, "pairing", time.Now().Add(-grace))
 	if err != nil {
 		return err
 	}
@@ -105,6 +110,23 @@ func checkBrokerCA(ctx context.Context, cfg *config.Config, st store.Store) erro
 		log.Printf("[BROKER] %d pairing claims ended with their response undelivered: outcome_unknown, an operator must reconcile them", n)
 	}
 	return nil
+}
+
+// settleLoop repeats the settlement every tick, so an intent too young at startup (or left
+// by a replica that stopped) is settled once its grace has passed.
+func settleLoop(ctx context.Context, st store.Store, tick, grace time.Duration) {
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := settlePairingIntents(ctx, st, grace); err != nil && ctx.Err() == nil {
+				log.Printf("[BROKER] settling pairing intents: %v", err)
+			}
+		}
+	}
 }
 
 // startBrokerListener serves /broker/v1/* on KY_BROKER_LISTEN with a fresh leaf for
