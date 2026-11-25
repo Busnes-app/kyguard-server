@@ -551,3 +551,54 @@ func TestStalledEnrollmentResumesOnTheNextTick(t *testing.T) {
 		t.Fatalf("%d binds", n)
 	}
 }
+
+// batchCP records each receipt delivery and fails the one numbered failAt (from 1) once.
+type batchCP struct {
+	broker.ControlPlane
+	batches [][]pqcrypto.B64
+	failAt  int
+}
+
+func (b *batchCP) Receipts(ctx context.Context, op, account pqcrypto.UUID, rs []pqcrypto.B64) error {
+	b.batches = append(b.batches, rs)
+	if len(b.batches) == b.failAt {
+		return errors.New("transient")
+	}
+	return b.ControlPlane.Receipts(ctx, op, account, rs)
+}
+
+// Re-enrollment receipts go out in batches under the frame budget, vault_commit last; a
+// batch that fails is resumed on the next tick and the enrollment still completes (Guide
+// on #15, "Unbounded Batch").
+func TestReEnrollmentReceiptsAreBatched(t *testing.T) {
+	defer broker.SetReceiptBatch(1)()
+	r := newEnrollRig(t, true)
+	m := r.machine()
+	defer m.J.Close()
+	quarantineV2(t, r, m)
+	r.target.password = "Reset-By-Operator-1!"
+	cp := &batchCP{ControlPlane: m.CP, failAt: 2}
+	m.CP = cp
+	if _, err := r.enroll(m, "Reset-By-Operator-1!"); err == nil {
+		t.Fatal("the second batch did not fail")
+	}
+	if r.cpLock() == "" {
+		t.Fatal("the enrollment completed without its vault_commit")
+	}
+	if err := m.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if a := r.account(m); a.Quarantined || !a.Enrollment.Sent || r.cpLock() != "" || r.current(m).Envelope.SecretVersion != 3 {
+		t.Fatalf("after the tick: quarantined=%v sent=%v lock=%q", a.Quarantined, a.Enrollment.Sent, r.cpLock())
+	}
+	for i, b := range cp.batches {
+		if len(b) != 1 {
+			t.Fatalf("batch %d carries %d receipts over the budget", i, len(b))
+		}
+	}
+	var last pqcrypto.EnvelopeReceipt
+	pqtest.Decode(t, cp.batches[len(cp.batches)-1][0], &last)
+	if len(cp.batches) != 4 || last.ReceiptType != pqcrypto.ReceiptVaultCommit {
+		t.Fatalf("%d batches, last %s", len(cp.batches), last.ReceiptType)
+	}
+}

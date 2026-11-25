@@ -1,4 +1,8 @@
 import { test, expect } from '@playwright/test';
+import { adminState } from './totp.mjs';
+
+// Signed in once by setup.mjs: TOTP codes are single-use, so specs share that session.
+test.use({ storageState: adminState });
 import { THEME_CATALOG } from '../src/ky-ui/themes.js';
 
 // Base defines .btn-danger but renders none, and products built from it inherit the class. So this
@@ -39,9 +43,6 @@ test('diagnostic: a filled danger button label reads on its fill in every suite 
   test.skip(testInfo.project.use.viewport.width < 1280, 'one width per OS scheme is enough for colour');
   test.setTimeout(120000);
   await page.goto('/');
-  await page.getByPlaceholder('admin', { exact: true }).fill('admin');
-  await page.locator('input[type=password]').fill('BrowserUpdated456!');
-  await page.getByRole('button', { name: 'Sign In', exact: true }).click();
   await expect(page.getByRole('heading', { name: /Welcome/ })).toBeVisible();
   await page.locator('main').evaluate(main => {
     const button = main.insertBefore(document.createElement('button'), main.firstChild);

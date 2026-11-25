@@ -35,20 +35,23 @@ var ErrPinnedCA = errors.New("brokerproto: listener certificate does not chain t
 // so the CA certificate is taken from the presented chain and accepted only if it hashes to
 // the pin; Go's default verification is replaced, not skipped, by VerifyConnection.
 func ClientTLS(caSHA256 pqcrypto.HexID, hostname string, client *tls.Certificate) *tls.Config {
-	c := &tls.Config{
-		MinVersion:       tls.VersionTLS13,
-		CurvePreferences: curves,
-		ServerName:       hostname,
-		// The pinned-hash check below replaces chain verification against system roots.
-		InsecureSkipVerify: true, //nolint:gosec // see VerifyConnection
+	// pinVerified: InsecureSkipVerify only turns off the system-root chain check, which
+	// VerifyConnection replaces with verifyListener (chain to the pinned CA, hostname,
+	// serverAuth). Every handshake runs it; TestClientTLSPinsTheCA and
+	// TestBrokerRefusesAnotherCA fail if it is weakened.
+	pinVerified := &tls.Config{
+		MinVersion:         tls.VersionTLS13,
+		CurvePreferences:   curves,
+		ServerName:         hostname,
+		InsecureSkipVerify: true, //nolint:gosec // replaced by VerifyConnection
 		VerifyConnection: func(cs tls.ConnectionState) error {
 			return verifyListener(cs.PeerCertificates, caSHA256, hostname)
 		},
 	}
 	if client != nil {
-		c.Certificates = []tls.Certificate{*client}
+		pinVerified.Certificates = []tls.Certificate{*client}
 	}
-	return c
+	return pinVerified
 }
 
 func verifyListener(chain []*x509.Certificate, pin pqcrypto.HexID, hostname string) error {

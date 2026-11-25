@@ -12,10 +12,8 @@ import (
 func TestPasswordReplacementIsAtomicAndSingleUse(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
-	u := &store.User{ID: "reset", Username: "reset", PasswordHash: "old", Role: "admin", Status: "active", SSOProvider: "local", MustChangePassword: true}
-	if err := st.Users().CreateUser(ctx, u); err != nil {
-		t.Fatal(err)
-	}
+	u := &store.User{ID: "reset", Username: "reset", PasswordHash: "old", Role: "admin", Status: "active"}
+	factor := breakGlassUser(t, st, u)
 	sess := &store.Session{TokenHash: "session", UserID: u.ID, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}
 	if err := st.Sessions().CreateSession(ctx, sess, "old"); err != nil {
 		t.Fatal(err)
@@ -26,7 +24,7 @@ func TestPasswordReplacementIsAtomicAndSingleUse(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results <- st.Users().CompletePasswordChange(ctx, u.ID, "old", hash, "127.0.0.1")
+			results <- st.Users().CompletePasswordChange(ctx, u.ID, "old", hash, "127.0.0.1", factor)
 		}()
 	}
 	wg.Wait()
@@ -49,45 +47,7 @@ func TestPasswordReplacementIsAtomicAndSingleUse(t *testing.T) {
 		t.Fatal("stale session creation", err)
 	}
 	audits, n, err := st.Audit().ListAuditRecords(ctx, 0, 10)
-	if err != nil || n != 1 || audits[0].Action != "auth.password_changed" {
-		t.Fatal("audit", n, err)
-	}
-}
-
-func TestAdminPasswordResetRevokesGrants(t *testing.T) {
-	ctx := context.Background()
-	st := newTestStore(t)
-	u := &store.User{ID: "reset", Username: "reset", PasswordHash: "old", Role: "admin", Status: "active", SSOProvider: "local", MustChangePassword: false}
-	if err := st.Users().CreateUser(ctx, u); err != nil {
-		t.Fatal(err)
-	}
-	sess := &store.Session{TokenHash: "session", UserID: u.ID, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}
-	if err := st.Sessions().CreateSession(ctx, sess, "old"); err != nil {
-		t.Fatal(err)
-	}
-	u.Status = "disabled"
-	if err := st.Users().UpdateUser(ctx, u); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Users().ResetAdminPassword(ctx, u.ID, "reset-hash"); err != nil {
-		t.Fatal(err)
-	}
-	updated, err := st.Users().GetUserByID(ctx, u.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !updated.MustChangePassword || updated.PasswordHash != "reset-hash" || updated.Status != "active" || updated.Role != "admin" {
-		t.Fatalf("unexpected reset state: %+v", updated)
-	}
-
-	if _, err := st.Sessions().GetSession(ctx, sess.TokenHash); !errors.Is(err, store.ErrNotFound) {
-		t.Fatal("session survived", err)
-	}
-	if err := st.Sessions().CreateSession(ctx, sess, "old"); !errors.Is(err, store.ErrNotFound) {
-		t.Fatal("stale session creation", err)
-	}
-	audits, n, err := st.Audit().ListAuditRecords(ctx, 0, 10)
-	if err != nil || n != 1 || audits[0].Action != "auth.password_changed" {
+	if err != nil || n != 2 || audits[0].Action != "auth.password_changed" { // newest first; the other is the creation
 		t.Fatal("audit", n, err)
 	}
 }
@@ -97,15 +57,13 @@ func TestAdminPasswordResetRevokesGrants(t *testing.T) {
 func TestUpdateUserProfileLeavesCredentialsAlone(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
-	u := &store.User{ID: "sync", Username: "sync", PasswordHash: "old", Role: "admin", Status: "active", SSOProvider: "local"}
-	if err := st.Users().CreateUser(ctx, u); err != nil {
-		t.Fatal(err)
-	}
+	u := &store.User{ID: "sync", Username: "sync", PasswordHash: "old", Role: "admin", Status: "active"}
+	factor := breakGlassUser(t, st, u)
 	stale, err := st.Users().GetUserByID(ctx, u.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Users().ResetAdminPassword(ctx, u.ID, "reset-hash"); err != nil {
+	if err := st.Users().CompletePasswordChange(ctx, u.ID, "old", "reset-hash", "", factor); err != nil {
 		t.Fatal(err)
 	}
 	stale.DisplayName = "Synced Name"
@@ -119,10 +77,38 @@ func TestUpdateUserProfileLeavesCredentialsAlone(t *testing.T) {
 	if got.DisplayName != "Synced Name" {
 		t.Fatalf("profile not written: %+v", got)
 	}
-	if got.PasswordHash != "reset-hash" || !got.MustChangePassword {
-		t.Fatalf("stale profile write restored credentials: hash=%q must_change=%v", got.PasswordHash, got.MustChangePassword)
+	if got.PasswordHash != "reset-hash" {
+		t.Fatalf("stale profile write restored credentials: hash=%q", got.PasswordHash)
 	}
 	if err := st.Users().UpdateUserProfile(ctx, &store.User{ID: "missing"}, "", ""); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("missing user: %v", err)
+	}
+}
+
+// breakGlassUser creates u as a break-glass account with a factor and returns the factor ID.
+func breakGlassUser(t *testing.T, st store.Store, u *store.User) string {
+	t.Helper()
+	f := &store.MFAFactor{ID: "mfa_" + u.ID, SecretEnc: "sealed"}
+	if err := st.MFA().CreateBreakGlass(context.Background(), u, f, &store.AuditRecord{Action: "break_glass.created"}); err != nil {
+		t.Fatal(err)
+	}
+	return f.ID
+}
+
+// A host TOTP reset that lands between a password change's code check and its write wins: the
+// change, authorized by the replaced factor, is refused and the hash stays.
+func TestPasswordChangeIsFencedByATOTPReset(t *testing.T) {
+	ctx := context.Background()
+	st := newTestStore(t)
+	u := &store.User{ID: "pw", Username: "pw", PasswordHash: "old", Role: "admin", Status: "active"}
+	factor := breakGlassUser(t, st, u)
+	if err := st.MFA().ReplaceFactor(ctx, u.ID, "mfa_new", "sealed2", &store.AuditRecord{Action: "break_glass.totp_reset"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Users().CompletePasswordChange(ctx, u.ID, "old", "attacker-hash", "", factor); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("change authorized by a replaced factor: %v", err)
+	}
+	if got, _ := st.Users().GetUserByID(ctx, u.ID); got.PasswordHash != "old" {
+		t.Fatalf("password replaced to %q", got.PasswordHash)
 	}
 }

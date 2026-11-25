@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/Busnes-app/ky-primitives/password"
 	"github.com/Busnes-app/kyguard-server/internal/api"
 	"github.com/Busnes-app/kyguard-server/internal/auth"
 	"github.com/Busnes-app/kyguard-server/internal/store"
@@ -71,18 +70,13 @@ func TestExemptNetworkSkipsThePerIPLoginLimit(t *testing.T) {
 func TestExemptNetworkKeepsThePerAccountWindow(t *testing.T) {
 	t.Setenv("KY_RATE_LIMIT_EXEMPT_NETWORKS", officeRange)
 	srv, st, _ := setupTestServer(t)
-	hash, _ := password.Hash("SuperSecretPass123!")
-	if err := st.Users().CreateUser(context.Background(), &store.User{
-		ID: "usr_carol", Username: "carol", PasswordHash: hash, Role: "user", Status: "active", SSOProvider: "local",
-	}); err != nil {
-		t.Fatal(err)
-	}
+	carol := newBreakGlass(t, srv, st, "carol")
 	for i := 1; i <= 10; i++ {
 		if w := loginStatusFor(t, srv, "carol", "WrongPass123!", officePeer); w.Code != http.StatusUnauthorized {
 			t.Fatalf("wrong password %d: %d", i, w.Code)
 		}
 	}
-	if w := loginStatusFor(t, srv, "carol", "SuperSecretPass123!", officePeer); w.Code != http.StatusUnauthorized {
+	if w := loginWithCode(t, srv, "carol", carol.Password, carol.Code(t), officePeer); w.Code != http.StatusUnauthorized {
 		t.Fatalf("exhausted account window from the office answered %d, want 401", w.Code)
 	}
 }
@@ -124,9 +118,9 @@ func TestExemptNetworkMatchesTheClientATrustedProxyReports(t *testing.T) {
 func TestExemptNetworkKeepsThePasswordChangeAccountLimit(t *testing.T) {
 	t.Setenv("KY_RATE_LIMIT_EXEMPT_NETWORKS", officeRange)
 	srv, st, _ := setupTestServer(t)
-	session := loginAs(t, srv, st, "dave", "user")
+	session := loginAs(t, srv, st, "dave", "admin")
 	change := func() int {
-		req := httptest.NewRequest("POST", "/api/auth/change-password", strings.NewReader(`{"current_password":"nope","new_password":"AnotherPass456!"}`))
+		req := httptest.NewRequest("POST", "/api/auth/change-password", strings.NewReader(`{"current_password":"nope","new_password":"AnotherPassword456!"}`))
 		req.RemoteAddr = officePeer
 		req.AddCookie(session)
 		req.AddCookie(&http.Cookie{Name: auth.CSRFCookieName, Value: "test-csrf"})
@@ -277,7 +271,7 @@ func TestConcurrentOfficeGuessesCannotOutrunTheAccountWindow(t *testing.T) {
 	var lookups atomic.Int64
 	api.SetStoreForTest(srv, countingStore{st, &lookups})
 
-	body, _ := json.Marshal(map[string]string{"username": "carol", "password": "WrongPass123!"})
+	body, _ := json.Marshal(map[string]string{"username": "carol", "password": "WrongPass123!", "totp_code": "000000"})
 	var wg sync.WaitGroup
 	for i := 0; i < 40; i++ {
 		wg.Add(1)
@@ -295,16 +289,17 @@ func TestConcurrentOfficeGuessesCannotOutrunTheAccountWindow(t *testing.T) {
 }
 
 // A successful sign-in hands its reservation back: only failures count against the account.
+// After nine failures, two sign-ins in a row would be the tenth and eleventh reservations.
 func TestSuccessfulSignInsDoNotFillTheAccountWindow(t *testing.T) {
 	srv, st, _ := setupTestServer(t)
-	hash, _ := password.Hash("SuperSecretPass123!")
-	if err := st.Users().CreateUser(context.Background(), &store.User{
-		ID: "usr_erin", Username: "erin", PasswordHash: hash, Role: "user", Status: "active", SSOProvider: "local",
-	}); err != nil {
-		t.Fatal(err)
+	erin := newBreakGlass(t, srv, st, "erin")
+	for i := 1; i <= 9; i++ {
+		if w := loginStatusFor(t, srv, "erin", "WrongPass123!", officePeer); w.Code != http.StatusUnauthorized {
+			t.Fatalf("wrong password %d: %d", i, w.Code)
+		}
 	}
-	for i := 1; i <= 15; i++ {
-		if w := loginStatusFor(t, srv, "erin", "SuperSecretPass123!", officePeer); w.Code != http.StatusOK {
+	for i := 1; i <= 2; i++ {
+		if w := loginWithCode(t, srv, "erin", erin.Password, erin.Code(t), officePeer); w.Code != http.StatusOK {
 			t.Fatalf("sign-in %d: %d %s", i, w.Code, w.Body.String())
 		}
 	}

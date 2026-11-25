@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto/canonical"
 )
@@ -219,6 +220,10 @@ func (m *Machine) enrollFail(ctx context.Context, a *Account) error {
 	return m.enrollSend(ctx, a)
 }
 
+// receiptBatch bounds the receipt bytes of one request: base64 makes it 1.33 MiB of a
+// 4 MiB frame (brokerproto.MaxFrame).
+var receiptBatch = brokerproto.MaxFrame / 4
+
 // enrollSend delivers the receipts until acknowledged, then merges them into the broker's
 // copy of the account's chains.
 func (m *Machine) enrollSend(ctx context.Context, a *Account) error {
@@ -226,8 +231,19 @@ func (m *Machine) enrollSend(ctx context.Context, a *Account) error {
 		return err
 	}
 	e := a.Enrollment
-	if err := m.CP.Receipts(ctx, e.OperationID, a.ID, e.Receipts); err != nil {
-		return err
+	// Batches stay under the channel's frame however many envelopes were superseded.
+	// vault_commit is last, so the batch carrying it completes the enrollment; a retry
+	// re-sends the stored prefix, which the Control Plane takes as no-ops (§3.5).
+	for rest := e.Receipts; len(rest) > 0; {
+		n, size := 1, len(rest[0])
+		for n < len(rest) && size+len(rest[n]) <= receiptBatch {
+			size += len(rest[n])
+			n++
+		}
+		if err := m.CP.Receipts(ctx, e.OperationID, a.ID, rest[:n]); err != nil {
+			return err
+		}
+		rest = rest[n:]
 	}
 	e.Sent = true
 	cand, err := m.Trust.VerifyEnvelope(e.Candidate, pqcrypto.EnvelopeContext{})
