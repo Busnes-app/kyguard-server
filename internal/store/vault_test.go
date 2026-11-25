@@ -366,7 +366,7 @@ func TestChainsAndDescriptorsAreCapped(t *testing.T) {
 		t.Fatalf("oversized descriptor: %v", err)
 	}
 	ver, _ := v.Reserve(ctx, acct, "op", 0)
-	if err := v.PutEnvelope(ctx, "op", &StoredEnvelope{EnvelopeID: "big", AccountID: acct, SecretVersion: ver, EnvelopeKind: "managed", Digest: "dbig", Envelope: make([]byte, MaxChain+1)}); !errors.Is(err, ErrTooLarge) {
+	if err := v.PutEnvelope(ctx, "op", &StoredEnvelope{EnvelopeID: "big", AccountID: acct, SecretVersion: ver, EnvelopeKind: "managed", Digest: "dbig", Envelope: make([]byte, MaxEnvelope+1)}); !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("oversized envelope: %v", err)
 	}
 	env := []byte(strings.Repeat("e", MaxChain/2))
@@ -438,5 +438,23 @@ func TestConcurrentIdenticalRetriesSucceed(t *testing.T) {
 		if err != nil {
 			t.Fatalf("retry %d: %v", i, err)
 		}
+	}
+}
+
+// The largest envelope the store takes still leaves room for its terminal receipt, so an
+// accepted enrollment can always be finished and its lock released (security review of #15).
+func TestTheLargestEnvelopeCanStillBeFinished(t *testing.T) {
+	v, acct := vaultAccount(t)
+	ctx := context.Background()
+	ver, _ := v.Reserve(ctx, acct, "op", 0)
+	if err := v.PutEnvelope(ctx, "op", &StoredEnvelope{EnvelopeID: "e", AccountID: acct, SecretVersion: ver, EnvelopeKind: "managed", Digest: "de", Envelope: make([]byte, MaxEnvelope)}); err != nil {
+		t.Fatal(err)
+	}
+	abort := &StoredReceipt{EnvelopeID: "e", ReceiptSeq: 1, ReceiptType: "abort", OperationID: "op", Digest: "h1", PrevReceiptHash: zeroHash, Receipt: make([]byte, 16<<10)}
+	if err := v.Complete(ctx, "op", acct, []*StoredReceipt{abort}, "", "aborted", LockDelete); err != nil {
+		t.Fatalf("terminal receipt after the largest envelope: %v", err)
+	}
+	if op, _, _ := v.Lock(ctx, acct); op != "" {
+		t.Fatalf("lock still held by %s", op)
 	}
 }
