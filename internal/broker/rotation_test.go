@@ -610,6 +610,31 @@ func TestUndeliveredHealthIsResentOnRecover(t *testing.T) {
 	}
 }
 
+// A health report that fails on an open channel fails Recover, so the start-up retry runs
+// again and delivers it without a reconnect (PR Reviewer Guide "Lost retry" on #11).
+func TestRecoverFailsWhileHealthIsUndelivered(t *testing.T) {
+	r := newRig(t)
+	r.target.ambiguous = errors.New("connection reset") // not applied: the probe fails
+	w := &brokerrig.WrapCP{ControlPlane: r.CPW, StatusErr: errors.New("control plane unreachable")}
+	r.CPW = w
+	m := r.machine()
+	defer m.J.Close()
+	ctx := context.Background()
+	if err := m.Rotate(ctx, r.pol.AccountID, 0, due); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Recover(ctx); err == nil {
+		t.Fatal("Recover succeeded with the health undelivered")
+	}
+	w.StatusErr = nil // same machine and channel: no reconnect
+	if err := m.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if h := r.cpAccount().Health; h != broker.HealthQuarantined || r.account(m).Unreported {
+		t.Fatalf("control plane health %s unreported %v", h, r.account(m).Unreported)
+	}
+}
+
 // A crash after a quarantine is journaled and before its health reaches the Control Plane
 // leaves it to be sent by recovery, without another probe (security review of #11).
 func TestQuarantineHealthSurvivesACrashBeforeItsReport(t *testing.T) {

@@ -26,11 +26,11 @@ Owns the application adapters around OAuth/OIDC login and verified back-channel 
   `iat`, `sub` or `sid`, the back-channel logout event as a JSON object and no `nonce`;
   a present `typ` must be `logout+jwt`. Every failure is `ErrInvalidLogoutToken`.
   `IdentityClaims.SessionID` and `IssuedAt` carry the ID token `sid` and `iat` so sessions can be ended by them.
-- `IdentityClaims.Roles` is KyIdentity's per-app `roles` claim (nil when absent; a non-array is an invalid token). `LocalRole` maps it: `admin` in `roles` is admin, otherwise user; without `roles` the legacy `role`; with neither, `ok` is false and the stored role stays.
-- `AdoptSCIMUser` links a SCIM account whose externalId equals the KyIdentity
-  callback's subject before provisioning, retaining its SCIM management and id.
-- A present empty per-app `roles` array means user even with global `role: admin`.
-  Operators must assign the app's explicit `admin` role in KyIdentity before upgrading.
+- `IdentityClaims.Roles` is the per-app `roles` claim (nil when absent; a non-array is an invalid token). `LocalRole` maps it: `admin` in `roles` is admin, anything else (no `roles` included) is user. The IdP-wide `role` is never used (spec §7.2), and the callback writes the result at every sign-in.
+- Identity is `(Issuer, Subject)`: `IdentityClaims.Issuer` is the verified token's `iss`, `LogoutClaims.Issuer` the logout token's. Store lookups and both logout fences take the issuer.
+- Step-up layer 1: `authCodeURL` sends `max_age=0` and the profile's MFA acr set as `acr_values`; `claimsFromIDToken` parses `auth_time`, `amr`, `acr`; `CheckFresh` refuses `auth_time` missing, older than `MaxAuthAge` (120 s) or in the future; `MFAAsserted` is the MFA rule (`amr` has `mfa`, or `acr` in the set; `otp`/`hwk`/`swk` alone never). KySignOn's set is `KySignOnMFAACR`.
+- `AdoptSCIMUser` links the SCIM row the callback found by `(issuer, subject)` to the
+  signing-in provider, retaining its SCIM management and id.
 
 ## Verification
 - `go test -v ./internal/sso/...` (`TestVerifyLogoutToken` holds one rejection case per logout-token rule)

@@ -502,14 +502,9 @@ func (m *Machine) results(ctx context.Context, a *Account) {
 	}
 }
 
-// Cleanup runs the next attempt of a rotation_pending lease's cleanup rotation (§3.6 step 5).
-func (m *Machine) Cleanup(ctx context.Context, account pqcrypto.UUID) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	a, err := m.J.Account(account)
-	if err != nil {
-		return err
-	}
+// cleanup runs the next attempt of a rotation_pending lease's cleanup rotation (§3.6 step 5),
+// with m.mu held.
+func (m *Machine) cleanup(ctx context.Context, a *Account) error {
 	l := a.Lease
 	if l == nil || l.State != LeaseRotationPending || a.Run.Open() || a.Quarantined || m.now().Before(l.NextAttemptAt) {
 		return nil

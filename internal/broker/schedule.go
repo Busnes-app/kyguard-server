@@ -43,95 +43,89 @@ func Outstanding(s *pqcrypto.Schedule, a *Account, now time.Time) (k pqcrypto.Co
 // latest outstanding occurrence of each (§3.4). The Control Plane cannot cause or prevent a
 // due rotation beyond withholding service; a nudge only calls Tick early.
 func (m *Machine) Tick(ctx context.Context) error {
-	type due struct {
-		account pqcrypto.UUID
-		k       pqcrypto.Counter
-		at      time.Time
-	}
-	var run []due
-	var errs []error
 	m.mu.Lock()
+	m.refusals(ctx)
 	accts, err := m.J.Accounts()
+	m.mu.Unlock()
 	if err != nil {
-		m.mu.Unlock()
 		return err
 	}
-	now := m.now()
-	m.refusals(ctx)
-	var cleanups []pqcrypto.UUID
+	if err := m.hook("tick_listed"); err != nil {
+		return err
+	}
+	var errs []error
 	for _, a := range accts {
-		m.flush(ctx, a)
-		// An open enrollment blocks rotation. Enroll holds m.mu, so one seen here stopped
-		// early: it resumes as after a restart, re-sending receipts and never binding twice
-		// (PR Reviewer Guide on #15).
-		if a.Enrollment.Open() {
-			if err := m.recoverEnrollment(ctx, a); err != nil {
-				errs = append(errs, err)
-			}
-			continue
-		}
-		// A run left reserving by a lost reply is settled first, so its lock never blocks
-		// the schedule until the next reconnect (decision 72).
-		if a.Run != nil && a.Run.State == StateReserving {
-			if err := m.settle(ctx, a); err != nil {
-				errs = append(errs, err)
-				continue
-			}
-		}
-		// A run whose receipts are journaled but not acknowledged is finished and re-sent,
-		// as after a restart, so it never stays open until a reconnect (PR Reviewer Guide on #16).
-		if r := a.Run; r != nil && !r.Sent && len(r.Receipts) > 0 {
-			if err := m.recover(ctx, a); err != nil {
-				errs = append(errs, err)
-				continue
-			}
-		}
-		if l := a.Lease; l.Open() {
-			// Expiry moves the lease to rotation_pending; then its cleanup is the only
-			// rotation path and scheduled occurrences wait (§3.6 step 5).
-			if l.State == LeaseActive && !now.Before(l.ExpiresAt) {
-				l.State, l.NextAttemptAt, l.Mirrored = LeaseRotationPending, now, false
-				if err := m.J.Save(a); err != nil {
-					errs = append(errs, err)
-				}
-				_ = m.mirror(ctx, a)
-			}
-			if l.State == LeaseRotationPending && !a.Run.Open() && !now.Before(l.NextAttemptAt) {
-				cleanups = append(cleanups, a.ID)
-			}
-			continue
-		}
-		p, _ := m.Trust.Policy(a.ID)
-		if p == nil || p.AccountKind != pqcrypto.KindManaged || p.RotationSchedule == nil || a.Quarantined || a.Run.Open() ||
-			now.Before(a.NextAttemptAt) || a.Refusals >= MaxRefusals {
-			continue
-		}
-		if a.MinAgeSeconds > p.RotationSchedule.IntervalSeconds {
-			if a.HealthReason != ReasonBelowMinAge {
-				setHealth(a, HealthRotationFailed, ReasonBelowMinAge)
-				if err := m.J.Save(a); err != nil {
-					errs = append(errs, err)
-				}
-				m.report(ctx, a, "")
-			}
-			continue
-		}
-		if k, at, ok := Outstanding(p.RotationSchedule, a, now); ok {
-			run = append(run, due{a.ID, k, at})
-		}
-	}
-	m.mu.Unlock()
-	for _, id := range cleanups {
-		if err := m.Cleanup(ctx, id); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	for _, d := range run {
-		if err := m.Rotate(ctx, d.account, d.k, d.at); err != nil && !errors.Is(err, ErrNotActive) {
+		if err := m.tick(ctx, a.ID); err != nil && !errors.Is(err, ErrNotActive) {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// tick selects and starts one account's occurrence or lease cleanup under one hold of the
+// mutex, so a policy accepted by a concurrent Sync is always the one checked (security
+// review of #12).
+func (m *Machine) tick(ctx context.Context, id pqcrypto.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, err := m.J.Account(id)
+	if err != nil {
+		return err
+	}
+	m.flush(ctx, a)
+	// An open enrollment blocks rotation. Enroll holds m.mu, so one seen here stopped
+	// early: it resumes as after a restart, re-sending receipts and never binding twice
+	// (PR Reviewer Guide on #15).
+	if a.Enrollment.Open() {
+		return m.recoverEnrollment(ctx, a)
+	}
+	// A run left reserving by a lost reply is settled first, so its lock never blocks
+	// the schedule until the next reconnect (decision 72).
+	if a.Run != nil && a.Run.State == StateReserving {
+		if err := m.settle(ctx, a); err != nil {
+			return err
+		}
+	}
+	// A run whose receipts are journaled but not acknowledged is finished and re-sent,
+	// as after a restart, so it never stays open until a reconnect (PR Reviewer Guide on #16).
+	if r := a.Run; r != nil && !r.Sent && len(r.Receipts) > 0 {
+		if err := m.recover(ctx, a); err != nil {
+			return err
+		}
+	}
+	now := m.now()
+	if l := a.Lease; l.Open() {
+		// Expiry moves the lease to rotation_pending; then its cleanup is the only
+		// rotation path and scheduled occurrences wait (§3.6 step 5).
+		if l.State == LeaseActive && !now.Before(l.ExpiresAt) {
+			l.State, l.NextAttemptAt, l.Mirrored = LeaseRotationPending, now, false
+			if err := m.J.Save(a); err != nil {
+				return err
+			}
+			_ = m.mirror(ctx, a)
+		}
+		return m.cleanup(ctx, a)
+	}
+	p, _ := m.Trust.Policy(a.ID)
+	if p == nil || p.AccountKind != pqcrypto.KindManaged || p.RotationSchedule == nil || a.Quarantined || a.Run.Open() ||
+		now.Before(a.NextAttemptAt) || a.Refusals >= MaxRefusals {
+		return nil
+	}
+	if a.MinAgeSeconds > p.RotationSchedule.IntervalSeconds {
+		if a.HealthReason != ReasonBelowMinAge {
+			setHealth(a, HealthRotationFailed, ReasonBelowMinAge)
+			if err := m.J.Save(a); err != nil {
+				return err
+			}
+			m.report(ctx, a, "")
+		}
+		return nil
+	}
+	k, at, ok := Outstanding(p.RotationSchedule, a, now)
+	if !ok {
+		return nil
+	}
+	return m.rotate(ctx, a, k, at)
 }
 
 // ReasonBelowMinAge is the rotation_failed reason when the target's minimum password age is
