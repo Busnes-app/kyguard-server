@@ -279,7 +279,7 @@ func (s *Server) handlePairRemoteRecovery(w http.ResponseWriter, r *http.Request
 	}
 	// The claim spends the code at KyRecovery, so its intent is durable before it is sent and
 	// the outcome settles it with its audit record (spec §9.3).
-	intent, err := backup.BeginIntent(ctx, s.store, "pairing", target)
+	intent, err := backup.BeginIntent(ctx, s.store, "recovery_pairing", target)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to record the pairing attempt")
 		return

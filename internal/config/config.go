@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -29,6 +30,23 @@ type Config struct {
 	SCIM     SCIMConfig     `json:"scim"`
 	Backup   BackupConfig   `json:"backup"`
 	Captcha  CaptchaConfig  `json:"captcha"`
+	Broker   BrokerConfig   `json:"broker"`
+}
+
+// BrokerConfig is the separate broker TLS listener (spec §4.1).
+type BrokerConfig struct {
+	Listen     string `json:"listen"`      // KY_BROKER_LISTEN, default ":8443"
+	Hostname   string `json:"hostname"`    // KY_BROKER_HOSTNAME, the listener certificate's SAN
+	MinVersion string `json:"min_version"` // KY_MIN_BROKER_VERSION, min_broker_version
+}
+
+// URL is the listener address brokers dial, as encoded in pairing tokens.
+func (b BrokerConfig) URL() string {
+	_, port, err := net.SplitHostPort(b.Listen)
+	if err != nil || port == "" {
+		port = "8443"
+	}
+	return "https://" + net.JoinHostPort(b.Hostname, port)
 }
 
 // ServerConfig defines HTTP and network settings.
@@ -289,6 +307,11 @@ func LoadFromEnv() (*Config, error) {
 			Keep:                 backupKeep,
 			DepositInterval:      depositInterval,
 			AllowPrivateRecovery: getEnvBool("KY_BACKUP_ALLOW_PRIVATE_RECOVERY", false),
+		},
+		Broker: BrokerConfig{
+			Listen:     getEnv("KY_BROKER_LISTEN", ":8443"),
+			Hostname:   getEnv("KY_BROKER_HOSTNAME", ""),
+			MinVersion: getEnv("KY_MIN_BROKER_VERSION", "0.1.0"),
 		},
 		Captcha: CaptchaConfig{
 			Provider:      getEnv("KY_CAPTCHA_PROVIDER", "pow"),
