@@ -109,6 +109,9 @@ func (s *Server) handleSubmitManifest(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, cptrust.ErrNoBundle):
 		s.writeError(w, http.StatusServiceUnavailable, "import the bootstrap bundle first")
 		return
+	case errors.Is(err, store.ErrLeaseOpen):
+		s.writeError(w, http.StatusConflict, "a checkout lease is open for this account; submit this policy after its cleanup closes it")
+		return
 	case errors.As(err, &perr):
 		s.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "manifest refused", "code": string(perr)})
 		return

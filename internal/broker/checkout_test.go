@@ -4,13 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Busnes-app/kyguard-server/internal/broker"
+	"github.com/Busnes-app/kyguard-server/internal/broker/brokerrig"
+	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
 	"github.com/Busnes-app/kyguard-server/internal/cli"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto/pqtest"
+	"github.com/Busnes-app/kyguard-server/internal/store"
 )
 
 // checkoutRig: an ephemeral policy, alice may check out (no approvals), bob is enrolled
@@ -372,5 +377,185 @@ func TestCheckoutAcrossADescriptorChangeIsRefused(t *testing.T) {
 	}
 	if w, _ := c.delivery(early.RequestID); w != nil {
 		t.Fatal("delivered")
+	}
+}
+
+// wrapCP routes c.m through a WrapCP so a test can fail single Control Plane calls.
+func (c *checkoutRig) wrapCP() *brokerrig.WrapCP {
+	w := &brokerrig.WrapCP{ControlPlane: c.m.CP}
+	c.m.CP = w
+	return w
+}
+
+// p2 signs policy epoch 2 for a new SSH descriptor at db2.example.test.
+func (c *checkoutRig) p2() []byte {
+	raw, dg := c.cp.Dep.SSHTarget(c.T, c.pol.AccountID, pqtest.UUID(), "db2.example.test", 22, "svc", pqcrypto.HexID(strings.Repeat("cd", 32)))
+	if err := c.cp.Store.Vault().PutTargetDescriptor(context.Background(), string(dg), string(c.pol.AccountID), raw); err != nil {
+		c.T.Fatal(err)
+	}
+	p := *c.pol
+	p.Signatures, p.Epoch, p.TargetDescriptorDigest = nil, 2, dg
+	return c.cp.Dep.Signed(c.T, &p)
+}
+
+// §3.3 (security review of #16): a descriptor change that reaches the broker during a lease
+// is deferred; after expiry and a restart the cleanup rotates the original target, which
+// invalidates the checked-out credential, and only then is the new policy applied.
+func TestLeaseCleanupStaysAtItsTargetAcrossADescriptorChange(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	c.open(60)
+	// The Control Plane relays a signed descriptor change during the lease (it refuses to
+	// accept one itself; the broker must not rely on that).
+	p2 := c.p2()
+	w := c.wrapCP()
+	w.OnSync = func(ctx context.Context, req brokerproto.SyncRequest) (*brokerproto.SyncReply, error) {
+		r, err := w.ControlPlane.Sync(ctx, req)
+		if err == nil && len(r.Manifests) > 0 {
+			r.Manifests = append(r.Manifests, p2)
+		}
+		return r, err
+	}
+	if err := c.m.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := c.m.Trust.Policy(c.pol.AccountID); p.Epoch != 1 || len(c.account(c.m).DeferredPolicy) == 0 {
+		t.Fatalf("policy epoch %s applied during the lease", p.Epoch)
+	}
+	c.now = c.now.Add(time.Hour) // the lease expires
+	c.m.J.Close()
+	c.m = c.machine()
+	c.m.Now = func() time.Time { return c.now }
+	if err := c.m.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.m.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.m.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	a := c.account(c.m)
+	if pw, writes := c.target.state(); writes != 1 || pw == initialPassword || a.Lease.State != broker.LeaseClosed || a.Lease.CloseReason != "closed_by_release" {
+		t.Fatalf("writes=%d lease=%+v", writes, a.Lease)
+	}
+	if slices.Contains(c.target.hosts, "db2.example.test") {
+		t.Fatalf("cleanup went to the new target: %v", c.target.hosts)
+	}
+	if p, _ := c.m.Trust.Policy(c.pol.AccountID); p.Epoch != 2 || a.DeferredPolicy != nil {
+		t.Fatalf("deferred policy not applied after the lease closed: epoch %s", p.Epoch)
+	}
+}
+
+// §3.3: the Control Plane refuses a descriptor change while it holds an open lease, so it
+// never reports the new target as current; the same policy is accepted after cleanup.
+func TestControlPlaneRefusesADescriptorChangeDuringALease(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	c.open(60)
+	p2 := c.p2()
+	if _, _, err := c.cp.L.Trust.Submit(ctx, p2, "custodian", ""); !errors.Is(err, store.ErrLeaseOpen) {
+		t.Fatalf("submit during the lease: %v", err)
+	}
+	c.cp.L.Trust.View(ctx, func(tr *pqcrypto.Trust) error {
+		if p, _ := tr.Policy(c.pol.AccountID); p.Epoch != 1 {
+			t.Errorf("control plane policy epoch %s", p.Epoch)
+		}
+		return nil
+	})
+	c.now = c.now.Add(time.Hour)
+	if err := c.m.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c.cp.Submit(p2)
+}
+
+// §3.3: a lease opened under a policy the Control Plane has since replaced is not mirrored,
+// so the broker closes it before it unwraps, logs in or delivers anything.
+func TestLeaseUnderAReplacedPolicyDeliversNothing(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	co := c.checkoutTx(600)
+	if err := c.m.Tx(ctx, co.Tx); err != nil {
+		t.Fatal(err)
+	}
+	pop, _ := co.Proof(c.challenge(co.RequestID), pqcrypto.PurposeDeliver)
+	c.cp.Submit(c.p2()) // accepted at the Control Plane; the broker has not synced it yet
+	if err := c.m.Proof(ctx, co.RequestID, pop); err != nil {
+		t.Fatal(err)
+	}
+	a := c.account(c.m)
+	if w, res := c.delivery(co.RequestID); w != nil || res != "not_mirrored" || len(c.target.hosts) != 0 || a.Lease.State != broker.LeaseClosed {
+		t.Fatalf("delivered=%v result=%q hosts=%v lease=%+v", w != nil, res, c.target.hosts, a.Lease)
+	}
+}
+
+// Guide on #16 (lost delivery): a delivery the Control Plane did not acknowledge is
+// journaled and re-sent by the next tick, without a second login.
+func TestLostDeliveryIsResent(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	w := c.wrapCP()
+	w.DeliveryErr = errors.New("connection lost")
+	co := c.checkoutTx(600)
+	if err := c.m.Tx(ctx, co.Tx); err != nil {
+		t.Fatal(err)
+	}
+	pop, _ := co.Proof(c.challenge(co.RequestID), pqcrypto.PurposeDeliver)
+	if err := c.m.Proof(ctx, co.RequestID, pop); err == nil {
+		t.Fatal("delivery failure not reported")
+	}
+	if d, _ := c.delivery(co.RequestID); d != nil {
+		t.Fatal("delivered")
+	}
+	logins := len(c.target.hosts)
+	w.DeliveryErr = nil
+	if err := c.m.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if d, _ := c.delivery(co.RequestID); d == nil || c.account(c.m).Lease.Delivery != nil || len(c.target.hosts) != logins {
+		t.Fatalf("delivered=%v hosts=%v", d != nil, c.target.hosts)
+	}
+}
+
+// Guide on #16 (lost mirror): a new checkout never replaces a lease whose closure the
+// Control Plane has not acknowledged; it sends the closure first.
+func TestUnmirroredClosureBlocksTheNextCheckout(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	first := c.open(60)
+	w := c.wrapCP()
+	w.LeaseErr = errors.New("connection lost")
+	c.now = c.now.Add(time.Hour)
+	if err := c.m.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if l := c.account(c.m).Lease; l.State != broker.LeaseClosed || l.Mirrored {
+		t.Fatalf("lease %+v", l)
+	}
+	if err := c.m.Tx(ctx, c.checkoutTx(600).Tx); !errors.Is(err, broker.ErrLeaseOpen) {
+		t.Fatalf("checkout over an unmirrored closure: %v", err)
+	}
+	w.LeaseErr = nil
+	c.open(600)
+	if l, _ := c.cp.Store.Vault().GetLease(ctx, string(first.RequestID)); l.State != broker.LeaseClosed {
+		t.Fatalf("control plane kept the first lease %s", l.State)
+	}
+}
+
+// §3.3: cleanup refuses a policy that pins another descriptor than its lease's.
+func TestCleanupIsBoundToItsDescriptor(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	c.open(60)
+	a := c.account(c.m)
+	a.Lease.TargetDescriptorDigest = pqcrypto.HexID(strings.Repeat("ef", 32))
+	if err := c.m.J.Save(a); err != nil {
+		t.Fatal(err)
+	}
+	c.now = c.now.Add(time.Hour)
+	c.m.Tick(ctx)
+	if _, writes := c.target.state(); writes != 0 || c.account(c.m).Lease.State == broker.LeaseClosed {
+		t.Fatal("cleanup rotated under another descriptor")
 	}
 }

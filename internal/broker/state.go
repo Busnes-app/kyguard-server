@@ -71,6 +71,9 @@ type Account struct {
 	Enrollment *Enrollment `json:"enrollment,omitempty"`
 	// Lease is the latest checkout lease (§3.6).
 	Lease *Lease `json:"lease,omitempty"`
+	// DeferredPolicy is a verified policy that changes the target descriptor, held back
+	// while a lease is open and applied once the lease closes (§3.3).
+	DeferredPolicy pqcrypto.B64 `json:"deferred_policy,omitempty"`
 }
 
 // Lease states (§3.6).
@@ -88,13 +91,18 @@ type Lease struct {
 	TxDigest      pqcrypto.HexID   `json:"tx_digest"`
 	SecretVersion pqcrypto.Counter `json:"secret_version"`
 	EncKeyID      pqcrypto.HexID   `json:"enc_key_id"`
-	OpenedAt      time.Time        `json:"opened_at"`
-	ExpiresAt     time.Time        `json:"expires_at"`
-	State         string           `json:"state"`
-	CloseReason   string           `json:"close_reason,omitempty"`
-	Attempt       pqcrypto.Counter `json:"attempt"`
-	NextAttemptAt time.Time        `json:"next_attempt_at"`
-	Mirrored      bool             `json:"mirrored,omitempty"` // the Control Plane holds this state
+	// The policy and descriptor the lease opened under; cleanup is bound to the descriptor.
+	PolicyDigest           pqcrypto.HexID   `json:"policy_digest"`
+	TargetDescriptorDigest pqcrypto.HexID   `json:"target_descriptor_digest"`
+	OpenedAt               time.Time        `json:"opened_at"`
+	ExpiresAt              time.Time        `json:"expires_at"`
+	State                  string           `json:"state"`
+	CloseReason            string           `json:"close_reason,omitempty"`
+	Attempt                pqcrypto.Counter `json:"attempt"`
+	NextAttemptAt          time.Time        `json:"next_attempt_at"`
+	Mirrored               bool             `json:"mirrored,omitempty"` // the Control Plane holds this state
+	// Delivery is the checkout wrap until the Control Plane acknowledges it (ciphertext).
+	Delivery *pqcrypto.Recipient `json:"delivery,omitempty"`
 }
 
 // Open reports whether the lease is not closed.

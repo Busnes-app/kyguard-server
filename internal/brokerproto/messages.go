@@ -324,6 +324,9 @@ type LeaseRequest struct {
 	CloseReason   string           `json:"close_reason,omitzero"`
 	OpenedAt      pqcrypto.Time    `json:"opened_at"`
 	ExpiresAt     pqcrypto.Time    `json:"expires_at"`
+	// The policy and descriptor the lease opened under (§3.3).
+	PolicyDigest           pqcrypto.HexID `json:"policy_digest"`
+	TargetDescriptorDigest pqcrypto.HexID `json:"target_descriptor_digest"`
 }
 
 // DeliveryRequest carries the checkout wrap: the DEK sealed to the requester's enc_key_id

@@ -25,6 +25,13 @@ const (
 	MaxDescriptor = 64 << 10
 )
 
+// ErrLeaseOpen refuses a policy that changes the target descriptor of an account with an
+// open checkout lease (§3.3); submit it again once the lease's cleanup has closed it.
+var ErrLeaseOpen = errors.New("a checkout lease is open for this account under another target descriptor")
+
+// ErrPolicyChanged refuses a new lease opened under a policy that is no longer current.
+var ErrPolicyChanged = errors.New("the lease's policy is not the account's current policy")
+
 // LockAction is what Complete does with the lock op holds.
 type LockAction int
 
@@ -144,8 +151,11 @@ type Lease struct {
 	SecretVersion uint64
 	State         string
 	CloseReason   string
-	OpenedAt      time.Time
-	ExpiresAt     time.Time
+	// PolicyDigest and TargetDescriptorDigest are those the lease opened under (§3.3).
+	PolicyDigest           string
+	TargetDescriptorDigest string
+	OpenedAt               time.Time
+	ExpiresAt              time.Time
 }
 
 // TxMail is the Control Plane's relay mailbox for one transaction.
@@ -868,8 +878,23 @@ func (v vaultStore) MirrorLease(ctx context.Context, l *Lease) error {
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, v.s.rebind(`INSERT INTO checkout_leases (request_id, account_id, broker_id, secret_version, state, close_reason, opened_at, expires_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-			l.RequestID, l.AccountID, l.BrokerID, int64(l.SecretVersion), l.State, l.CloseReason, l.OpenedAt.UTC(), l.ExpiresAt.UTC(), now)
+		// A new open lease must be under the current policy, checked under the lock policy
+		// acceptance takes, so a descriptor change and a lease never both succeed (§3.3).
+		if l.State != "closed" {
+			if err := v.s.lockManifests(ctx, tx); err != nil {
+				return err
+			}
+			var cur string
+			err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT digest FROM trust_manifests WHERE type = 'policy' AND scope_id = ? ORDER BY seq DESC LIMIT 1`), l.AccountID).Scan(&cur)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if cur == "" || cur != l.PolicyDigest {
+				return ErrPolicyChanged
+			}
+		}
+		_, err = tx.ExecContext(ctx, v.s.rebind(`INSERT INTO checkout_leases (request_id, account_id, broker_id, secret_version, state, close_reason, policy_digest, target_descriptor_digest, opened_at, expires_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			l.RequestID, l.AccountID, l.BrokerID, int64(l.SecretVersion), l.State, l.CloseReason, l.PolicyDigest, l.TargetDescriptorDigest, l.OpenedAt.UTC(), l.ExpiresAt.UTC(), now)
 		if err != nil {
 			return ErrConflict // the one-open-lease index, or a race on the same request
 		}
@@ -880,8 +905,8 @@ func (v vaultStore) MirrorLease(ctx context.Context, l *Lease) error {
 func (v vaultStore) GetLease(ctx context.Context, requestID string) (*Lease, error) {
 	var l Lease
 	var ver int64
-	err := v.s.db.QueryRowContext(ctx, v.s.rebind(`SELECT request_id, account_id, broker_id, secret_version, state, close_reason, opened_at, expires_at FROM checkout_leases WHERE request_id = ?`), requestID).
-		Scan(&l.RequestID, &l.AccountID, &l.BrokerID, &ver, &l.State, &l.CloseReason, &l.OpenedAt, &l.ExpiresAt)
+	err := v.s.db.QueryRowContext(ctx, v.s.rebind(`SELECT request_id, account_id, broker_id, secret_version, state, close_reason, policy_digest, target_descriptor_digest, opened_at, expires_at FROM checkout_leases WHERE request_id = ?`), requestID).
+		Scan(&l.RequestID, &l.AccountID, &l.BrokerID, &ver, &l.State, &l.CloseReason, &l.PolicyDigest, &l.TargetDescriptorDigest, &l.OpenedAt, &l.ExpiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

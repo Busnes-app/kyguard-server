@@ -430,6 +430,10 @@ func (l *Listener) lease(ctx context.Context, tr *pqcrypto.Trust, b *store.Broke
 	if _, _, err := l.account(ctx, tr, b, r.AccountID); err != nil {
 		return err
 	}
+	if !r.PolicyDigest.Valid() || !r.TargetDescriptorDigest.Valid() {
+		return errors.New("malformed request")
+	}
 	return l.Store.Vault().MirrorLease(ctx, &store.Lease{RequestID: string(r.RequestID), AccountID: string(r.AccountID), BrokerID: b.ID,
-		SecretVersion: uint64(r.SecretVersion), State: r.State, CloseReason: r.CloseReason, OpenedAt: r.OpenedAt.Time, ExpiresAt: r.ExpiresAt.Time})
+		SecretVersion: uint64(r.SecretVersion), State: r.State, CloseReason: r.CloseReason, PolicyDigest: string(r.PolicyDigest),
+		TargetDescriptorDigest: string(r.TargetDescriptorDigest), OpenedAt: r.OpenedAt.Time, ExpiresAt: r.ExpiresAt.Time})
 }

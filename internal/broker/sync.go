@@ -9,6 +9,7 @@ import (
 
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
+	"github.com/Busnes-app/kyguard-server/internal/pqcrypto/canonical"
 )
 
 func (m *Machine) alert(format string, args ...any) {
@@ -91,6 +92,9 @@ func (m *Machine) syncOne(ctx context.Context, id pqcrypto.UUID) error {
 }
 
 func (m *Machine) acceptManifest(raw []byte) error {
+	if deferred, err := m.deferPolicy(raw); deferred || err != nil {
+		return err
+	}
 	before := len(m.Trust.Records())
 	rec, err := m.Trust.Accept(raw)
 	if err != nil {
@@ -117,6 +121,63 @@ func (m *Machine) acceptManifest(raw []byte) error {
 		}
 		return m.J.Save(a)
 	}
+	return nil
+}
+
+// deferPolicy holds back a verified policy that changes the target descriptor of an account
+// with an open lease (§3.3): the lease's cleanup stays at the descriptor it opened under.
+// Only the highest such epoch is kept; applyDeferred accepts it once the lease closes.
+func (m *Machine) deferPolicy(raw []byte) (bool, error) {
+	if typ, _ := pqcrypto.PeekType(raw); typ != pqcrypto.TypePolicy {
+		return false, nil
+	}
+	var p pqcrypto.PolicyManifest
+	if _, err := canonical.Decode(raw, &p); err != nil {
+		return false, nil // Accept refuses it and alerts
+	}
+	a, err := m.J.Account(p.Scope.ID)
+	if err != nil {
+		return false, err
+	}
+	if !a.Lease.Open() || p.TargetDescriptorDigest == a.Lease.TargetDescriptorDigest {
+		return false, nil
+	}
+	if err := m.Trust.Check(raw); err != nil {
+		return false, nil // Accept refuses it and alerts
+	}
+	if len(a.DeferredPolicy) > 0 {
+		var held pqcrypto.PolicyManifest
+		if _, err := canonical.Decode(a.DeferredPolicy, &held); err == nil && held.Epoch >= p.Epoch {
+			return true, nil // already held, or superseded by the held one
+		}
+	}
+	a.DeferredPolicy = raw
+	m.alert("policy epoch %s for %s deferred: it changes the target while lease %s is open", p.Epoch, a.ID, a.Lease.RequestID)
+	return true, m.J.Save(a)
+}
+
+// applyDeferred accepts the deferred policy once no lease is open. It is cleared first: the
+// Control Plane re-sends it on every sync, so a crash in between loses nothing. a is
+// reloaded, since accepting a policy moves the schedule floor.
+func (m *Machine) applyDeferred(a *Account) error {
+	if len(a.DeferredPolicy) == 0 || a.Lease.Open() {
+		return nil
+	}
+	raw := a.DeferredPolicy
+	a.DeferredPolicy = nil
+	if err := m.J.Save(a); err != nil {
+		return err
+	}
+	if m.Trust.Check(raw) == nil { // a later policy may have superseded it
+		if err := m.acceptManifest(raw); err != nil {
+			return err
+		}
+	}
+	b, err := m.J.Account(a.ID)
+	if err != nil {
+		return err
+	}
+	*a = *b
 	return nil
 }
 

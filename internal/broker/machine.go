@@ -611,9 +611,9 @@ func (m *Machine) send(ctx context.Context, a *Account) error {
 	if err := m.J.Save(a); err != nil {
 		return err
 	}
-	m.mirror(ctx, a)
+	_ = m.mirror(ctx, a)
 	m.report(ctx, a, "")
-	return nil
+	return m.applyDeferred(a)
 }
 
 // quarantine stops all work on the account until re-enrollment (§4.3 rule 6).
@@ -679,7 +679,10 @@ func (m *Machine) Recover(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("account %s enrollment: %w", a.ID, err))
 		}
 		if b, err := m.J.Account(a.ID); err == nil {
-			m.mirror(ctx, b)
+			m.flush(ctx, b)
+			if err := m.applyDeferred(b); err != nil {
+				errs = append(errs, fmt.Errorf("account %s deferred policy: %w", a.ID, err))
+			}
 		}
 	}
 	return errors.Join(errs...)

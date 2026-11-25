@@ -59,6 +59,7 @@ func (m *Machine) Tick(ctx context.Context) error {
 	now := m.now()
 	var cleanups []pqcrypto.UUID
 	for _, a := range accts {
+		m.flush(ctx, a)
 		// Journaled enrollment receipts the Control Plane has not acknowledged block
 		// rotation; re-send them, never verifying again.
 		if a.Enrollment.Open() && len(a.Enrollment.Receipts) > 0 {
@@ -83,7 +84,7 @@ func (m *Machine) Tick(ctx context.Context) error {
 				if err := m.J.Save(a); err != nil {
 					errs = append(errs, err)
 				}
-				m.mirror(ctx, a)
+				_ = m.mirror(ctx, a)
 			}
 			if l.State == LeaseRotationPending && !a.Run.Open() && !now.Before(l.NextAttemptAt) {
 				cleanups = append(cleanups, a.ID)

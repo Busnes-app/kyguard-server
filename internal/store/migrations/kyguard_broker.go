@@ -151,6 +151,8 @@ CREATE TABLE checkout_leases (
     secret_version BIGINT NOT NULL CHECK (secret_version > 0),
     state TEXT NOT NULL CHECK (state IN ('active', 'rotation_pending', 'closed')),
     close_reason TEXT NOT NULL DEFAULT '',
+    policy_digest TEXT NOT NULL DEFAULT '',
+    target_descriptor_digest TEXT NOT NULL DEFAULT '',
     opened_at {{ts}} NOT NULL,
     expires_at {{ts}} NOT NULL,
     updated_at {{ts}} NOT NULL

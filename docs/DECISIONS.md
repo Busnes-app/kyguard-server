@@ -172,8 +172,16 @@ contradicts itself. Each names its section. The most secure reading wins.
 46a. §3.3 (target change). Phase 1A rotates and checks out only while the current envelope's
     sealing policy pins the same descriptor as the current policy; otherwise health is
     `needs_enrollment` and nothing is sent. Recovery probes the descriptor of the intent's
-    own envelope. Deferring a descriptor-changing policy while an intent or lease is open
-    (the full §3.3 rule) is not built yet.
+    own envelope. A lease records the policy and descriptor it opened under, and its cleanup
+    runs only at that descriptor. While a lease is open the broker verifies a policy that
+    changes the descriptor and holds it in the journal (the highest epoch only) instead of
+    applying it; it applies it when the lease closes, and a crash in between loses nothing
+    because the Control Plane re-sends every manifest on sync. The Control Plane refuses
+    such a policy (409) while `checkout_leases` holds an open lease, and refuses to record a
+    new lease unless it was opened under the account's current policy; both checks run
+    under the manifest lock, and the broker touches the credential only after the lease is
+    mirrored, so the Control Plane never reports a descriptor the broker has deferred.
+    Write intents keep the binding above; deferral for them is not built.
 46. §3.4 (skipped occurrences). Skipping is implicit: when the latest outstanding occurrence
     releases, its due time becomes the floor, so every earlier one is no longer
     outstanding. The broker journals the occurrence each run belongs to, not a skip list.

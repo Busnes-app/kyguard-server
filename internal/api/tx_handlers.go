@@ -44,7 +44,7 @@ func (s *Server) relayTx(r *http.Request, account pqcrypto.UUID, typ string, bod
 // The Control Plane checks the signatures and policy it can; the broker decides.
 func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 	var req brokerproto.TxPush
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxManifestBody)).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBody)).Decode(&req); err != nil {
 		s.writeError(w, http.StatusBadRequest, "tx is required")
 		return
 	}
@@ -132,7 +132,7 @@ func (s *Server) handleTxProof(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Proof pqcrypto.B64 `json:"proof"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxManifestBody)).Decode(&req); err != nil || len(req.Proof) == 0 {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBody)).Decode(&req); err != nil || len(req.Proof) == 0 {
 		s.writeError(w, http.StatusBadRequest, "proof is required")
 		return
 	}

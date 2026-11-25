@@ -173,6 +173,8 @@ type WrapCP struct {
 	OnAccount func(ctx context.Context, id pqcrypto.UUID, after, from pqcrypto.Counter) (*brokerproto.AccountState, error)
 	// ReceiptsErr fails every receipts delivery while set; StatusErr every status report.
 	ReceiptsErr, StatusErr error
+	// LeaseErr and DeliveryErr fail every lease mirror or checkout delivery while set.
+	LeaseErr, DeliveryErr error
 }
 
 func (w *WrapCP) Status(ctx context.Context, s brokerproto.StatusRequest) error {
@@ -180,6 +182,20 @@ func (w *WrapCP) Status(ctx context.Context, s brokerproto.StatusRequest) error 
 		return w.StatusErr
 	}
 	return w.ControlPlane.Status(ctx, s)
+}
+
+func (w *WrapCP) Lease(ctx context.Context, r brokerproto.LeaseRequest) error {
+	if w.LeaseErr != nil {
+		return w.LeaseErr
+	}
+	return w.ControlPlane.Lease(ctx, r)
+}
+
+func (w *WrapCP) Delivery(ctx context.Context, r brokerproto.DeliveryRequest) error {
+	if w.DeliveryErr != nil {
+		return w.DeliveryErr
+	}
+	return w.ControlPlane.Delivery(ctx, r)
 }
 
 func (w *WrapCP) Intent(ctx context.Context, raw []byte) error {

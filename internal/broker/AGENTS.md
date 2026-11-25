@@ -72,7 +72,13 @@ the wire and TLS are `internal/brokerproto`'s.
   `max(min-age deadline, now + 1 h)` without a stop, and only `release` closes the lease.
   Scheduled occurrences wait while a lease is open. `manual_rotation` re-arms an idle
   cleanup, is refused during an active lease, resets the refusal counter and waits for
-  the minimum age. Every lease state is mirrored to `checkout_leases`.
+  the minimum age. Every lease state is mirrored to `checkout_leases`; a new lease must be
+  mirrored before the credential is unwrapped, and a lease whose last state is not
+  acknowledged is never replaced. The checkout wrap is journaled until delivered; `flush`
+  (every tick and `Recover`) re-sends both.
+- Target change (§3.3): a lease keeps its policy and descriptor digests, and its cleanup runs
+  only at that descriptor. `deferPolicy` holds a descriptor-changing policy in
+  `Account.DeferredPolicy` while the lease is open; `applyDeferred` accepts it once closed.
 - `Machine.Hook` is a test-only crash point; it must never be set in production.
 - Connectors implement `Connector`/`Session` (`connector.go`); `ErrAuthFailed` and
   `ErrRefused` are the only deterministic outcomes, any other error is ambiguous.

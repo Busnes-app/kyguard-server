@@ -12,6 +12,14 @@ import (
 
 func vaultAccount(t *testing.T) (VaultStore, string) {
 	t.Helper()
+	v, _, acct := vaultAccountGuard(t)
+	return v, acct
+}
+
+// vaultAccountGuard also returns the guard store, with policy epoch 1 (digest "p1",
+// descriptor "d1") accepted for the account.
+func vaultAccountGuard(t *testing.T) (VaultStore, GuardStore, string) {
+	t.Helper()
 	s, _ := guardStoreFor(t)
 	v := s.Vault()
 	ctx := context.Background()
@@ -21,7 +29,10 @@ func vaultAccount(t *testing.T) (VaultStore, string) {
 	if err := v.CreateAccount(ctx, &Account{ID: "ac", AssetID: "as", Name: "svc", AccountKind: "managed"}); err != nil {
 		t.Fatal(err)
 	}
-	return v, "ac"
+	if err := s.Guard().AppendManifest(ctx, &TrustManifest{Seq: 1, Type: "policy", ScopeID: "ac", Epoch: 1, Digest: "p1", Manifest: []byte(`{"p":1}`), TargetDescriptor: "d1"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	return v, s.Guard(), "ac"
 }
 
 func TestCompleteReleasesOnlyItsOwnLock(t *testing.T) {
@@ -153,7 +164,7 @@ func TestOneOpenLeasePerAccount(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	l := func(id, state string) *Lease {
-		return &Lease{RequestID: id, AccountID: acct, BrokerID: "b", SecretVersion: 1, State: state, OpenedAt: now, ExpiresAt: now.Add(time.Hour)}
+		return &Lease{RequestID: id, AccountID: acct, BrokerID: "b", SecretVersion: 1, State: state, PolicyDigest: "p1", TargetDescriptorDigest: "d1", OpenedAt: now, ExpiresAt: now.Add(time.Hour)}
 	}
 	if err := v.MirrorLease(ctx, l("r1", "active")); err != nil {
 		t.Fatal(err)
@@ -169,6 +180,38 @@ func TestOneOpenLeasePerAccount(t *testing.T) {
 	}
 	if err := v.MirrorLease(ctx, l("r2", "active")); err != nil {
 		t.Fatalf("after close: %v", err)
+	}
+}
+
+// §3.3 (security review of #16): a new lease must be under the current policy, and a policy
+// that changes the descriptor is refused while a lease is open; the same target is not.
+func TestDescriptorChangeWaitsForTheLease(t *testing.T) {
+	v, g, acct := vaultAccountGuard(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	lease := &Lease{RequestID: "r1", AccountID: acct, BrokerID: "b", SecretVersion: 1, State: "active", PolicyDigest: "p0", TargetDescriptorDigest: "d1", OpenedAt: now, ExpiresAt: now.Add(time.Hour)}
+	if err := v.MirrorLease(ctx, lease); !errors.Is(err, ErrPolicyChanged) {
+		t.Fatalf("lease under a stale policy: %v", err)
+	}
+	lease.PolicyDigest = "p1"
+	if err := v.MirrorLease(ctx, lease); err != nil {
+		t.Fatal(err)
+	}
+	policy := func(seq int64, digest, target string) error {
+		return g.AppendManifest(ctx, &TrustManifest{Seq: seq, Type: "policy", ScopeID: acct, Epoch: uint64(seq), Digest: digest, Manifest: []byte(`{}`), TargetDescriptor: target}, nil)
+	}
+	if err := policy(2, "p2", "d2"); !errors.Is(err, ErrLeaseOpen) {
+		t.Fatalf("descriptor change during the lease: %v", err)
+	}
+	if err := policy(2, "p2", "d1"); err != nil {
+		t.Fatalf("same target: %v", err)
+	}
+	lease.State = "closed"
+	if err := v.MirrorLease(ctx, lease); err != nil {
+		t.Fatal(err)
+	}
+	if err := policy(3, "p3", "d2"); err != nil {
+		t.Fatalf("after the lease: %v", err)
 	}
 }
 
