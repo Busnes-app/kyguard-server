@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { AppHeader } from './components/AppHeader';
+import { BreakGlassBanner } from './components/BreakGlassBanner';
+import type { BreakGlassState } from './components/BreakGlassBanner';
 import { Dashboard } from './pages/Dashboard';
 import { Login } from './pages/Login';
 import { ChangePassword } from './pages/ChangePassword';
@@ -20,6 +22,7 @@ import { secureFetch } from './api';
 
 export const App: React.FC = () => {
   const [user, setUser] = useState<any>(null);
+  const [breakGlass, setBreakGlass] = useState<BreakGlassState | null>(null);
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState<boolean>(true);
   const [activeTab, setActiveTab] = useState<string>('dashboard');
@@ -45,6 +48,7 @@ export const App: React.FC = () => {
           const a = await authResp.json();
           if (a.authenticated) {
             setUser(a.user);
+            setBreakGlass(a.break_glass ?? null);
           }
         }
       } catch (err) {
@@ -69,6 +73,7 @@ export const App: React.FC = () => {
   const handleLogout = async () => {
     await secureFetch('/api/auth/logout', { method: 'POST' });
     setUser(null);
+    setBreakGlass(null);
   };
 
   if (loading) {
@@ -98,6 +103,7 @@ export const App: React.FC = () => {
             return;
           }
           setNotice('');
+          setBreakGlass(me?.break_glass ?? null);
           setUser(u);
           void loadSettings();
         }}
@@ -124,10 +130,11 @@ export const App: React.FC = () => {
         onTabChange={(tab) => setActiveTab(tab)}
         user={user}
         onLogout={handleLogout}
-        onChangePassword={user.sso_provider === 'local' ? () => setChangingPassword(true) : undefined}
+        onChangePassword={user.account_type === 'break_glass' ? () => setChangingPassword(true) : undefined}
       />
 
       <main className="app-main">
+        {breakGlass && <BreakGlassBanner state={breakGlass} onReason={(reason) => setBreakGlass({ ...breakGlass, reason })} />}
         {activeTab === 'dashboard' && <Dashboard settings={settings} user={user} onNavigate={(tab) => setActiveTab(tab)} />}
         {activeTab === 'accounts' && <Accounts isAdmin={user.role === 'admin'} />}
         {activeTab === 'attributes' && <Attributes isAdmin={user.role === 'admin'} />}

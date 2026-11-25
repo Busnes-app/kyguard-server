@@ -380,7 +380,11 @@ func (m *Machine) manualRotation(ctx context.Context, a *Account, tx *pqcrypto.A
 			return ErrLeaseOpen
 		}
 		a.Lease.NextAttemptAt = next
-		return m.J.SaveBurn(a, tx.RequestID, tx.ExpiresAt.Time)
+		if err := m.J.SaveBurn(a, tx.RequestID, tx.ExpiresAt.Time); err != nil {
+			return err
+		}
+		m.txDone(ctx, tx.RequestID, "ok") // the lease's cleanup is re-armed
+		return nil
 	}
 	a.Refusals = 0
 	if next.After(now) {
@@ -398,7 +402,24 @@ func (m *Machine) manualRotation(ctx context.Context, a *Account, tx *pqcrypto.A
 	if err != nil {
 		return err
 	}
-	return m.start(ctx, a, rc, runSpec{op: op, due: now, burn: tx})
+	if err := m.start(ctx, a, rc, runSpec{op: op, due: now, burn: tx}); err != nil {
+		return err
+	}
+	// The rotation ended: "ok" once released, else the state it stopped in.
+	res := a.Run.State
+	if res == StateReleaseAuthorized {
+		res = "ok"
+	}
+	m.txDone(ctx, tx.RequestID, res)
+	return nil
+}
+
+// txDone tells the CLI how a transaction that was not refused ended. The work is
+// journaled, so a lost result is only logged; it must not read as a refusal.
+func (m *Machine) txDone(ctx context.Context, id pqcrypto.UUID, result string) {
+	if err := m.CP.TxResult(ctx, brokerproto.TxResultRequest{RequestID: id, Result: result}); err != nil {
+		log.Printf("[BROKER] result for %s not delivered: %v", id, err)
+	}
 }
 
 // Cleanup runs the next attempt of a rotation_pending lease's cleanup rotation (§3.6 step 5).

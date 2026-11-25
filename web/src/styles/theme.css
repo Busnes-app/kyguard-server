@@ -479,6 +479,16 @@ textarea { border-radius: var(--ky-control-radius); }
   .app-nav a, .app-nav button { padding: 0 12px; }
 }
 
+/* Break-glass session banner: persistent, above every page (spec §7.4). */
+.break-glass-banner {
+  border: 2px solid var(--danger);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg));
+  color: var(--ink-strong, var(--ink));
+  padding: 10px 14px;
+  margin-bottom: 16px;
+}
+
 /* KyGuard reporting (spec §8, §10): traffic light, tables, filters. */
 .kg-wide { max-width: 1400px; }
 .kg-scroll { overflow-x: auto; }

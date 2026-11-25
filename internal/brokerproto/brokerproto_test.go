@@ -425,3 +425,27 @@ func TestCloseAllDropsEveryChannel(t *testing.T) {
 		t.Fatal("Send reached a closed channel")
 	}
 }
+
+// A channel that reaches registration after CloseAll is closed, not kept (PR Reviewer
+// Guide on #8).
+func TestAChannelAfterCloseAllIsClosed(t *testing.T) {
+	f := newFixture(t)
+	p, k := f.mustPair()
+	f.admitPool(1, member(p, k, pqcrypto.StatusActive))
+	f.l.CloseAll()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := brokerproto.Dial(ctx, f.srv.URL, p.CACert, clientCert(p, k))
+	if err != nil {
+		return // refused outright is fine too
+	}
+	defer c.CloseNow()
+	rctx, rcancel := context.WithTimeout(ctx, 3*time.Second)
+	defer rcancel()
+	if _, _, err := c.Read(rctx); err == nil || rctx.Err() != nil {
+		t.Fatalf("channel after CloseAll stayed open: %v", err)
+	}
+	if err := f.l.Send(ctx, p.BrokerID, brokerproto.Message{V: 1, Type: brokerproto.MsgNudge}); err == nil {
+		t.Fatal("a channel registered after CloseAll")
+	}
+}
