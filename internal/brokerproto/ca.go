@@ -85,25 +85,37 @@ func CreateCA(dir string) (*CA, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := keyfile.Store(filepath.Join(dir, CAKeyFile), seed, keyfile.Hex); err != nil {
+	keyPath := filepath.Join(dir, CAKeyFile)
+	if err := keyfile.Store(keyPath, seed, keyfile.Hex); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(certPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
-		return nil, err
-	}
-	if err := pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: der}); err != nil {
-		f.Close()
-		return nil, err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return nil, err
-	}
-	if err := f.Close(); err != nil {
+	if err := writeCert(certPath, der); err != nil {
+		// Remove only what this call created, so init can be retried.
+		os.Remove(keyPath)
 		return nil, err
 	}
 	return LoadCA(dir)
+}
+
+// writeCert creates certPath with the PEM certificate; on failure it removes the file
+// it created.
+func writeCert(certPath string, der []byte) (err error) {
+	f, err := os.OpenFile(certPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+		if err != nil {
+			os.Remove(certPath)
+		}
+	}()
+	if err := pem.Encode(f, &pem.Block{Type: "CERTIFICATE", Bytes: der}); err != nil {
+		return err
+	}
+	return f.Sync()
 }
 
 // LoadCA reads the CA from dir and checks that the key matches the certificate.
