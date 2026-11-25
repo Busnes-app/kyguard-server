@@ -8,7 +8,6 @@ import (
 
 	protocol "github.com/elimity-com/scim"
 	protocolErrors "github.com/elimity-com/scim/errors"
-	"github.com/google/uuid"
 
 	"github.com/Busnes-app/kyguard-server/internal/store"
 )
@@ -16,9 +15,6 @@ import (
 // SchemaEnterpriseUser is the Enterprise User extension (RFC 7643 §4.3). KyGuard syncs its
 // department and manager, and the core title, into read-only user attributes (spec §8.2).
 const SchemaEnterpriseUser = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User"
-
-// syncedKeys are the user attributes SCIM owns, with their labels.
-var syncedKeys = map[string]string{"department": "Department", "manager": "Manager", "title": "Title"}
 
 // attrChanges is what a request does to the synced attributes: a value, or nil to clear.
 // A key that is absent is left alone.
@@ -150,21 +146,16 @@ func clean(s string) string {
 // that key exists and is not SCIM's.
 var errNotSynced = protocolErrors.ScimErrorMutability
 
-// prepare makes sure every attribute the changes touch has its SCIM definition, before the
-// request writes anything else, so a request that cannot sync its attributes changes
-// nothing at all (a PATCH, a PUT, a create or an adoption).
+// prepare refuses, before the request writes anything, changes to a key an admin already
+// defined. It writes nothing: the store creates missing SCIM definitions in the user's own
+// transaction, so a refused request leaves no definition behind.
 func prepare(ctx context.Context, st store.Store, ch attrChanges) error {
-	for _, key := range []string{"department", "manager", "title"} {
-		if _, touched := ch[key]; !touched {
-			continue
-		}
-		d, err := st.Inventory().EnsureDefinition(ctx, &store.AttributeDefinition{ID: uuid.Must(uuid.NewV7()).String(), Entity: store.EntityUser, Key: key,
-			Label: syncedKeys[key], Type: store.AttrString, Source: store.SourceSCIM},
-			&store.AuditRecord{Action: "attribute.definition_created", Resource: "attribute:user." + key, Details: "source=scim"})
-		if err != nil {
-			return err
-		}
-		if d.Source != store.SourceSCIM {
+	defs, err := st.Inventory().Definitions(ctx, store.EntityUser)
+	if err != nil {
+		return err
+	}
+	for _, d := range defs {
+		if _, touched := ch[d.Key]; touched && d.Source != store.SourceSCIM {
 			return errNotSynced
 		}
 	}

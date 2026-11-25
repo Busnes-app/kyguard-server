@@ -89,8 +89,8 @@ Owns data models, store interfaces (`UserStore`, `SessionStore`, `GroupStore`, `
   `ReportFacts`, `RecentRuns` and `RecentLeases` are the reporting reads.
 - `User.SCIMAttributes` (never stored on the row): `CreateUser` and every `updateProfile`
   writer apply those synced user attributes through `applySCIMAttributes` inside their own
-  transaction; each key needs an existing `scim` definition, otherwise the whole write rolls
-  back (`ErrInvalid`).
+  transaction, creating a missing `scim` definition there too; a key an admin defined rolls
+  the whole write back (`ErrInvalid`), definitions included.
 - `Drafts()` (`drafts.go`, migration 201): one `policy_drafts` row per account (canonical
   object, digest, epoch). `SetDraftObject` is a compare-and-swap on the whole stored
   object (the digest leaves signatures out).
