@@ -180,6 +180,14 @@ contradicts itself. Each names its section. The most secure reading wins.
 47. §4.4 (three refusals). The refusal counter is per account across occurrences and resets
     on `release` and on a new policy epoch; `next_attempt_at` and the minimum-age deadline
     carry across epochs.
+48. §4.4 (LDAP client). The `ad_ldaps` connector uses `github.com/go-ldap/ldap/v3` over a
+    TLS connection it dials itself. The library also contains NTLM and GSSAPI binds; the
+    connector never calls them (simple bind only), so §4.4's "no NTLM, no Kerberos" holds.
+    TLS 1.2 is the floor because supported Windows Server releases do not all offer 1.3.
+49. §4.4 (AD outcomes). LDAP result 49 (invalid credentials, including `52e`) is the
+    deterministic authentication failure; 19 (constraint violation: policy, history,
+    minimum age) and 53 (unwilling to perform) on the `unicodePwd` modify are deterministic
+    refusals. Any other error after the commit point is ambiguous.
 61. §4.1 (sync frame bound). `cptrust.Submit` refuses a manifest over 512 KiB
     (`MaxManifest`), so any stored manifest fits a 4 MiB channel frame base64url-encoded. A
     `sync` page carries at most 64 manifests whose encoded size stays within `SyncBudget`

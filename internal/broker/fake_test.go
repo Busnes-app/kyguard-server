@@ -9,10 +9,9 @@ import (
 	"time"
 
 	"github.com/Busnes-app/kyguard-server/internal/broker"
-	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
+	"github.com/Busnes-app/kyguard-server/internal/broker/brokerrig"
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto/brokertest"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
-	"github.com/Busnes-app/kyguard-server/internal/pqcrypto/pqtest"
 	"github.com/Busnes-app/kyguard-server/internal/store"
 )
 
@@ -117,180 +116,24 @@ func (s *fakeSession) PasswordAge(context.Context) (time.Time, time.Duration, er
 	return s.f.lastChange, s.f.minAge, nil
 }
 
-// rig is a Control Plane, a paired and admitted broker with its journal, one account with
-// an enrolled v1, and a fake target.
-type rig struct {
-	t      *testing.T
-	cp     *brokertest.CP
-	b      *brokertest.Broker
-	dir    string
-	pol    *pqcrypto.PolicyManifest
-	target *fakeTarget
-	alerts []string
-	cpw    broker.ControlPlane // what the machine talks to
-}
-
 const initialPassword = "initial-Password-0"
+
+// rig is a brokerrig.Rig over a fake target.
+type rig struct {
+	*brokerrig.Rig
+	target *fakeTarget
+	pol    *pqcrypto.PolicyManifest
+	cp     *brokertest.CP
+}
 
 func newRig(t *testing.T, edit ...func(*pqcrypto.PolicyManifest)) *rig {
 	t.Helper()
-	cp := brokertest.NewCP(t)
-	b := cp.PairBroker()
-	cp.AdmitPool(1, b.Member(pqcrypto.StatusActive))
-	if err := cp.Dial(b); err != nil {
-		t.Fatal(err)
-	}
-	r := &rig{t: t, cp: cp, b: b, dir: t.TempDir(), target: newTarget(initialPassword)}
-	r.pol = cp.Account(func(p *pqcrypto.PolicyManifest) {
-		for _, e := range edit {
-			e(p)
-		}
-	})
-	j, err := broker.OpenJournal(r.dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := j.SavePairing(&broker.Identity{BrokerID: b.ID, Cert: b.Paired.Cert, CACert: b.Paired.CACert, ListenerURL: cp.Srv.URL, Bundle: b.Paired.Bundle, Fingerprint: cp.Dep.Fingerprint}); err != nil {
-		t.Fatal(err)
-	}
-	j.Close()
-	r.cpw = broker.NewChannelCP(b.Conn)
-	r.seed()
-	m := r.machine()
-	defer m.J.Close()
-	if err := m.Sync(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	return r
+	tg := newTarget(initialPassword)
+	r := brokerrig.New(t, brokerrig.Options{Connector: tg, Password: initialPassword, Edit: edit})
+	return &rig{Rig: r, target: tg, pol: r.Pol, cp: r.CP}
 }
 
-// seed puts an enrolled v1 on the Control Plane: a broker-sealed envelope of the initial
-// password with commit_target and release, as a completed earlier rotation leaves it.
-func (r *rig) seed() {
-	t := r.t
-	ctx := context.Background()
-	v := r.cp.Store.Vault()
-	op := pqtest.UUID()
-	ver, err := v.Reserve(ctx, string(r.pol.AccountID), string(op), 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	d, _ := pqcrypto.ObjDigest(r.pol)
-	h := pqcrypto.Header{Type: pqcrypto.TypeEnvelope, DeploymentID: r.cp.Dep.ID, Epoch: r.pol.Epoch, Scope: pqcrypto.Scope{Kind: pqcrypto.ScopeAccount, ID: r.pol.AccountID}, SignerRole: pqcrypto.RoleBroker}
-	e, err := pqcrypto.Seal(h, pqcrypto.KindManaged, pqtest.UUID(), pqcrypto.Counter(ver), d.Hex(), 0, time.Now(), []byte(initialPassword),
-		[]pqcrypto.SealTo{{Type: pqcrypto.RecipientBroker, ID: string(r.b.ID), Pub: r.b.Enc.Public().Bytes()}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	pqcrypto.Sign(e, pqcrypto.RoleBroker, r.b.Sig)
-	ed, _ := pqcrypto.ObjDigest(e)
-	if err := v.PutEnvelope(ctx, string(op), &store.StoredEnvelope{EnvelopeID: string(e.EnvelopeID), AccountID: string(r.pol.AccountID), SecretVersion: ver, EnvelopeKind: "managed", Digest: string(ed.Hex()), Envelope: pqtest.Canon(t, e)}); err != nil {
-		t.Fatal(err)
-	}
-	var rs []*store.StoredReceipt
-	prev := pqcrypto.ZeroHex
-	for i, typ := range []string{pqcrypto.ReceiptCommitTarget, pqcrypto.ReceiptRelease} {
-		rc := &pqcrypto.EnvelopeReceipt{Header: pqcrypto.Header{Type: pqcrypto.TypeReceipt, DeploymentID: r.cp.Dep.ID, Epoch: r.pol.Epoch, Scope: e.Scope, SignerRole: pqcrypto.RoleBroker},
-			EnvelopeID: e.EnvelopeID, EnvelopeKind: e.EnvelopeKind, SecretVersion: e.SecretVersion, ReceiptSeq: pqcrypto.Counter(i + 1), PrevReceiptHash: prev,
-			ReceiptType: typ, OperationID: op, ExtraRecipients: []pqcrypto.Recipient{}, IssuedAt: pqcrypto.NewTime(time.Now())}
-		pqcrypto.Sign(rc, pqcrypto.RoleBroker, r.b.Sig)
-		dg, _ := pqcrypto.ObjDigest(rc)
-		rs = append(rs, &store.StoredReceipt{EnvelopeID: string(e.EnvelopeID), ReceiptSeq: uint64(i + 1), ReceiptType: typ, OperationID: string(op), Digest: string(dg.Hex()), PrevReceiptHash: string(prev), Receipt: pqtest.Canon(t, rc)})
-		prev = dg.Hex()
-	}
-	if err := v.Complete(ctx, string(op), string(r.pol.AccountID), rs, string(e.EnvelopeID), "", true); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// machine opens the broker as a fresh process would: journal, keys, trust from disk.
-func (r *rig) machine() *broker.Machine {
-	r.t.Helper()
-	j, err := broker.OpenJournal(r.dir)
-	if err != nil {
-		r.t.Fatal(err)
-	}
-	tr, err := j.Trust()
-	if err != nil {
-		r.t.Fatal(err)
-	}
-	return &broker.Machine{J: j, Trust: tr, Keys: &broker.Keys{TLS: r.b.TLS, Sig: r.b.Sig, Enc: r.b.Enc}, ID: r.b.ID, CP: r.cpw,
-		Connectors: map[string]broker.Connector{pqcrypto.ConnectorSSHPasswd: r.target}, AckTimeout: 2 * time.Second,
-		Alerts: func(s string) { r.alerts = append(r.alerts, s) }}
-}
-
-func (r *rig) account(m *broker.Machine) *broker.Account {
-	r.t.Helper()
-	a, err := m.J.Account(r.pol.AccountID)
-	if err != nil {
-		r.t.Fatal(err)
-	}
-	return a
-}
-
-func (r *rig) cpAccount() *store.Account {
-	a, err := r.cp.Store.Vault().GetAccount(context.Background(), string(r.pol.AccountID))
-	if err != nil {
-		r.t.Fatal(err)
-	}
-	return a
-}
-
-func (r *rig) cpLock() string {
-	op, _, _ := r.cp.Store.Vault().Lock(context.Background(), string(r.pol.AccountID))
-	return op
-}
-
-// wrapCP lets a test override single Control Plane calls.
-type wrapCP struct {
-	broker.ControlPlane
-	intent  func(ctx context.Context, raw []byte) error
-	reserve func(ctx context.Context, account, op pqcrypto.UUID, reported pqcrypto.Counter) (pqcrypto.Counter, error)
-	sync    func(ctx context.Context, req brokerproto.SyncRequest) (*brokerproto.SyncReply, error)
-	account func(ctx context.Context, id pqcrypto.UUID, after, from pqcrypto.Counter) (*brokerproto.AccountState, error)
-	// receiptsErr fails every receipts delivery while set; statusErr every status report.
-	receiptsErr error
-	statusErr   error
-}
-
-func (w *wrapCP) Status(ctx context.Context, s brokerproto.StatusRequest) error {
-	if w.statusErr != nil {
-		return w.statusErr
-	}
-	return w.ControlPlane.Status(ctx, s)
-}
-
-func (w *wrapCP) Receipts(ctx context.Context, op, account pqcrypto.UUID, rs []pqcrypto.B64) error {
-	if w.receiptsErr != nil {
-		return w.receiptsErr
-	}
-	return w.ControlPlane.Receipts(ctx, op, account, rs)
-}
-
-func (w *wrapCP) Intent(ctx context.Context, raw []byte) error {
-	if w.intent != nil {
-		return w.intent(ctx, raw)
-	}
-	return w.ControlPlane.Intent(ctx, raw)
-}
-
-func (w *wrapCP) Reserve(ctx context.Context, account, op pqcrypto.UUID, reported pqcrypto.Counter) (pqcrypto.Counter, error) {
-	if w.reserve != nil {
-		return w.reserve(ctx, account, op, reported)
-	}
-	return w.ControlPlane.Reserve(ctx, account, op, reported)
-}
-
-func (w *wrapCP) Sync(ctx context.Context, req brokerproto.SyncRequest) (*brokerproto.SyncReply, error) {
-	if w.sync != nil {
-		return w.sync(ctx, req)
-	}
-	return w.ControlPlane.Sync(ctx, req)
-}
-
-func (w *wrapCP) SyncAccount(ctx context.Context, id pqcrypto.UUID, after, from pqcrypto.Counter) (*brokerproto.AccountState, error) {
-	if w.account != nil {
-		return w.account(ctx, id, after, from)
-	}
-	return w.ControlPlane.SyncAccount(ctx, id, after, from)
-}
+func (r *rig) machine() *broker.Machine                  { return r.Machine() }
+func (r *rig) account(m *broker.Machine) *broker.Account { return r.Account(m) }
+func (r *rig) cpAccount() *store.Account                 { return r.CPAccount() }
+func (r *rig) cpLock() string                            { return r.CPLock() }
