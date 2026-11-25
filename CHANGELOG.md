@@ -59,6 +59,11 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   intent, and settles an unknown outcome only by one journaled `P_new` probe or quarantine.
   A restart never writes twice. A denied current credential stops after one attempt and
   quarantines. Sync refuses older or forked manifests and chains older than the broker's.
+- Broker-local scheduler (spec §3.4, §4.4): the broker runs each account's signed schedule by
+  its own clock, every minute and on nudges, and runs only the latest outstanding
+  occurrence after the schedule floor; refused attempts wait for `next_attempt_at` and
+  stop after three until a new policy epoch; a minimum password age above the interval
+  runs nothing.
 
 ### Upgrade impact
 

@@ -109,7 +109,12 @@ func (m *Machine) acceptManifest(raw []byte) error {
 		if err != nil {
 			return err
 		}
-		a.PolicyEpoch, a.PolicyPersistedAt = rec.Epoch, m.now()
+		// A new policy epoch moves the schedule floor and lifts the three-refusal stop; the
+		// minimum-age deadline and next attempt time carry over (§3.4, §4.4).
+		a.PolicyEpoch, a.PolicyPersistedAt, a.Refusals = rec.Epoch, m.now(), 0
+		if a.HealthReason == ReasonBelowMinAge {
+			a.Health, a.HealthReason = "", ""
+		}
 		return m.J.Save(a)
 	}
 	return nil

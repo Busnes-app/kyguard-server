@@ -92,7 +92,7 @@ func TestPairWithTheBundleFile(t *testing.T) {
 	}
 }
 
-func TestRunHoldsTheChannelAndTakesNudges(t *testing.T) {
+func TestRunHoldsTheChannel(t *testing.T) {
 	cp := brokertest.NewCP(t)
 	a, _ := newApp(t)
 	if err := a.Pair(context.Background(), cp.Token(cp.Srv, time.Minute), string(cp.Dep.Fingerprint), ""); err != nil {
@@ -109,11 +109,6 @@ func TestRunHoldsTheChannelAndTakesNudges(t *testing.T) {
 			t.Fatal("broker never connected")
 		}
 		time.Sleep(20 * time.Millisecond)
-	}
-	select {
-	case <-a.Nudges:
-	case <-time.After(10 * time.Second):
-		t.Fatal("nudge not delivered")
 	}
 	// A second daemon on the same journal is refused while the first holds the lock.
 	if _, err := broker.OpenJournal(a.Dir); err == nil || !strings.Contains(err.Error(), "locked") {

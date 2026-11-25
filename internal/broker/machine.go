@@ -520,6 +520,7 @@ func (m *Machine) abort(ctx context.Context, a *Account, reason string) error {
 	a.Run.State, a.Run.Reason, a.Run.Receipts = StateAborted, reason, []pqcrypto.B64{r}
 	if reason == pqcrypto.ReasonRefused {
 		setHealth(a, HealthRotationFailed, "the target refused the change")
+		m.refused(a)
 	}
 	if err := m.J.Save(a); err != nil {
 		return err
@@ -572,6 +573,7 @@ func (m *Machine) send(ctx context.Context, a *Account) error {
 		a.Run.State = StateReleaseAuthorized
 		a.LastConsumedDue, a.CurrentCommitAt = a.Run.Due, m.now()
 		setHealth(a, HealthHealthy, "")
+		a.Refusals, a.NextAttemptAt = 0, time.Time{}
 	}
 	if err := m.J.Save(a); err != nil {
 		return err

@@ -42,6 +42,14 @@ the wire and TLS are `internal/brokerproto`'s.
 - `Sync` accepts manifests only through `Trust.Accept` (rollback and forks alerted, never
   applied), descriptors only if their policy pins the digest, and chains only if they
   verify and extend the broker's copy.
+- Scheduler (`schedule.go`, §3.4, §4.4): `Tick` evaluates each account's signed schedule by
+  the broker's clock and runs only the latest outstanding occurrence (due in the past and
+  after the floor `max(last consumed due, policy persisted at, current commit)`). An
+  occurrence is consumed only by `release`. A refused attempt sets
+  `next_attempt_at = max(min-age deadline, now + interval)`; three refusals stop the account
+  until a new policy epoch. A minimum age above the interval runs nothing
+  (`schedule_below_min_age`). Nudges only call `Tick` early; `Schedule` also ticks every
+  minute without them.
 - `Machine.Hook` is a test-only crash point; it must never be set in production.
 - Connectors implement `Connector`/`Session` (`connector.go`); `ErrAuthFailed` and
   `ErrRefused` are the only deterministic outcomes, any other error is ambiguous.
