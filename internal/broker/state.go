@@ -197,3 +197,17 @@ func (j *Journal) Save(a *Account) error {
 	}
 	return j.db.Update(func(tx *bolt.Tx) error { return tx.Bucket(bucketAccounts).Put([]byte(a.ID), v) })
 }
+
+// HighestCopied is the highest secret_version among the chains the broker holds.
+func (a *Account) HighestCopied() pqcrypto.Counter {
+	var hv pqcrypto.Counter
+	for _, c := range a.Chains {
+		var head struct {
+			V pqcrypto.Counter `json:"secret_version"`
+		}
+		if json.Unmarshal(c.Envelope, &head) == nil && head.V > hv {
+			hv = head.V
+		}
+	}
+	return hv
+}

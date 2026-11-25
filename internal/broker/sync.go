@@ -25,19 +25,41 @@ func (m *Machine) alert(format string, args ...any) {
 func (m *Machine) Sync(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s, err := m.CP.Sync(ctx)
-	if err != nil {
-		return err
-	}
-	for _, raw := range s.Manifests {
-		if err := m.acceptManifest(raw); err != nil {
+	var accounts []pqcrypto.UUID
+	for after := 0; ; {
+		s, err := m.CP.Sync(ctx, after)
+		if err != nil {
 			return err
+		}
+		for _, raw := range s.Manifests {
+			if err := m.acceptManifest(raw); err != nil {
+				return err
+			}
+		}
+		after += len(s.Manifests)
+		if s.Done {
+			accounts = s.Accounts
+			break
+		}
+		if len(s.Manifests) == 0 {
+			return errors.New("broker: sync page with no progress")
 		}
 	}
 	var errs []error
-	for _, st := range s.Accounts {
-		if err := m.syncAccount(ctx, st); err != nil {
-			errs = append(errs, fmt.Errorf("account %s: %w", st.AccountID, err))
+	for _, id := range accounts {
+		a, err := m.J.Account(id)
+		if err != nil {
+			return err
+		}
+		st, err := m.CP.SyncAccount(ctx, id, a.HighestCopied())
+		if err == nil && st.AccountID != id {
+			err = errors.New("broker: sync returned another account")
+		}
+		if err == nil {
+			err = m.syncAccount(ctx, *st)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("account %s: %w", id, err))
 		}
 	}
 	return errors.Join(errs...)
