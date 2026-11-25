@@ -232,14 +232,10 @@ func (s *Server) handleGetAccount(w http.ResponseWriter, r *http.Request) {
 		}
 		descs = append(descs, v)
 	}
-	vals, err := s.store.Inventory().Values(ctx, store.EntityAccount)
+	attrs, err := s.store.Inventory().EntityValues(ctx, store.EntityAccount, a.ID)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "could not read attributes")
 		return
-	}
-	attrs := vals[a.ID]
-	if attrs == nil {
-		attrs = map[string]string{}
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"account": a, "descriptors": descs, "attributes": attrs})
 }
@@ -262,9 +258,9 @@ func (s *Server) handlePutDescriptor(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusServiceUnavailable, "import the bootstrap bundle first (kyguard-server import-bundle)")
 		return
 	}
-	raw, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10))
 	if err != nil {
-		s.writeError(w, http.StatusBadRequest, "could not read the descriptor")
+		s.writeError(w, http.StatusRequestEntityTooLarge, "descriptor over 64 KiB")
 		return
 	}
 	td, digest, err := pqcrypto.DecodeTargetDescriptor(raw)
