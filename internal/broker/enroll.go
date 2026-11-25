@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
@@ -164,8 +165,10 @@ func (m *Machine) target(a *Account) (*rotationContext, error) {
 // (superseded_by_reenrollment) at the next sequence number of every unterminated envelope,
 // and signs vault_commit for the candidate (§4.5 step 3); then it delivers them.
 func (m *Machine) enrollCommit(ctx context.Context, a *Account, cand *pqcrypto.VerifiedEnvelope) error {
-	// A stuck run's envelope was stored at the Control Plane but never joined the copy.
-	if a.Run.Open() && !a.Run.Sent && len(a.Run.NewEnvelope) > 0 {
+	// A stuck run's envelope was stored at the Control Plane but may not have joined the
+	// copy; a sync since the reconnect may already have added it (security review of #15).
+	stuck := a.Run.Open() && !a.Run.Sent && len(a.Run.NewEnvelope) > 0
+	if stuck && !slices.ContainsFunc(a.Chains, func(c ChainCopy) bool { return envelopeID(c.Envelope) == envelopeID(a.Run.NewEnvelope) }) {
 		a.Chains = append(a.Chains, ChainCopy{Envelope: a.Run.NewEnvelope, Receipts: []pqcrypto.B64{}})
 	}
 	chains, err := m.chains(a)
@@ -288,6 +291,15 @@ func (m *Machine) recoverEnrollment(ctx context.Context, a *Account) error {
 		return m.verifyEnrollment(ctx, a)
 	}
 	return m.enrollFail(ctx, a)
+}
+
+// envelopeID reads an envelope's envelope_id, or "".
+func envelopeID(raw []byte) pqcrypto.UUID {
+	var e struct {
+		ID pqcrypto.UUID `json:"envelope_id"`
+	}
+	_ = json.Unmarshal(raw, &e)
+	return e.ID
 }
 
 func canonicalDecode(raw []byte, v any) error {

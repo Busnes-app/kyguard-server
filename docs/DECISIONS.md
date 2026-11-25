@@ -303,3 +303,9 @@ contradicts itself. Each names its section. The most secure reading wins.
     this slice (no `rewrap_user` receipts), so the Control Plane refuses one at submission
     with 422 `unsupported_action` instead of relaying a transaction the broker would
     reject. The route accepts it again when the broker path lands.
+77. §3.5, §3.6 (chain room for completion). The spec bounds neither a chain's size nor
+    `standing_recipient_principal_ids`. A policy may name at most 32 standing recipients
+    (`pqcrypto.MaxStandingRecipients`; refused as `invalid_body`), and the Control Plane
+    stores an envelope only if it leaves 96 KiB of the 256 KiB chain (`store.MaxEnvelope`).
+    That room holds `commit_target` plus a `release` with all 32 wraps, so an admitted
+    rotation can always finish and give back its lock.
