@@ -253,8 +253,9 @@ func (g guardStore) CreatePool(ctx context.Context, p *BrokerPool, audit *AuditR
 		if n > 0 {
 			return ErrAlreadyExists
 		}
+		// A concurrent create can pass the check above; the unique index decides (409, not 500).
 		if _, err := tx.ExecContext(ctx, g.s.rebind(`INSERT INTO broker_pools (id, name, created_at) VALUES (?, ?, ?)`), p.ID, p.Name, p.CreatedAt); err != nil {
-			return err
+			return uniqueErr(err)
 		}
 		return g.s.auditTx(ctx, tx, audit)
 	})

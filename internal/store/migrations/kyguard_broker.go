@@ -105,6 +105,7 @@ CREATE TABLE envelope_receipts (
     created_at {{ts}} NOT NULL,
     PRIMARY KEY (envelope_id, receipt_seq)
 );
+CREATE INDEX idx_receipts_operation ON envelope_receipts(operation_id);
 CREATE TABLE rotation_locks (
     account_id TEXT PRIMARY KEY REFERENCES accounts(id),
     operation_id TEXT NOT NULL,

@@ -517,3 +517,37 @@ func TestRecoveredEnrollmentFailsWhenTheTargetChanged(t *testing.T) {
 		t.Fatalf("enrollment %+v", a.Enrollment)
 	}
 }
+
+// An enrollment that stopped after the Control Plane accepted it, with no receipts yet
+// (e.g. the broker's disk was full), resumes on the next tick, as after a restart: one bind,
+// the lock released (PR Reviewer Guide on #15).
+func TestStalledEnrollmentResumesOnTheNextTick(t *testing.T) {
+	r := newEnrollRig(t, false)
+	m := r.machine()
+	defer m.J.Close()
+	m.Hook = func(p string) error {
+		if p == "accept_ack" {
+			return errors.New("disk full")
+		}
+		return nil
+	}
+	if _, err := r.enroll(m, initialPassword); err == nil {
+		t.Fatal("enrollment did not stop")
+	}
+	m.Hook = nil
+	if a := r.account(m); !a.Enrollment.Open() || len(a.Enrollment.Receipts) > 0 || r.cpLock() == "" {
+		t.Fatalf("stalled: %+v lock=%q", a.Enrollment, r.cpLock())
+	}
+	if err := m.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if a := r.account(m); !a.Enrollment.Sent || r.cpLock() != "" {
+		t.Fatalf("after the tick: sent=%v lock=%q", a.Enrollment.Sent, r.cpLock())
+	}
+	if cur := r.current(m); cur == nil || !cur.VaultCommitted {
+		t.Fatalf("current %+v", cur)
+	}
+	if n := r.target.logins[initialPassword]; n != 1 {
+		t.Fatalf("%d binds", n)
+	}
+}

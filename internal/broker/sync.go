@@ -42,12 +42,12 @@ func (m *Machine) Sync(ctx context.Context) error {
 		if s.Done {
 			break
 		}
-		if len(s.Manifests) == 0 && len(s.Accounts) == 0 {
+		if len(s.Manifests) == 0 && s.AccountsNext <= req.AccountsAfter {
 			return errors.New("broker: sync page with no progress")
 		}
 		req.ManifestsAfter += len(s.Manifests)
-		if len(s.Accounts) > 0 {
-			req.AccountsAfter = s.Accounts[len(s.Accounts)-1]
+		if len(s.Manifests) == 0 {
+			req.AccountsAfter = s.AccountsNext
 		}
 	}
 	var errs []error
