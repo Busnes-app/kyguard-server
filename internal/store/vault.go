@@ -763,22 +763,21 @@ func (v vaultStore) TakePushes(ctx context.Context, brokerID string, limit int, 
 }
 
 func (v vaultStore) PutTx(ctx context.Context, requestID, accountID, actionType, digest string, raw []byte) error {
-	return v.s.inTx(ctx, func(tx *sql.Tx) error {
-		var have string
-		err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT tx FROM access_transactions WHERE request_id = ?`), requestID).Scan(&have)
-		if err == nil {
-			if have == string(raw) {
-				return nil
-			}
-			return ErrConflict
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, v.s.rebind(`INSERT INTO access_transactions (request_id, account_id, action_type, digest, tx, created_at) VALUES (?, ?, ?, ?, ?, ?)`),
-			requestID, accountID, actionType, digest, string(raw), time.Now().UTC())
+	// Insert-or-keep, then compare: two identical submissions racing on PostgreSQL both
+	// succeed, and a different transaction under the same request ID is a conflict (Guide
+	// on #15, "Concurrent retries").
+	if _, err := v.s.db.ExecContext(ctx, v.s.rebind(`INSERT INTO access_transactions (request_id, account_id, action_type, digest, tx, created_at) VALUES (?, ?, ?, ?, ?, ?)
+ ON CONFLICT (request_id) DO NOTHING`), requestID, accountID, actionType, digest, string(raw), time.Now().UTC()); err != nil {
 		return err
-	})
+	}
+	var have string
+	if err := v.s.db.QueryRowContext(ctx, v.s.rebind(`SELECT tx FROM access_transactions WHERE request_id = ?`), requestID).Scan(&have); err != nil {
+		return err
+	}
+	if have != string(raw) {
+		return ErrConflict
+	}
+	return nil
 }
 
 func (v vaultStore) SetHealth(ctx context.Context, accountID, health, reason string) error {
