@@ -222,3 +222,21 @@ contradicts itself. Each names its section. The most secure reading wins.
 58. §3.6 (relay mailbox). The CLI collects challenges, deliveries and refusals from
     `access_transactions`; any session can read a mailbox, which reveals nothing usable: a
     challenge needs the transaction's `cnf` key and a delivery the requester's key.
+200. §8.2 (who writes attributes). An attribute definition has one source. The store refuses
+    an admin write to a `scim` definition and a SCIM write to an `admin` one, so SCIM-synced
+    values are read-only in the UI and API. The user keys `department`, `manager` and
+    `title` are reserved for SCIM; an admin cannot define them.
+201. §8.2 (enum edits). Removing an enum value that an account or user still holds is
+    refused (409); clear or change those values first. Deleting a definition deletes its
+    values.
+202. §8.2, §9.4 (no seeded rows). Migration 200 seeds no attribute definitions, because
+    `migrate-postgres` and the PostgreSQL snapshot refuse non-empty target tables. The SCIM
+    definitions are created the first time SCIM sends one of their values.
+203. §9.2, §10 (inventory writes). Accounts are created and edited by administrators only.
+    `account_kind`, `asset_id` and `pool_id` are fixed at creation, because a policy and
+    the envelopes already name them; decommissioning is the only way an account leaves the
+    report (§8.1).
+204. §3.3 (descriptor upload). The Control Plane stores a descriptor only when it decodes
+    strictly, is in the 1A slice and names the bundle's deployment and the account's own
+    account and asset. It stores the canonical bytes, so the digest a Custodian sees is the
+    digest of the stored row.

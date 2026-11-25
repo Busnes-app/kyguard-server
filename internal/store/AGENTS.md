@@ -74,6 +74,14 @@ Owns data models, store interfaces (`UserStore`, `SessionStore`, `GroupStore`, `
   `access_transactions` doubles as the CLI's relay mailbox (challenge, purpose, delivery
   wrap, result).
 
+- `Inventory()` (`inventory.go`, migration 200; reporting migrations take versions from 200)
+  holds the account inventory columns (`owner_user_id`, status, asset name, broker-reported
+  minimum age), uploaded descriptors and `attribute_definitions`/`attribute_values`. Each
+  write audits through `auditTx` in its own transaction. `SetValue` refuses a writer whose
+  source differs from the definition's (`ErrInvalid`), an enum value outside the list and
+  an unknown entity; `UpdateDefinition` refuses removing an enum value in use
+  (`ErrConflict`). Both tables are in `migrationTables`; the migration seeds nothing.
+
 ## Verification
 - `go test -v ./internal/store/...`
 

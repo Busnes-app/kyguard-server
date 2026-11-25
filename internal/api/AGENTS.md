@@ -14,6 +14,10 @@ Owns HTTP routing, request parsing, session cookie validation, CORS headers, and
 - Broker pool, pairing-token and manifest routes live in `broker_handlers.go`. They use the
   base admin/session middleware and carry `TODO(hawthorn §7.5)` until the route registry and
   step-up land. `BrokerListener` hands `cmd/server` the separate listener (§4.1).
+- Inventory and attribute routes live in `inventory_handlers.go`: admin-only writes, strict
+  JSON (unknown fields refused), audited in the store transaction, `TODO(hawthorn §7.5)`
+  until classified. Descriptor upload decodes with `pqcrypto.DecodeTargetDescriptor` and
+  stores the canonical bytes.
 - Update `docs/INTERFACES.md` when a route's inputs, outputs, permissions or errors change.
 - POST `/api/auth/change-password` accepts any local-account session (restricted or not; federated accounts get 409), current password and a different policy-valid new password. Browser CSRF and per-IP/account limits apply. Success revokes all sessions and requires sign-in again; flagged sessions get `password_change_required` on protected routes and public-only settings.
 - `GET|HEAD /livez` and `/readyz` (`health.go`) are unauthenticated, `Cache-Control: no-store`,
