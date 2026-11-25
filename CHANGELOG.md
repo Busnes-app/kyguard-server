@@ -48,12 +48,17 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   `stepup_at`, `break_glass_reason`, and the `mfa_factors` and `totp_attempts` tables, both
   carried by `migrate-postgres` and PostgreSQL snapshots. Migration 13 (`kyguard_sso_issuer`)
   adds the issuer columns and replaces the fence tables.
+- KyGuard `internal/pqcrypto` wire format (spec §3.1): strict RFC 8785 JCS, decimal-string
+  counters capped at 2^63-1, unpadded base64url, the domain digest `D(obj)`, ML-DSA-65 +
+  Ed25519 hybrid signatures, `sig_key_id`/`enc_key_id`, the payload and DEK-wrap AADs, the
+  X-Wing HPKE DEK wrap, the AES-256-GCM payload and `opid`, with committed golden vectors.
 
 ### Upgrade impact
 
-- No KyGuard install exists yet, so nothing migrates. An empty database starts with no
-  account: create a break-glass administrator on the host before signing in locally. The
-  replica configuration fingerprint no longer covers the removed `KY_SAML_*` settings.
+- No KyGuard install exists yet, so nothing migrates. The replica configuration fingerprint
+  no longer covers the removed `KY_SAML_*` settings.
+- The module declares `go 1.27.0` (for `crypto/mldsa`); builds need Go 1.27, as the pinned
+  `go1.27.4` toolchain already provides.
 
 ## Maintaining notes
 
