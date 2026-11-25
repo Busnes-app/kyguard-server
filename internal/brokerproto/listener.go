@@ -41,8 +41,9 @@ type Listener struct {
 	MinVersion string
 	Now        func() time.Time
 
-	mu    sync.Mutex
-	conns map[pqcrypto.UUID]*websocket.Conn
+	mu      sync.Mutex
+	conns   map[pqcrypto.UUID]*websocket.Conn
+	stopped bool // set by CloseAll; later channels are closed, never registered
 }
 
 // Handler returns the listener's routes; everything else is 404.
@@ -200,6 +201,11 @@ func (l *Listener) handleChannel(w http.ResponseWriter, r *http.Request) {
 	c.SetReadLimit(1 << 20)
 	id := pqcrypto.UUID(b.ID)
 	l.mu.Lock()
+	if l.stopped {
+		l.mu.Unlock()
+		c.CloseNow()
+		return
+	}
 	if l.conns == nil {
 		l.conns = map[pqcrypto.UUID]*websocket.Conn{}
 	}
@@ -236,7 +242,7 @@ func (l *Listener) handleChannel(w http.ResponseWriter, r *http.Request) {
 func (l *Listener) CloseAll() {
 	l.mu.Lock()
 	cs := l.conns
-	l.conns = nil
+	l.conns, l.stopped = nil, true
 	l.mu.Unlock()
 	for _, c := range cs {
 		c.CloseNow()
