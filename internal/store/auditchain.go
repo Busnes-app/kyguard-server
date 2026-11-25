@@ -255,7 +255,7 @@ func (s *SQLStore) adoptLegacyAudit(ctx context.Context) error {
 type auditKey struct{}
 
 // WithAudit asks the next user write made with ctx (CreateUser, the profile and role
-// updates, LinkSSOIdentity) to append r in its own transaction, so the change and its record
+// updates, LinkSSOIdentity) or settings UpdateSettings to append r in its own transaction, so the change and its record
 // commit or fail together (spec §9.3).
 func WithAudit(ctx context.Context, r *AuditRecord) context.Context {
 	return context.WithValue(ctx, auditKey{}, r)

@@ -67,6 +67,26 @@ contradicts itself. Each names its section. The most secure reading wins.
    reports them as unchained. Verification rejects any stored field that differs from its
    canonical rendering, because the HMAC covers only that rendering. On PostgreSQL it reads the
    head and the records in one REPEATABLE READ snapshot.
-19. §9.3 (scope of this PR). `operation_intents` and startup reconciliation of external effects
-   (pairing claim, deposit, pin) are the next PR. Until then a failed audit write after a backup
-   run is logged loudly (`recordRun`) rather than retried.
+19. §9.3 (external effects). A KyRecovery pairing claim, a recovery-key pin and a deposit each
+   commit an `operation_intents` row before the effect starts. The run's or request's audit
+   record is the completion append, in the same transaction that ends the intent, and it is
+   noted on the intent first. So when that append fails, the action answers 500
+   (`ErrNotRecorded`) and reconciliation later appends the noted record. Nothing is only logged.
+   A deposit intent is taken only when a deposit can go out (paired) and after the payload is
+   collected, so refused and local-only runs leave none.
+19a. §9.3 (reconciliation). Deposits run under the `backup-run` lock, so `backup.Run`, and
+   startup when it wins that lock, settle every pending deposit before depositing. Pairing and
+   pin requests hold no shared lock, so startup and the next request of the same kind settle
+   only intents older than 20 minutes (longer than any detached backup request). A pending
+   intent settles to its noted outcome, else to `outcome_unknown` with a critical
+   `operation.outcome_unknown` record. A completed deposit supersedes every `outcome_unknown`
+   deposit, and a fresh capsule is sealed for each run, so lost bytes are never replayed.
+19b. §9.3 (states). Besides the spec's `pending`, `complete`, `outcome_unknown` and `superseded`,
+   an intent can end `failed`: the effect was refused, or it happened and the local completion
+   failed, and either way the outcome is known. The table is a superset of the broker stack's
+   migration-100 table, so the stack join drops that one.
+19c. §9.3 (settings publication). `UpdateSettings` appends the record `store.WithAudit` attaches,
+   in its transaction, so the exempt-network list and its record commit together. Backup export,
+   unpair and schedule now fail on a failed audit append. Export sends no capsule bytes without
+   the record. Unpair and schedule answer 500, saying that the change landed and its record did
+   not.

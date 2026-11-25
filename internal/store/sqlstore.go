@@ -1074,6 +1074,9 @@ VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_
 			return err
 		}
 	}
+	if err := s.store.appendCtxAudit(ctx, tx); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 

@@ -13,6 +13,12 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 
 ### Changes
 
+- Durable intents for external effects (spec §9.3): a KyRecovery pairing claim, a recovery-key
+  pin and a deposit each commit an `operation_intents` row (migration 16) before they start; the
+  audit record is the completion append, so a failed audit write now answers 500 instead of
+  being logged. Startup settles what a stopped process left (`outcome_unknown`), and a later
+  deposit supersedes it. The exempt-network list commits with its audit record; a capsule
+  export sends nothing without its record.
 - Chained audit log (spec §9.3): every audit record carries `seq`, `prev_hash` and an HMAC
   `hash` under a key derived from `data/encryption.key`, with the anchor in `audit_chain_head`
   (migration 15). One writer appends inside the caller's transaction, so a failed audit write
