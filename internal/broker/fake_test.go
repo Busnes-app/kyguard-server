@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Busnes-app/kyguard-server/internal/broker"
 	"github.com/Busnes-app/kyguard-server/internal/broker/brokerrig"
@@ -28,6 +29,12 @@ type fakeTarget struct {
 	refuseAfterCommit  bool  // e.g. password policy
 	ambiguous          error // returned after commit
 	applyAmbiguous     bool  // whether the ambiguous write took effect
+	// Reported by PasswordAge.
+	lastChange time.Time
+	minAge     time.Duration
+	// hold, if set, blocks Change after commit until it is closed, ignoring cancellation;
+	// held gets a value once Change waits there.
+	hold, held chan struct{}
 }
 
 func newTarget(pw string) *fakeTarget { return &fakeTarget{password: pw, logins: map[string]int{}} }
@@ -89,6 +96,10 @@ func (s *fakeSession) Change(_ context.Context, _, pNew []byte, commit func() er
 	if err := commit(); err != nil {
 		return err
 	}
+	if s.f.hold != nil {
+		s.f.held <- struct{}{}
+		<-s.f.hold
+	}
 	s.f.mu.Lock()
 	defer s.f.mu.Unlock()
 	switch {
@@ -105,6 +116,12 @@ func (s *fakeSession) Change(_ context.Context, _, pNew []byte, commit func() er
 }
 
 func (s *fakeSession) Close() error { return nil }
+
+func (s *fakeSession) PasswordAge(context.Context) (time.Time, time.Duration, error) {
+	s.f.mu.Lock()
+	defer s.f.mu.Unlock()
+	return s.f.lastChange, s.f.minAge, nil
+}
 
 const initialPassword = "initial-Password-0"
 

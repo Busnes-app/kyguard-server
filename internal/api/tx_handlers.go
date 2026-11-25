@@ -23,8 +23,9 @@ func (s *Server) txRoutes() {
 	s.mux.HandleFunc("POST /api/transactions/{request}/checkin", s.requireAuthenticated(s.handleTxCheckin))
 }
 
-// relay pushes one message to the account's active broker.
-func (s *Server) relay(r *http.Request, account pqcrypto.UUID, typ string, body any) error {
+// relayTx pushes one message to the account's active broker, through any replica
+// (decision 75). A queued relay that no replica delivers within ten minutes is dropped.
+func (s *Server) relayTx(r *http.Request, account pqcrypto.UUID, typ string, body any) error {
 	var broker pqcrypto.UUID
 	if err := s.trust.View(r.Context(), func(tr *pqcrypto.Trust) (err error) {
 		broker, err = activeBroker(tr, account)
@@ -32,22 +33,18 @@ func (s *Server) relay(r *http.Request, account pqcrypto.UUID, typ string, body 
 	}); err != nil {
 		return err
 	}
-	l := s.BrokerListener()
-	if l == nil {
-		return errors.New("broker listener not configured")
-	}
 	b, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
-	return l.Send(r.Context(), broker, brokerproto.Message{V: 1, Type: typ, Body: b})
+	return s.relay(r.Context(), broker, brokerproto.Message{V: 1, Type: typ, Body: b}, time.Now().Add(10*time.Minute))
 }
 
-// handleSubmitTx stores a vault_checkout, standing_release or manual_rotation and relays it.
+// handleSubmitTx stores a vault_checkout or manual_rotation and relays it.
 // The Control Plane checks the signatures and policy it can; the broker decides.
 func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 	var req brokerproto.TxPush
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxManifestBody)).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBody)).Decode(&req); err != nil {
 		s.writeError(w, http.StatusBadRequest, "tx is required")
 		return
 	}
@@ -58,7 +55,11 @@ func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch tx.Action.ActionType {
-	case pqcrypto.ActionVaultCheckout, pqcrypto.ActionStandingRelease, pqcrypto.ActionManualRotation:
+	case pqcrypto.ActionVaultCheckout, pqcrypto.ActionManualRotation:
+	case pqcrypto.ActionStandingRelease:
+		// The broker has no standing_release path yet, so it is refused here (decision 76).
+		s.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "transaction refused", "code": "unsupported_action"})
+		return
 	default:
 		s.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "transaction refused", "code": string(pqcrypto.ErrAction)})
 		return
@@ -96,7 +97,7 @@ func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "could not audit")
 		return
 	}
-	if err := s.relay(r, account, brokerproto.MsgTx, req); err != nil {
+	if err := s.relayTx(r, account, brokerproto.MsgTx, req); err != nil {
 		s.writeError(w, http.StatusServiceUnavailable, "the broker is not connected; submit again")
 		return
 	}
@@ -135,11 +136,11 @@ func (s *Server) handleTxProof(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Proof pqcrypto.B64 `json:"proof"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxManifestBody)).Decode(&req); err != nil || len(req.Proof) == 0 {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBody)).Decode(&req); err != nil || len(req.Proof) == 0 {
 		s.writeError(w, http.StatusBadRequest, "proof is required")
 		return
 	}
-	if err := s.relay(r, acct, brokerproto.MsgProof, brokerproto.ProofPush{RequestID: id, Proof: req.Proof}); err != nil {
+	if err := s.relayTx(r, acct, brokerproto.MsgProof, brokerproto.ProofPush{RequestID: id, Proof: req.Proof}); err != nil {
 		s.writeError(w, http.StatusServiceUnavailable, "the broker is not connected; submit again")
 		return
 	}
@@ -152,7 +153,7 @@ func (s *Server) handleTxCheckin(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusNotFound, "unknown transaction")
 		return
 	}
-	if err := s.relay(r, acct, brokerproto.MsgCheckin, brokerproto.CheckinPush{RequestID: id}); err != nil {
+	if err := s.relayTx(r, acct, brokerproto.MsgCheckin, brokerproto.CheckinPush{RequestID: id}); err != nil {
 		s.writeError(w, http.StatusServiceUnavailable, "the broker is not connected; submit again")
 		return
 	}

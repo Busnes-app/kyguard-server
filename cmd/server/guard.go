@@ -167,6 +167,16 @@ func startBrokerListener(cfg *config.Config, srv *api.Server) (*http.Server, err
 	return hs, nil
 }
 
+// stopBrokerListener closes the broker listener and drops every channel it holds; Close
+// alone leaves hijacked WebSockets open.
+func stopBrokerListener(srv *api.Server, hs *http.Server) {
+	if hs == nil {
+		return
+	}
+	_ = hs.Close()
+	srv.BrokerListener().CloseAll()
+}
+
 func runGuardCommand(name string, args []string) error {
 	cfg, err := config.LoadFromEnv()
 	if err != nil {

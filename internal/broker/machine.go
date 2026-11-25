@@ -3,10 +3,12 @@ package broker
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"math/big"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -119,6 +121,9 @@ type rotationContext struct {
 	target  *pqcrypto.TargetDescriptor
 	current *pqcrypto.Chain
 	conn    Connector
+	// scheduled is set for a scheduled occurrence, which never runs while the target's
+	// minimum password age is longer than the schedule interval (§4.4).
+	scheduled bool
 }
 
 func (m *Machine) rotationContext(a *Account) (*rotationContext, error) {
@@ -188,12 +193,17 @@ func (m *Machine) Rotate(ctx context.Context, account pqcrypto.UUID, occurrence 
 	if a.Quarantined {
 		return ErrQuarantined
 	}
+	if a.Run != nil && a.Run.State == StateReserving {
+		if err := m.settle(ctx, a); err != nil {
+			return fmt.Errorf("%w: an earlier reservation is not settled: %w", ErrBlocked, err)
+		}
+	}
 	if a.Run.Open() || a.Enrollment.Open() {
 		return ErrBlocked
 	}
 	rc, err := m.rotationContext(a)
 	if errors.Is(err, ErrNeedsEnrollment) && a.Health != HealthNeedsEnrollment {
-		a.Health, a.HealthReason = HealthNeedsEnrollment, "the target descriptor changed"
+		setHealth(a, HealthNeedsEnrollment, "the target descriptor changed")
 		if serr := m.J.Save(a); serr != nil {
 			return serr
 		}
@@ -202,6 +212,7 @@ func (m *Machine) Rotate(ctx context.Context, account pqcrypto.UUID, occurrence 
 	if err != nil {
 		return err
 	}
+	rc.scheduled = true
 	attempt := pqcrypto.Counter(0)
 	if r := a.Run; r != nil && r.PolicyEpoch == rc.policy.Epoch && r.Occurrence == occurrence {
 		attempt = r.Attempt + 1
@@ -228,23 +239,18 @@ type runSpec struct {
 
 func (m *Machine) start(ctx context.Context, a *Account, rc *rotationContext, spec runSpec) error {
 	op := spec.op
-	version, err := m.CP.Reserve(ctx, a.ID, op, a.HighestVersion)
-	if err != nil {
-		return err
+	// A run whose journaled receipts the Control Plane has not acknowledged is delivered
+	// before a new run replaces it; otherwise its operation ID and lock would be lost.
+	if r := a.Run; r != nil && len(r.Receipts) > 0 && !r.Sent {
+		if err := m.send(ctx, a); err != nil {
+			return fmt.Errorf("%w: earlier results not delivered: %w", ErrBlocked, err)
+		}
 	}
-	if version <= a.HighestVersion {
-		log.Printf("[BROKER] ALERT: Control Plane reserved secret_version %s for %s, at or below the highest seen %s", version, a.ID, a.HighestVersion)
-		return ErrStaleVersion
-	}
-	pNew := NewPassword()
-	defer clear(pNew)
-	env, err := m.seal(rc, a.ID, version, pNew)
-	if err != nil {
-		return err
-	}
-	a.HighestVersion = version
+	// The attempt is journaled before the reservation, so a crash or a lost reply can
+	// never leave a Control Plane lock with no local run to settle it.
+	// A manual_rotation burns its request_id with this first durable state (§3.4 step 6).
 	a.Run = &Run{OperationID: op, PolicyEpoch: rc.policy.Epoch, Occurrence: spec.occurrence, Attempt: spec.attempt, Due: spec.due,
-		State: StatePrepared, SecretVersion: version, NewEnvelope: env, OldEnvelopeID: rc.current.Envelope.EnvelopeID, Lease: spec.lease}
+		State: StateReserving, SeenBefore: a.HighestVersion, OldEnvelopeID: rc.current.Envelope.EnvelopeID, Lease: spec.lease}
 	save := m.J.Save
 	if spec.burn != nil {
 		save = func(a *Account) error { return m.J.SaveBurn(a, spec.burn.RequestID, spec.burn.ExpiresAt.Time) }
@@ -252,13 +258,82 @@ func (m *Machine) start(ctx context.Context, a *Account, rc *rotationContext, sp
 	if err := save(a); err != nil {
 		return err
 	}
+	if err := m.hook("reserving"); err != nil {
+		return err
+	}
+	pNew := NewPassword()
+	defer clear(pNew)
+	if err := m.prepare(ctx, a, rc, pNew); err != nil {
+		return err
+	}
 	if err := m.hook("prepared"); err != nil {
 		return err
 	}
-	if err := m.CP.StoreEnvelope(ctx, op, env); err != nil {
+	if err := m.CP.StoreEnvelope(ctx, op, a.Run.NewEnvelope); err != nil {
 		return m.abort(ctx, a, pqcrypto.ReasonRestartBeforeSend)
 	}
 	return m.mutate(ctx, a, rc, pNew)
+}
+
+// prepare reserves the reserving run's version under its operation ID, seals P_new and
+// journals the run prepared. A refusal means the Control Plane holds no reservation for
+// the operation, so the run ends with nothing to send; any other failure leaves it
+// reserving, to be settled later.
+func (m *Machine) prepare(ctx context.Context, a *Account, rc *rotationContext, pNew []byte) error {
+	r := a.Run
+	version, err := m.CP.Reserve(ctx, a.ID, r.OperationID, a.HighestVersion)
+	var refused brokerproto.RemoteError
+	if errors.As(err, &refused) {
+		r.State, r.Sent = StateAborted, true
+		if serr := m.J.Save(a); serr != nil {
+			return serr
+		}
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	// Sync may already have copied this operation's own reservation into HighestVersion, so
+	// the version is checked against what was seen before reserving and every known envelope.
+	if version <= r.SeenBefore || slices.ContainsFunc(a.Chains, func(c ChainCopy) bool { return versionOf(c.Envelope) >= version }) {
+		log.Printf("[BROKER] ALERT: Control Plane reserved secret_version %s for %s, at or below the highest seen %s", version, a.ID, r.SeenBefore)
+		return ErrStaleVersion
+	}
+	env, err := m.seal(rc, a.ID, version, pNew)
+	if err != nil {
+		return err
+	}
+	a.HighestVersion = max(a.HighestVersion, version)
+	r.State, r.SecretVersion, r.NewEnvelope = StatePrepared, version, env
+	return m.J.Save(a)
+}
+
+// settle ends a run journaled before its reservation was known: the same operation's
+// reservation is fetched again and, if one exists, its envelope is stored and aborted
+// (restart_before_send) so the Control Plane releases the lock. No write was ever sent.
+func (m *Machine) settle(ctx context.Context, a *Account) error {
+	p, d := m.Trust.Policy(a.ID)
+	if p == nil || p.AccountKind != pqcrypto.KindManaged {
+		return ErrNotActive
+	}
+	pw := NewPassword()
+	defer clear(pw)
+	if err := m.prepare(ctx, a, &rotationContext{policy: p, digest: d}, pw); err != nil {
+		if a.Run.State == StateAborted {
+			return nil // nothing was reserved
+		}
+		return err
+	}
+	return m.abort(ctx, a, pqcrypto.ReasonRestartBeforeSend)
+}
+
+// versionOf reads an envelope's secret_version, or 0.
+func versionOf(raw []byte) pqcrypto.Counter {
+	var v struct {
+		V pqcrypto.Counter `json:"secret_version"`
+	}
+	json.Unmarshal(raw, &v)
+	return v.V
 }
 
 // seal builds and signs the P_new envelope: the active broker, and the recovery key when
@@ -307,7 +382,8 @@ func (m *Machine) mutate(ctx context.Context, a *Account, rc *rotationContext, p
 		// §4.6: one attempt only; never retry a credential. The quarantine is journaled with
 		// the abort, before any Control Plane call can fail.
 		log.Printf("[BROKER] ALERT: account %s quarantined: the current credential was denied", a.ID)
-		a.Quarantined, a.Health, a.HealthReason = true, HealthAuthFailed, "pre-rotation login with the current credential was denied"
+		a.Quarantined = true
+		setHealth(a, HealthAuthFailed, "pre-rotation login with the current credential was denied")
 		return m.abort(ctx, a, pqcrypto.ReasonRestartBeforeSend)
 	}
 	if err != nil {
@@ -322,6 +398,12 @@ func (m *Machine) mutate(ctx context.Context, a *Account, rc *rotationContext, p
 		if last, minAge, err := ar.PasswordAge(ctx); err == nil {
 			a.MinAgeSeconds, a.MinAgeDeadline = int64(minAge/time.Second), last.Add(minAge)
 		}
+	}
+	// Recheck the age just read: Tick saw only the journaled one (PR Reviewer Guide on #12).
+	if sch := rc.policy.RotationSchedule; rc.scheduled && sch != nil && a.MinAgeSeconds > sch.IntervalSeconds {
+		s.Close()
+		setHealth(a, HealthRotationFailed, ReasonBelowMinAge)
+		return m.abort(ctx, a, pqcrypto.ReasonRestartBeforeSend)
 	}
 	committed := false
 	commit := func() error {
@@ -472,7 +554,7 @@ func (m *Machine) abort(ctx context.Context, a *Account, reason string) error {
 	a.Run.State, a.Run.Reason, a.Run.Receipts = StateAborted, reason, []pqcrypto.B64{r}
 	refused := reason == pqcrypto.ReasonRefused
 	if refused {
-		a.Health, a.HealthReason = HealthRotationFailed, "the target refused the change"
+		setHealth(a, HealthRotationFailed, "the target refused the change")
 	}
 	switch {
 	case a.Run.Lease != "":
@@ -530,7 +612,8 @@ func (m *Machine) send(ctx context.Context, a *Account) error {
 	if a.Run.State == StateDependenciesComplete {
 		a.Run.State = StateReleaseAuthorized
 		a.LastConsumedDue, a.CurrentCommitAt = a.Run.Due, m.now()
-		a.Health, a.HealthReason, a.Refusals, a.NextAttemptAt = HealthHealthy, "", 0, time.Time{}
+		setHealth(a, HealthHealthy, "")
+		a.Refusals, a.NextAttemptAt = 0, time.Time{}
 		if l := a.Lease; l != nil && l.RequestID == a.Run.Lease && l.Open() {
 			l.State, l.CloseReason, l.Mirrored = LeaseClosed, "closed_by_release", false // only release closes a lease
 		}
@@ -538,36 +621,55 @@ func (m *Machine) send(ctx context.Context, a *Account) error {
 	if err := m.J.Save(a); err != nil {
 		return err
 	}
-	m.mirror(ctx, a)
+	_ = m.mirror(ctx, a)
 	m.report(ctx, a, "")
-	return nil
+	return m.applyDeferred(a)
 }
 
 // quarantine stops all work on the account until re-enrollment (§4.3 rule 6).
 func (m *Machine) quarantine(ctx context.Context, a *Account, health, reason string) error {
 	log.Printf("[BROKER] ALERT: account %s quarantined: %s", a.ID, reason)
-	a.Quarantined, a.Health, a.HealthReason = true, health, reason
+	a.Quarantined = true
+	setHealth(a, health, reason)
 	if err := m.J.Save(a); err != nil {
+		return err
+	}
+	if err := m.hook("quarantined"); err != nil {
 		return err
 	}
 	m.report(ctx, a, "")
 	return nil
 }
 
-// report tells the Control Plane the account's health; it is resent on the next sync.
+// setHealth changes the account's health and marks it unreported, in the caller's next
+// journal save, so a crash before report still leaves it to be sent by Recover.
+func setHealth(a *Account, health, reason string) {
+	a.Health, a.HealthReason, a.Unreported = health, reason, true
+}
+
+// report tells the Control Plane the account's health. Unreported is cleared only once the
+// Control Plane acknowledges it; until then every Recover sends the health again.
 func (m *Machine) report(ctx context.Context, a *Account, runState string) {
 	s := brokerproto.StatusRequest{AccountID: a.ID, Health: a.Health, Reason: a.HealthReason}
 	if runState != "" && a.Run != nil {
 		s.OperationID, s.RunState = a.Run.OperationID, runState
 	}
-	if err := m.CP.Status(ctx, s); err != nil {
+	err := m.CP.Status(ctx, s)
+	if err != nil {
 		log.Printf("[BROKER] status for %s not delivered: %v", a.ID, err)
+	}
+	if unreported := err != nil; unreported != a.Unreported {
+		a.Unreported = unreported
+		if err := m.J.Save(a); err != nil {
+			log.Printf("[BROKER] status flag for %s not journaled: %v", a.ID, err)
+		}
 	}
 }
 
-// Recover settles every journaled run after a restart (§4.3 rule 3) and re-sends results the
-// Control Plane has not acknowledged. It never sends a second write: an intent with
-// ack_received gets only the one probe, and a recorded probe without a result quarantines.
+// Recover settles every journaled run after a restart (§4.3 rule 3) and re-sends results and
+// health the Control Plane has not acknowledged. It never sends a second write: an intent
+// with ack_received gets only the one probe, and a recorded probe without a result
+// quarantines.
 func (m *Machine) Recover(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -577,6 +679,9 @@ func (m *Machine) Recover(ctx context.Context) error {
 	}
 	var errs []error
 	for _, a := range accts {
+		if a.Unreported {
+			m.report(ctx, a, "")
+		}
 		if err := m.recover(ctx, a); err != nil {
 			errs = append(errs, fmt.Errorf("account %s: %w", a.ID, err))
 		}
@@ -584,7 +689,10 @@ func (m *Machine) Recover(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("account %s enrollment: %w", a.ID, err))
 		}
 		if b, err := m.J.Account(a.ID); err == nil {
-			m.mirror(ctx, b)
+			m.flush(ctx, b)
+			if err := m.applyDeferred(b); err != nil {
+				errs = append(errs, fmt.Errorf("account %s deferred policy: %w", a.ID, err))
+			}
 		}
 	}
 	return errors.Join(errs...)
@@ -595,6 +703,8 @@ func (m *Machine) recover(ctx context.Context, a *Account) error {
 	switch {
 	case r == nil || r.Sent:
 		return nil
+	case r.State == StateReserving:
+		return m.settle(ctx, a)
 	case r.State == StateTargetVerified || r.State == StateDependenciesComplete:
 		env, err := m.Trust.VerifyEnvelope(r.NewEnvelope, pqcrypto.EnvelopeContext{})
 		if err != nil {

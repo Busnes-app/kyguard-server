@@ -64,10 +64,15 @@ Owns data models, store interfaces (`UserStore`, `SessionStore`, `GroupStore`, `
   compare-and-swap on `(seq = head + 1, prev = head hash)`; a byte-identical re-append is a
   no-op. `Complete` appends, moves the current envelope and deletes the lock by
   `operation_id` in one transaction.
+  `ChainsAfter` (a version range with a limit), `OpenChains` and `Chain` read only the
+  envelopes asked for, then their receipts by envelope ID; `Chains` reads a whole history
+  and is for tests.
 - Enrollment (migration 102): `ReserveEnrollment` moves the lock to the enrollment
   operation (allowed with no lock or a quarantined account) and keeps the holder it
   displaced; a reservation still `reserved` after 15 minutes is restored by
-  `ExpireEnrollments` (and lazily, in its own transaction, before any reserve or accept);
+  `ExpireEnrollments` (and lazily, in its own transaction, before any reserve or accept)
+  through one conditional delete (`state = 'reserved'` and past expiry), so an acceptance
+  that commits first keeps the lock (`TestExpiryNeverReleasesAnAcceptanceItRaces`);
   `accepted` never expires; `Complete(..., LockRestore)` reinstates the displaced holder.
 - Checkout (migration 103): `checkout_leases` mirrors broker leases with a partial unique
   index allowing one non-closed lease per account; a closed lease never reopens.

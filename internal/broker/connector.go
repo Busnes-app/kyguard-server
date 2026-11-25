@@ -40,7 +40,8 @@ type Session interface {
 }
 
 // AgeReporter is a Session that can read the account's last change and the target's
-// minimum password age (§4.4).
+// minimum password age (§4.4). The broker reads it at every pre-rotation login, so the
+// schedule and refusal retries use the target's real minimum age.
 type AgeReporter interface {
 	PasswordAge(ctx context.Context) (lastChange time.Time, minAge time.Duration, err error)
 }

@@ -65,11 +65,20 @@ func (l *Listener) account(ctx context.Context, tr *pqcrypto.Trust, b *store.Bro
 	if err != nil {
 		return nil, nil, errNotInPool
 	}
-	p, _ := tr.Policy(id)
-	if a.PoolID != b.PoolID || p == nil || p.AccountKind != pqcrypto.KindManaged || p.PoolID != pqcrypto.UUID(b.PoolID) {
+	p := inPool(tr, b, a)
+	if p == nil {
 		return nil, nil, errNotInPool
 	}
 	return a, p, nil
+}
+
+// inPool returns a's current managed policy if it places a in the broker's pool.
+func inPool(tr *pqcrypto.Trust, b *store.Broker, a *store.Account) *pqcrypto.PolicyManifest {
+	p, _ := tr.Policy(pqcrypto.UUID(a.ID))
+	if a.PoolID != b.PoolID || p == nil || p.AccountKind != pqcrypto.KindManaged || p.PoolID != pqcrypto.UUID(b.PoolID) {
+		return nil
+	}
+	return p
 }
 
 func (l *Listener) sync(ctx context.Context, tr *pqcrypto.Trust, b *store.Broker, body json.RawMessage) (*SyncReply, error) {
@@ -77,37 +86,39 @@ func (l *Listener) sync(ctx context.Context, tr *pqcrypto.Trust, b *store.Broker
 	if err := decode(body, &req); err != nil {
 		return nil, err
 	}
-	ms, err := l.Store.Guard().Manifests(ctx, int64(max(req.ManifestsAfter, 0)))
+	ms, err := l.Store.Guard().ManifestsPage(ctx, int64(max(req.ManifestsAfter, 0)), SyncPage)
 	if err != nil {
 		return nil, err
 	}
 	out := &SyncReply{Manifests: []pqcrypto.B64{}, Accounts: []pqcrypto.UUID{}}
-	for i, m := range ms {
-		if i == SyncPage {
+	budget := SyncBudget
+	for _, m := range ms {
+		// A page always carries one manifest, which fits a frame (cptrust.MaxManifest).
+		size := encoded(m.Manifest)
+		if len(out.Manifests) == SyncPage || (size > budget && len(out.Manifests) > 0) {
 			return out, nil
 		}
+		budget -= size
 		out.Manifests = append(out.Manifests, m.Manifest)
 	}
 	if len(out.Manifests) > 0 {
 		return out, nil // accounts come once every manifest is delivered
 	}
-	accts, err := l.Store.Vault().PoolAccounts(ctx, b.PoolID)
+	// One page scans at most SyncAccountsPage rows, in ID order, eligible or not, and
+	// AccountsNext continues past the ones filtered out (PR Reviewer Guide on #10).
+	accts, err := l.Store.Vault().PoolAccounts(ctx, b.PoolID, string(req.AccountsAfter), SyncAccountsPage)
 	if err != nil {
 		return nil, err
 	}
-	out.Done = true
 	for _, a := range accts {
-		if req.AccountsAfter != "" && a.ID <= string(req.AccountsAfter) {
-			continue
+		if inPool(tr, b, a) != nil {
+			out.Accounts = append(out.Accounts, pqcrypto.UUID(a.ID))
 		}
-		if _, _, err := l.account(ctx, tr, b, pqcrypto.UUID(a.ID)); err != nil {
-			continue
-		}
-		if len(out.Accounts) == SyncAccountsPage {
-			out.Done = false
-			break
-		}
-		out.Accounts = append(out.Accounts, pqcrypto.UUID(a.ID))
+	}
+	if len(accts) < SyncAccountsPage {
+		out.Done = true
+	} else {
+		out.AccountsNext = pqcrypto.UUID(accts[len(accts)-1].ID)
 	}
 	return out, nil
 }
@@ -122,47 +133,56 @@ func (l *Listener) syncAccount(ctx context.Context, tr *pqcrypto.Trust, b *store
 		return nil, err
 	}
 	st := &AccountState{AccountID: req.AccountID, HighestVersion: pqcrypto.Counter(a.HighestSecretVersion), Chains: []ChainState{}}
-	if raw, err := l.Store.Vault().TargetDescriptor(ctx, string(p.TargetDescriptorDigest)); err == nil {
-		st.Descriptor = raw
-	}
-	chains, err := l.Store.Vault().Chains(ctx, a.ID)
+	// The broker cannot use a state without its policy's descriptor, so a failed lookup is
+	// an error it retries, not a quiet omission (PR Reviewer Guide on #10).
+	raw, err := l.Store.Vault().TargetDescriptor(ctx, string(p.TargetDescriptorDigest))
 	if err != nil {
 		return nil, err
 	}
-	budget, newer := SyncBudget, 0
-	for _, c := range chains { // ascending secret_version
-		old := c.Envelope.SecretVersion <= uint64(req.AfterVersion)
-		if old && (req.Continue || (c.Envelope.EnvelopeID != a.CurrentEnvelopeID && terminated(c))) {
-			continue
+	st.Descriptor = raw
+	// One page is the chains above From, in version order: the open ones up to AfterVersion,
+	// then every newer one. At most SyncChains+1 are read and the whole reply, descriptor
+	// included, stays within SyncBudget; a page always carries one chain, which fits a frame
+	// (store.MaxChain), so every continuation advances.
+	from, upTo := uint64(req.From), uint64(req.AfterVersion)
+	cs, err := l.Store.Vault().OpenChains(ctx, a.ID, from, upTo, SyncChains+1)
+	if err != nil {
+		return nil, err
+	}
+	if n := SyncChains + 1 - len(cs); n > 0 {
+		newer, err := l.Store.Vault().ChainsAfter(ctx, a.ID, max(from, upTo), n)
+		if err != nil {
+			return nil, err
 		}
-		cs := ChainState{Envelope: c.Envelope.Envelope, Receipts: []pqcrypto.B64{}}
-		size := encoded(c.Envelope.Envelope)
-		for _, r := range c.Receipts {
-			cs.Receipts = append(cs.Receipts, r.Receipt)
-			size += encoded(r.Receipt)
-		}
-		if !old && size > budget && newer > 0 {
+		cs = append(cs, newer...)
+	}
+	budget := SyncBudget - encoded(st.Descriptor)
+	for i, c := range cs {
+		if i == SyncChains || (size(c) > budget && i > 0) {
 			st.More = true
 			break
 		}
-		budget -= size
-		if !old {
-			newer++ // a page with More always carries at least one newer chain
-		}
-		st.Chains = append(st.Chains, cs)
+		budget -= add(st, c)
 	}
 	return st, nil
 }
 
-// terminated reports a chain that can take no new receipt but rewrap_user after release.
-func terminated(c *store.StoredChain) bool {
+func size(c *store.StoredChain) int {
+	n := encoded(c.Envelope.Envelope)
 	for _, r := range c.Receipts {
-		switch r.ReceiptType {
-		case pqcrypto.ReceiptAbort, pqcrypto.ReceiptRelease, pqcrypto.ReceiptVaultCommit:
-			return true
-		}
+		n += encoded(r.Receipt)
 	}
-	return false
+	return n
+}
+
+// add appends c to st and returns its encoded size.
+func add(st *AccountState, c *store.StoredChain) int {
+	cs := ChainState{Envelope: c.Envelope.Envelope, Receipts: []pqcrypto.B64{}}
+	for _, r := range c.Receipts {
+		cs.Receipts = append(cs.Receipts, r.Receipt)
+	}
+	st.Chains = append(st.Chains, cs)
+	return size(c)
 }
 
 func decode(body json.RawMessage, v any) error {
@@ -260,13 +280,11 @@ func (l *Listener) receipts(ctx context.Context, tr *pqcrypto.Trust, b *store.Br
 	if _, _, err := l.account(ctx, tr, b, req.AccountID); err != nil {
 		return err
 	}
-	stored, err := l.Store.Vault().Chains(ctx, string(req.AccountID))
-	if err != nil {
-		return err
-	}
+	stored := map[pqcrypto.UUID]*store.StoredChain{} // only the chains the receipts name
 	chains := map[pqcrypto.UUID]*pqcrypto.Chain{}
 	var out []*store.StoredReceipt
 	current, runState, lock := "", "", store.LockKeep
+	var err error
 	for _, raw := range req.Receipts {
 		var peek struct {
 			EnvelopeID pqcrypto.UUID    `json:"envelope_id"`
@@ -275,15 +293,14 @@ func (l *Listener) receipts(ctx context.Context, tr *pqcrypto.Trust, b *store.Br
 		if json.Unmarshal(raw, &peek) != nil {
 			return errors.New("malformed receipt")
 		}
-		ch := chains[peek.EnvelopeID]
-		var sc *store.StoredChain
-		for _, c := range stored {
-			if c.Envelope.EnvelopeID == string(peek.EnvelopeID) {
-				sc = c
-			}
-		}
+		ch, sc := chains[peek.EnvelopeID], stored[peek.EnvelopeID]
 		if sc == nil {
-			return errors.New("receipt for an unknown envelope")
+			if sc, err = l.Store.Vault().Chain(ctx, string(req.AccountID), string(peek.EnvelopeID)); errors.Is(err, store.ErrNotFound) {
+				return errors.New("receipt for an unknown envelope")
+			} else if err != nil {
+				return err
+			}
+			stored[peek.EnvelopeID] = sc
 		}
 		if ch == nil {
 			if ch, err = chainFor(tr, sc); err != nil {
@@ -424,6 +441,10 @@ func (l *Listener) lease(ctx context.Context, tr *pqcrypto.Trust, b *store.Broke
 	if _, _, err := l.account(ctx, tr, b, r.AccountID); err != nil {
 		return err
 	}
+	if !r.PolicyDigest.Valid() || !r.TargetDescriptorDigest.Valid() {
+		return errors.New("malformed request")
+	}
 	return l.Store.Vault().MirrorLease(ctx, &store.Lease{RequestID: string(r.RequestID), AccountID: string(r.AccountID), BrokerID: b.ID,
-		SecretVersion: uint64(r.SecretVersion), State: r.State, CloseReason: r.CloseReason, OpenedAt: r.OpenedAt.Time, ExpiresAt: r.ExpiresAt.Time})
+		SecretVersion: uint64(r.SecretVersion), State: r.State, CloseReason: r.CloseReason, PolicyDigest: string(r.PolicyDigest),
+		TargetDescriptorDigest: string(r.TargetDescriptorDigest), OpenedAt: r.OpenedAt.Time, ExpiresAt: r.ExpiresAt.Time})
 }

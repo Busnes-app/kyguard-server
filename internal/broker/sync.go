@@ -2,7 +2,6 @@ package broker
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
+	"github.com/Busnes-app/kyguard-server/internal/pqcrypto/canonical"
 )
 
 func (m *Machine) alert(format string, args ...any) {
@@ -42,12 +42,12 @@ func (m *Machine) Sync(ctx context.Context) error {
 		if s.Done {
 			break
 		}
-		if len(s.Manifests) == 0 && len(s.Accounts) == 0 {
+		if len(s.Manifests) == 0 && s.AccountsNext <= req.AccountsAfter {
 			return errors.New("broker: sync page with no progress")
 		}
 		req.ManifestsAfter += len(s.Manifests)
-		if len(s.Accounts) > 0 {
-			req.AccountsAfter = s.Accounts[len(s.Accounts)-1]
+		if len(s.Manifests) == 0 {
+			req.AccountsAfter = s.AccountsNext
 		}
 	}
 	var errs []error
@@ -65,9 +65,9 @@ func (m *Machine) syncOne(ctx context.Context, id pqcrypto.UUID) error {
 	if err != nil {
 		return err
 	}
-	after := a.HighestCopied()
-	for first := true; ; first = false {
-		st, err := m.CP.SyncAccount(ctx, id, after, !first)
+	after, from := a.HighestCopied(), pqcrypto.Counter(0)
+	for {
+		st, err := m.CP.SyncAccount(ctx, id, after, from)
 		if err != nil {
 			return err
 		}
@@ -80,23 +80,21 @@ func (m *Machine) syncOne(ctx context.Context, id pqcrypto.UUID) error {
 		if !st.More {
 			return nil
 		}
-		next := after
+		next := from
 		for _, c := range st.Chains {
-			var v struct {
-				V pqcrypto.Counter `json:"secret_version"`
-			}
-			if json.Unmarshal(c.Envelope, &v) == nil && v.V > next {
-				next = v.V
-			}
+			next = max(next, versionOf(c.Envelope))
 		}
-		if next == after {
+		if next == from {
 			return errors.New("broker: sync page with no progress")
 		}
-		after = next
+		from = next
 	}
 }
 
 func (m *Machine) acceptManifest(raw []byte) error {
+	if deferred, err := m.deferPolicy(raw); deferred || err != nil {
+		return err
+	}
 	before := len(m.Trust.Records())
 	rec, err := m.Trust.Accept(raw)
 	if err != nil {
@@ -119,10 +117,67 @@ func (m *Machine) acceptManifest(raw []byte) error {
 		// minimum-age deadline and next attempt time carry over (§3.4, §4.4).
 		a.PolicyEpoch, a.PolicyPersistedAt, a.Refusals = rec.Epoch, m.now(), 0
 		if a.HealthReason == ReasonBelowMinAge {
-			a.Health, a.HealthReason = "", ""
+			setHealth(a, "", "")
 		}
 		return m.J.Save(a)
 	}
+	return nil
+}
+
+// deferPolicy holds back a verified policy that changes the target descriptor of an account
+// with an open lease (§3.3): the lease's cleanup stays at the descriptor it opened under.
+// Only the highest such epoch is kept; applyDeferred accepts it once the lease closes.
+func (m *Machine) deferPolicy(raw []byte) (bool, error) {
+	if typ, _ := pqcrypto.PeekType(raw); typ != pqcrypto.TypePolicy {
+		return false, nil
+	}
+	var p pqcrypto.PolicyManifest
+	if _, err := canonical.Decode(raw, &p); err != nil {
+		return false, nil // Accept refuses it and alerts
+	}
+	a, err := m.J.Account(p.Scope.ID)
+	if err != nil {
+		return false, err
+	}
+	if !a.Lease.Open() || p.TargetDescriptorDigest == a.Lease.TargetDescriptorDigest {
+		return false, nil
+	}
+	if err := m.Trust.Check(raw); err != nil {
+		return false, nil // Accept refuses it and alerts
+	}
+	if len(a.DeferredPolicy) > 0 {
+		var held pqcrypto.PolicyManifest
+		if _, err := canonical.Decode(a.DeferredPolicy, &held); err == nil && held.Epoch >= p.Epoch {
+			return true, nil // already held, or superseded by the held one
+		}
+	}
+	a.DeferredPolicy = raw
+	m.alert("policy epoch %s for %s deferred: it changes the target while lease %s is open", p.Epoch, a.ID, a.Lease.RequestID)
+	return true, m.J.Save(a)
+}
+
+// applyDeferred accepts the deferred policy once no lease is open. It is cleared first: the
+// Control Plane re-sends it on every sync, so a crash in between loses nothing. a is
+// reloaded, since accepting a policy moves the schedule floor.
+func (m *Machine) applyDeferred(a *Account) error {
+	if len(a.DeferredPolicy) == 0 || a.Lease.Open() {
+		return nil
+	}
+	raw := a.DeferredPolicy
+	a.DeferredPolicy = nil
+	if err := m.J.Save(a); err != nil {
+		return err
+	}
+	if m.Trust.Check(raw) == nil { // a later policy may have superseded it
+		if err := m.acceptManifest(raw); err != nil {
+			return err
+		}
+	}
+	b, err := m.J.Account(a.ID)
+	if err != nil {
+		return err
+	}
+	*a = *b
 	return nil
 }
 

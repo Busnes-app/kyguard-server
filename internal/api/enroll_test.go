@@ -145,9 +145,13 @@ func TestEnrollmentRoutes(t *testing.T) {
 		t.Fatalf("broker-signed candidate: %d %s", w.Code, w.Body)
 	}
 	body, _ = json.Marshal(brokerproto.EnrollPush{Tx: good.Tx, Envelope: good.Envelope})
-	// No broker is connected in this test: the candidate is stored and the CLI retries.
-	if w := postJSON(srv, user, base+"/"+string(reqID), body); w.Code != http.StatusServiceUnavailable {
+	// No broker is connected to this replica: the push is queued for the replica that holds
+	// the broker's channel (PR Reviewer Guide on #15).
+	if w := postJSON(srv, user, base+"/"+string(reqID), body); w.Code != http.StatusAccepted {
 		t.Fatalf("submit: %d %s", w.Code, w.Body)
+	}
+	if ps, err := st.Vault().TakePushes(ctx, string(b.ID), 10, time.Now()); err != nil || len(ps) != 1 || ps[0].Type != brokerproto.MsgEnroll {
+		t.Fatalf("queued pushes %v %v", ps, err)
 	}
 	if chains, _ := st.Vault().Chains(ctx, string(acct)); len(chains) != 1 || chains[0].Envelope.SecretVersion != 1 {
 		t.Fatalf("candidate not stored: %+v", chains)

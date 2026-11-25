@@ -100,6 +100,9 @@ func blocked(a *Account) error {
 // checkout sends a single-use challenge (§3.6 step 2). Nothing else is persisted until the
 // possession proof verifies.
 func (m *Machine) checkout(ctx context.Context, a *Account, tx *pqcrypto.AccessTransaction, raw []byte) error {
+	if err := m.unflushed(ctx, a); err != nil {
+		return err
+	}
 	if err := blocked(a); err != nil {
 		return err
 	}
@@ -193,6 +196,9 @@ func (m *Machine) deliver(ctx context.Context, a *Account, c *Challenge, raw []b
 	if _, err := pqcrypto.VerifyPoP(raw, tx, d, c.Challenge, pqcrypto.PurposeDeliver); err != nil {
 		return err
 	}
+	if err := m.unflushed(ctx, a); err != nil {
+		return err
+	}
 	if err := blocked(a); err != nil {
 		return err
 	}
@@ -201,6 +207,7 @@ func (m *Machine) deliver(ctx context.Context, a *Account, c *Challenge, raw []b
 	}
 	now := m.now()
 	a.Lease = &Lease{RequestID: tx.RequestID, Tx: c.Tx, TxDigest: d.Hex(), SecretVersion: tx.Action.SecretVersion, EncKeyID: tx.Action.EncKeyID,
+		PolicyDigest: tx.PolicyDigest, TargetDescriptorDigest: tx.Action.TargetDescriptorDigest,
 		OpenedAt: now, ExpiresAt: now.Add(time.Duration(tx.Action.CheckoutTTLSeconds) * time.Second), State: LeaseActive}
 	if err := m.J.SaveConsume(a, tx.RequestID, tx.ExpiresAt.Time); err != nil {
 		return err
@@ -208,7 +215,11 @@ func (m *Machine) deliver(ctx context.Context, a *Account, c *Challenge, raw []b
 	if err := m.hook("lease_open"); err != nil {
 		return err
 	}
-	m.mirror(ctx, a)
+	// The Control Plane must hold the lease, under the policy it opened under, before the
+	// credential is touched: it then refuses a descriptor change until the lease closes.
+	if err := m.mirror(ctx, a); err != nil {
+		return m.endDelivery(ctx, a, "not_mirrored", false)
+	}
 
 	rc, err := m.target(a)
 	if err != nil {
@@ -241,21 +252,69 @@ func (m *Machine) deliver(ctx context.Context, a *Account, c *Challenge, raw []b
 	if err != nil {
 		return err
 	}
-	return m.CP.Delivery(ctx, brokerproto.DeliveryRequest{RequestID: tx.RequestID, Wrap: wrap})
+	a.Lease.Delivery = &wrap // journaled, so a lost delivery is re-sent (flush)
+	if err := m.J.Save(a); err != nil {
+		return err
+	}
+	return m.deliverWrap(ctx, a)
+}
+
+// deliverWrap sends a journaled checkout wrap until the Control Plane acknowledges it.
+func (m *Machine) deliverWrap(ctx context.Context, a *Account) error {
+	l := a.Lease
+	if l == nil || l.Delivery == nil {
+		return nil
+	}
+	if l.State != LeaseActive {
+		l.Delivery = nil // checked in or expired: the wrap is of no use any more
+		return m.J.Save(a)
+	}
+	if err := m.CP.Delivery(ctx, brokerproto.DeliveryRequest{RequestID: l.RequestID, Wrap: *l.Delivery}); err != nil {
+		return err
+	}
+	l.Delivery = nil
+	return m.J.Save(a)
+}
+
+// flush re-sends what the Control Plane has not acknowledged for the account's lease: its
+// state and its delivery. Recover and every scheduler tick call it.
+func (m *Machine) flush(ctx context.Context, a *Account) {
+	if err := m.mirror(ctx, a); err != nil {
+		return
+	}
+	if err := m.deliverWrap(ctx, a); err != nil {
+		log.Printf("[BROKER] delivery for lease %s not sent: %v", a.Lease.RequestID, err)
+	}
+}
+
+// unflushed refuses to replace a lease whose last state the Control Plane has not
+// acknowledged, after one more attempt to send it: the closure would be lost.
+func (m *Machine) unflushed(ctx context.Context, a *Account) error {
+	if a.Lease == nil || a.Lease.Mirrored {
+		return nil
+	}
+	if err := m.mirror(ctx, a); err != nil {
+		return ErrLeaseOpen
+	}
+	return nil
 }
 
 // endDelivery closes a lease that delivered nothing and, after a denied login, quarantines.
 func (m *Machine) endDelivery(ctx context.Context, a *Account, reason string, quarantine bool) error {
-	a.Lease.State, a.Lease.CloseReason, a.Lease.Mirrored = LeaseClosed, reason, false
+	a.Lease.State, a.Lease.CloseReason, a.Lease.Mirrored, a.Lease.Delivery = LeaseClosed, reason, false, nil
 	if quarantine {
 		log.Printf("[BROKER] ALERT: account %s quarantined: the current credential was denied at checkout", a.ID)
-		a.Quarantined, a.Health, a.HealthReason = true, HealthAuthFailed, "checkout verification with the current credential was denied"
+		a.Quarantined = true
+		setHealth(a, HealthAuthFailed, "checkout verification with the current credential was denied")
 	}
 	if err := m.J.Save(a); err != nil {
 		return err
 	}
-	m.mirror(ctx, a)
+	_ = m.mirror(ctx, a)
 	m.report(ctx, a, "")
+	if err := m.applyDeferred(a); err != nil {
+		return err
+	}
 	return m.CP.TxResult(ctx, brokerproto.TxResultRequest{RequestID: a.Lease.RequestID, Result: reason})
 }
 
@@ -276,30 +335,29 @@ func (m *Machine) checkinProof(ctx context.Context, a *Account, c *Challenge, ra
 	if _, err := pqcrypto.VerifyPoP(raw, &tx, d, c.Challenge, pqcrypto.PurposeCheckin); err != nil {
 		return err
 	}
-	a.Lease.State, a.Lease.NextAttemptAt, a.Lease.Mirrored = LeaseRotationPending, m.now(), false
+	a.Lease.State, a.Lease.NextAttemptAt, a.Lease.Mirrored, a.Lease.Delivery = LeaseRotationPending, m.now(), false, nil
 	if err := m.J.SaveConsume(a, a.Lease.RequestID, time.Time{}); err != nil {
 		return err
 	}
-	m.mirror(ctx, a)
+	_ = m.mirror(ctx, a)
 	return nil
 }
 
-// mirror sends the lease state to checkout_leases; Recover re-sends it until acknowledged.
-func (m *Machine) mirror(ctx context.Context, a *Account) {
+// mirror sends the lease state to checkout_leases; flush re-sends it until acknowledged.
+func (m *Machine) mirror(ctx context.Context, a *Account) error {
 	l := a.Lease
 	if l == nil || l.Mirrored {
-		return
+		return nil
 	}
 	err := m.CP.Lease(ctx, brokerproto.LeaseRequest{RequestID: l.RequestID, AccountID: a.ID, SecretVersion: l.SecretVersion, State: l.State,
-		CloseReason: l.CloseReason, OpenedAt: pqcrypto.NewTime(l.OpenedAt), ExpiresAt: pqcrypto.NewTime(l.ExpiresAt)})
+		CloseReason: l.CloseReason, OpenedAt: pqcrypto.NewTime(l.OpenedAt), ExpiresAt: pqcrypto.NewTime(l.ExpiresAt),
+		PolicyDigest: l.PolicyDigest, TargetDescriptorDigest: l.TargetDescriptorDigest})
 	if err != nil {
 		log.Printf("[BROKER] lease %s not mirrored: %v", l.RequestID, err)
-		return
+		return err
 	}
 	l.Mirrored = true
-	if err := m.J.Save(a); err != nil {
-		log.Printf("[BROKER] journal: %v", err)
-	}
+	return m.J.Save(a)
 }
 
 // manualRotation runs a rotation now under its own request (§3.4): refused with any rotation
@@ -359,6 +417,12 @@ func (m *Machine) Cleanup(ctx context.Context, account pqcrypto.UUID) error {
 	if err != nil {
 		return err
 	}
+	// Cleanup is bound to the descriptor the lease opened under (§3.3); a change waits in
+	// DeferredPolicy, so this holds unless the journal is inconsistent.
+	if rc.policy.TargetDescriptorDigest != l.TargetDescriptorDigest {
+		m.alert("lease %s cleanup refused: the current policy pins another target", l.RequestID)
+		return ErrNeedsEnrollment
+	}
 	op, err := pqcrypto.RequestOpID(l.RequestID, l.Attempt)
 	if err != nil {
 		return err
@@ -396,7 +460,7 @@ func (m *Machine) sealedForTarget(ctx context.Context, a *Account, chain *pqcryp
 		return nil
 	}
 	if a.Health != HealthNeedsEnrollment {
-		a.Health, a.HealthReason = HealthNeedsEnrollment, "the target descriptor changed"
+		setHealth(a, HealthNeedsEnrollment, "the target descriptor changed")
 		if err := m.J.Save(a); err != nil {
 			return err
 		}
