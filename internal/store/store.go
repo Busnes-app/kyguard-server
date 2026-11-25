@@ -27,6 +27,7 @@ type Store interface {
 	Guard() GuardStore
 	Vault() VaultStore
 	MFA() MFAStore
+	Intents() IntentStore
 
 	// SnapshotToSQLite copies a PostgreSQL database, as of one transaction, into a new SQLite
 	// file; ErrSnapshotSchema for a schema this build does not know.
@@ -151,4 +152,34 @@ type SettingsStore interface {
 	SetSettingIfAbsent(ctx context.Context, key, val string) (string, error)
 	DeleteSetting(ctx context.Context, key string) error
 	GetAllSettings(ctx context.Context) (map[string]string, error)
+}
+
+// Intent states (spec §9.3). A pending intent whose process died is reconciled to its noted
+// outcome, or to outcome_unknown; a later successful deposit supersedes unknown deposits.
+const (
+	IntentPending    = "pending"
+	IntentComplete   = "complete"
+	IntentFailed     = "failed"
+	IntentUnknown    = "outcome_unknown"
+	IntentSuperseded = "superseded"
+)
+
+// Intent is one external effect: kind is recovery_pairing, deposit or pin (broker pairing
+// intents, kind pairing, are the Guard store's).
+type Intent struct {
+	OperationID, Kind, Subject, State string
+	CreatedAt, UpdatedAt              time.Time
+}
+
+// IntentStore keeps the durable record of external effects (spec §9.3).
+type IntentStore interface {
+	// Begin commits a pending intent before the effect starts and returns its operation ID.
+	Begin(ctx context.Context, kind, subject string) (string, error)
+	// Settle ends the intent as state with r as its completion append, in one transaction.
+	// It notes r on the intent first, so a failed append is replayed by Reconcile.
+	Settle(ctx context.Context, operationID, state string, r *AuditRecord) error
+	// Reconcile settles kind's intents left pending for longer than olderThan: to the
+	// noted outcome, else to outcome_unknown with an audit record. It returns how many.
+	Reconcile(ctx context.Context, kind string, olderThan time.Duration) (int, error)
+	Get(ctx context.Context, operationID string) (*Intent, error)
 }

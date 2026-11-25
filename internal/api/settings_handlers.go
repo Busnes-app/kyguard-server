@@ -153,21 +153,19 @@ func (s *Server) handleSetExemptNetworks(w http.ResponseWriter, r *http.Request)
 		s.writeError(w, http.StatusBadRequest, strings.TrimPrefix(err.Error(), "netallow: "))
 		return
 	}
-	ctx := context.WithoutCancel(r.Context()) // the saved list and its audit row land together
+	ctx := context.WithoutCancel(r.Context()) // the saved list and its audit row commit together
 	previous, _ := s.storedExemptNetworks(ctx)
-	if err := s.store.Settings().SetSetting(ctx, exemptNetworksSetting, stored); err != nil {
-		s.writeError(w, http.StatusInternalServerError, "Failed to save the networks")
-		return
-	}
-	s.exempt.Store(combined)
-	if err := s.store.Audit().LogAudit(ctx, &store.AuditRecord{
+	audited := store.WithAudit(ctx, &store.AuditRecord{
 		UserID:    s.actorID(r),
 		Action:    "admin.rate_limit_networks",
 		Resource:  "settings",
 		Details:   fmt.Sprintf("from=%q to=%q", previous, stored),
 		IPAddress: s.requestIP(r),
-	}); err != nil {
-		log.Printf("[SECURITY] audit admin.rate_limit_networks not recorded: %v", err)
+	})
+	if err := s.store.Settings().UpdateSettings(audited, map[string]string{exemptNetworksSetting: stored}); err != nil {
+		s.writeError(w, http.StatusInternalServerError, "Failed to save the networks")
+		return
 	}
+	s.exempt.Store(combined)
 	s.writeJSON(w, http.StatusOK, s.exemptNetworksStatus(stored))
 }
