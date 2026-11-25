@@ -10,7 +10,8 @@ export interface StepUpState {
 
 interface Props {
   state: StepUpState;
-  onDone: () => void;
+  // Loads the active session; rejects when it could not, so the user can retry the load.
+  onDone: () => Promise<void>;
   onLogout: () => void;
 }
 
@@ -26,6 +27,16 @@ export function StepUp({ state, onDone, onLogout }: Props) {
   const [offer, setOffer] = useState<{ secret: string; otpauth_uri: string } | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  // The code was accepted: the session is active, so only the load is retried, never the code.
+  const [exchanged, setExchanged] = useState(false);
+
+  async function finish() {
+    setBusy(true);
+    setError('');
+    try { await onDone(); } catch {
+      setError('You are signed in, but KyGuard could not load your session. Try again.');
+    } finally { setBusy(false); }
+  }
 
   async function startEnrollment() {
     setBusy(true);
@@ -49,11 +60,14 @@ export function StepUp({ state, onDone, onLogout }: Props) {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }),
       });
       if (!response.ok) throw new Error(await errorOf(response, 'The code was not accepted.'));
-      onDone();
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'The code was not accepted.');
       setCode('');
-    } finally { setBusy(false); }
+      setBusy(false);
+      return;
+    }
+    setExchanged(true);
+    await finish();
   }
 
   const blocked = !state.enrolled && !state.can_enroll;
@@ -62,13 +76,13 @@ export function StepUp({ state, onDone, onLogout }: Props) {
       <div className="panel" style={{ width: '100%', maxWidth: 440 }}>
         <h1>Confirm it is you</h1>
         {blocked && <p role="alert">Your identity provider did not confirm a multi-factor sign-in, so an authenticator cannot be set up here. An administrator has been notified.</p>}
-        {!state.enrolled && state.can_enroll && !offer && (
+        {!exchanged && !state.enrolled && state.can_enroll && !offer && (
           <>
             <p>Set up an authenticator app for KyGuard. You will enter one of its codes after every sign-in.</p>
             <button type="button" disabled={busy} onClick={startEnrollment}>Set up authenticator</button>
           </>
         )}
-        {offer && (
+        {!exchanged && offer && (
           <>
             <p>Add this account to your authenticator app, then enter the code it shows.</p>
             <p><label htmlFor="totp-secret">Secret</label></p>
@@ -76,7 +90,8 @@ export function StepUp({ state, onDone, onLogout }: Props) {
             <p style={{ wordBreak: 'break-all', fontSize: 12 }}>{offer.otpauth_uri}</p>
           </>
         )}
-        {(state.enrolled || offer) && (
+        {exchanged && <button type="button" disabled={busy} onClick={finish}>Try again</button>}
+        {!exchanged && (state.enrolled || offer) && (
           <form onSubmit={submit}>
             <label htmlFor="stepup-code">Authenticator code</label>
             <input id="stepup-code" type="text" inputMode="numeric" autoComplete="one-time-code" required pattern="[0-9]{6}" maxLength={6}

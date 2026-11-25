@@ -82,14 +82,15 @@ func (i *intentStore) Settle(ctx context.Context, operationID, state string, r *
 		return err
 	}
 	// The process that ran the effect may correct an intent reconciled as unknown meanwhile.
-	return i.settle(ctx, operationID, state, r, IntentPending, IntentUnknown)
+	return i.settle(ctx, operationID, state, r, nil, IntentPending, IntentUnknown)
 }
 
 // settle moves the intent from one of the states in from to state and appends r, in one
 // transaction. The move is one conditional UPDATE, so of two concurrent settlers only one
 // appends a record; the other gets ErrNotFound. A completed deposit supersedes the deposits
-// whose outcome was never learned.
-func (i *intentStore) settle(ctx context.Context, operationID, state string, r *AuditRecord, from ...string) error {
+// whose outcome was never learned. A non-nil outcome is the note the caller read: the move
+// fails if a note was written since, so a reconciler never ends a just-noted intent unknown.
+func (i *intentStore) settle(ctx context.Context, operationID, state string, r *AuditRecord, outcome *string, from ...string) error {
 	tx, err := i.s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -101,8 +102,12 @@ func (i *intentStore) settle(ctx context.Context, operationID, state string, r *
 	for n, f := range from {
 		marks[n], args = "?", append(args, f)
 	}
+	cond := ""
+	if outcome != nil {
+		cond, args = " AND outcome = ?", append(args, *outcome)
+	}
 	var kind string
-	if err := tx.QueryRowContext(ctx, i.s.rebind(`UPDATE operation_intents SET state = ?, updated_at = ? WHERE operation_id = ? AND state IN (`+strings.Join(marks, ", ")+`) RETURNING kind`),
+	if err := tx.QueryRowContext(ctx, i.s.rebind(`UPDATE operation_intents SET state = ?, updated_at = ? WHERE operation_id = ? AND state IN (`+strings.Join(marks, ", ")+`)`+cond+` RETURNING kind`),
 		args...).Scan(&kind); errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	} else if err != nil {
@@ -142,9 +147,9 @@ func (i *intentStore) Reconcile(ctx context.Context, kind string, olderThan time
 	}
 	for n, st := range found {
 		state, rec := i.replay(kind, st.id, st.subject, st.outcome)
-		// Only from pending: of concurrent reconcilers one settles it, and an outcome its own
-		// process already wrote is never replayed over.
-		if err := i.settle(ctx, st.id, state, rec, IntentPending); errors.Is(err, ErrNotFound) {
+		// Only from pending and the note read: of concurrent reconcilers one settles it, and a
+		// note written since (or an outcome its own process wrote) is left for the next pass.
+		if err := i.settle(ctx, st.id, state, rec, &st.outcome, IntentPending); errors.Is(err, ErrNotFound) {
 			continue
 		} else if err != nil {
 			return n, err
