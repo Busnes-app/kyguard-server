@@ -57,6 +57,13 @@ var mfaClaims = map[string]any{"amr": []string{"pwd", "mfa"}, "roles": []string{
 // active session cookie. The enrolling code is the current step's.
 func enroll(t *testing.T, srv *api.Server, c *http.Cookie) (string, *http.Cookie) {
 	t.Helper()
+	secret, _, active := enrollCode(t, srv, c)
+	return secret, active
+}
+
+// enrollCode is enroll that also returns the code the enrollment spent.
+func enrollCode(t *testing.T, srv *api.Server, c *http.Cookie) (string, string, *http.Cookie) {
+	t.Helper()
 	w := post(srv, c, "/api/auth/stepup/enroll", nil)
 	var offer struct {
 		Secret     string `json:"secret"`
@@ -71,7 +78,7 @@ func enroll(t *testing.T, srv *api.Server, c *http.Cookie) (string, *http.Cookie
 	if w.Code != http.StatusOK || active == nil {
 		t.Fatalf("confirm: %d %s", w.Code, w.Body)
 	}
-	return offer.Secret, active
+	return offer.Secret, code, active
 }
 
 func status(srv *api.Server, method, path string, c *http.Cookie, bearer bool) *httptest.ResponseRecorder {
@@ -131,8 +138,7 @@ func TestSSOSignInIsPendingUntilStepUp(t *testing.T) {
 // failures for a user in 15 minutes even a correct code fails.
 func TestStepUpCodeLimits(t *testing.T) {
 	srv, _, f := ssoServer(t)
-	secret, _ := enroll(t, srv, pending(t, srv, f, "bo", "sid-0", mfaClaims))
-	spent, _ := totp.Code(secret, time.Now())
+	secret, spent, _ := enrollCode(t, srv, pending(t, srv, f, "bo", "sid-0", mfaClaims))
 
 	c := pending(t, srv, f, "bo", "sid-1", mfaClaims)
 	if w := post(srv, c, "/api/auth/stepup/totp", map[string]string{"code": spent}); w.Code != http.StatusUnauthorized {
