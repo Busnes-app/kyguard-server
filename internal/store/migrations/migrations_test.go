@@ -129,3 +129,34 @@ func TestMigration13KeepsLegacySubjectCollisions(t *testing.T) {
 		t.Fatal("two accounts took the same (issuer, subject)")
 	}
 }
+
+// Migration 13: an SSO session from before it has no issuer, so no issuer-keyed back-channel
+// logout could end it. It is deleted; a local session stays.
+func TestMigration13DropsSessionsNoLogoutCouldEnd(t *testing.T) {
+	db, q, exec, step := stepped(t)
+	if err := step(12); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	exec(`INSERT INTO users (id, username, sso_provider, sso_subject, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`, "usr_sso", "sso", "kysignon", "sub", now, now)
+	exec(`INSERT INTO users (id, username, sso_provider, sso_subject, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`, "usr_local", "local", "local", "", now, now)
+	exec(`INSERT INTO sessions (token_hash, user_id, created_at, expires_at, sso_sid) VALUES (?, ?, ?, ?, ?)`, "sso_with_sid", "usr_sso", now, now.Add(time.Hour), "sid-1")
+	exec(`INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`, "local", "usr_local", now, now.Add(time.Hour))
+	if err := step(13); err != nil {
+		t.Fatal(err)
+	}
+	var kept []string
+	rows, err := db.Query(q(`SELECT token_hash FROM sessions ORDER BY token_hash`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var h string
+		_ = rows.Scan(&h)
+		kept = append(kept, h)
+	}
+	if len(kept) != 1 || kept[0] != "local" {
+		t.Fatalf("sessions after migration 13: %v, want only the local one", kept)
+	}
+}
