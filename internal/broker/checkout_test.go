@@ -343,3 +343,34 @@ func TestProofRechecksForAnOpenLease(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// §3.3 (security review of #16): after a descriptor change, checkout is refused before any
+// login or delivery, at the transaction and again at the proof.
+func TestCheckoutAcrossADescriptorChangeIsRefused(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	early := c.checkoutTx(600)
+	if err := c.m.Tx(ctx, early.Tx); err != nil {
+		t.Fatal(err)
+	}
+	pop, _ := early.Proof(c.challenge(early.RequestID), pqcrypto.PurposeDeliver)
+	moveTarget(t, c.rig)
+	if err := c.m.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// A transaction signed under the old policy is stale now.
+	if err := c.m.Proof(ctx, early.RequestID, pop); !errors.Is(err, pqcrypto.ErrStale) {
+		t.Fatalf("proof after the change: %v", err)
+	}
+	late := c.tx(c.alice, pqcrypto.Action{ActionType: pqcrypto.ActionVaultCheckout, SecretVersion: c.account(c.m).HighestCopied(),
+		EncKeyID: pqcrypto.HexID(c.alice.Enc.Public().ID()), CheckoutTTLSeconds: 600})
+	if err := c.m.Tx(ctx, late.Tx); !errors.Is(err, broker.ErrNeedsEnrollment) {
+		t.Fatalf("checkout after the change: %v", err)
+	}
+	if len(c.target.hosts) != 0 || c.account(c.m).Lease != nil || c.account(c.m).Health != broker.HealthNeedsEnrollment {
+		t.Fatalf("hosts=%v lease=%+v", c.target.hosts, c.account(c.m).Lease)
+	}
+	if w, _ := c.delivery(early.RequestID); w != nil {
+		t.Fatal("delivered")
+	}
+}
