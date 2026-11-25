@@ -139,7 +139,7 @@ func TestStepUpCodeLimits(t *testing.T) {
 		t.Fatalf("replayed enrollment code: %d", w.Code)
 	}
 	for i := 2; i <= auth.SessionCodeLimit; i++ {
-		if w := post(srv, c, "/api/auth/stepup/totp", map[string]string{"code": "000000"}); w.Code != http.StatusUnauthorized {
+		if w := post(srv, c, "/api/auth/stepup/totp", map[string]string{"code": wrongCode(t, secret, time.Now())}); w.Code != http.StatusUnauthorized {
 			t.Fatalf("wrong code %d: %d", i, w.Code)
 		}
 	}
@@ -148,7 +148,7 @@ func TestStepUpCodeLimits(t *testing.T) {
 	}
 	c = pending(t, srv, f, "bo", "sid-2", mfaClaims)
 	for i := 1; i <= auth.UserCodeLimit-auth.SessionCodeLimit; i++ {
-		post(srv, c, "/api/auth/stepup/totp", map[string]string{"code": "000000"})
+		post(srv, c, "/api/auth/stepup/totp", map[string]string{"code": wrongCode(t, secret, time.Now())})
 	}
 	c = pending(t, srv, f, "bo", "sid-3", mfaClaims)
 	next, _ := totp.Code(secret, time.Now().Add(totp.Period*time.Second))
