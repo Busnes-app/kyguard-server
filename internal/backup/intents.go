@@ -32,16 +32,30 @@ func ReconcileIntents(ctx context.Context, st store.Store) error {
 		}
 		return nil
 	}
-	for _, kind := range []string{"pairing", "pin"} {
-		if err := reconcile(ctx, kind, StaleIntent); err != nil {
-			return err
-		}
+	if err := ReconcileStale(ctx, st); err != nil {
+		return err
 	}
 	// Lost to a running backup: that run reconciles under the lock itself (Run).
 	_, err := st.Coordination().WithLock(ctx, "backup-run", func(owned context.Context) error {
 		return reconcile(owned, "deposit", 0)
 	})
 	return err
+}
+
+// ReconcileStale settles pairing and pin intents pending for StaleIntent: a process that died
+// on them is gone by then. Startup and every scheduled-worker tick call it, so an intent too
+// young to settle at startup is settled later without waiting for another such request.
+func ReconcileStale(ctx context.Context, st store.Store) error {
+	for _, kind := range []string{"pairing", "pin"} {
+		n, err := st.Intents().Reconcile(ctx, kind, StaleIntent)
+		if err != nil {
+			return fmt.Errorf("reconcile %s intents: %w", kind, err)
+		}
+		if n > 0 {
+			log.Printf("[BACKUP] reconciled %d %s intents left by a stopped process", n, kind)
+		}
+	}
+	return nil
 }
 
 // BeginIntent reconciles kind's stale intents, then commits a new pending one, before the
