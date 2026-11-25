@@ -93,6 +93,9 @@ func TestReplicaWithADifferentSharedFieldIsRefused(t *testing.T) {
 		"KY_RATE_LIMIT_EXEMPT_NETWORKS":    func(c *config.Config) { c.Security.RateLimitExemptNetworks = "203.0.113.0/24" },
 		"KY_BACKUP_DEPOSIT_INTERVAL":       func(c *config.Config) { c.Backup.DepositInterval = 31 * time.Hour },
 		"KY_BACKUP_ALLOW_PRIVATE_RECOVERY": func(c *config.Config) { c.Backup.AllowPrivateRecovery = true },
+		"KY_BROKER_LISTEN":                 func(c *config.Config) { c.Broker.Listen = ":9443" },
+		"KY_BROKER_HOSTNAME":               func(c *config.Config) { c.Broker.Hostname = secret },
+		"KY_MIN_BROKER_VERSION":            func(c *config.Config) { c.Broker.MinVersion = "9.9.9" },
 		config.EncryptionKeyField:          func(c *config.Config) { c.Security.EncryptionKey = bytes.Repeat([]byte{7}, 32) },
 	}
 	for name := range config.ReplicaFingerprint(first) {

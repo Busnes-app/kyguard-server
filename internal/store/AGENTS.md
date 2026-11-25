@@ -49,6 +49,13 @@ Owns data models, store interfaces (`UserStore`, `SessionStore`, `GroupStore`, `
 - SQLite runs in WAL mode with foreign keys enabled. `openSQLite` takes a path or a `file:` URI (the same parse as `internal/backup`) and refuses a server URL (`scheme://`) without echoing it, so a PostgreSQL DSN under the sqlite driver never becomes a stray file.
 - PostgreSQL queries are rebound dynamically from standard positional parameters.
 
+- `Guard()` (`guard.go`) holds KyGuard's trust and broker tables (migration 100 in
+  `migrations/kyguard_broker.go`; broker migrations take versions from 100): the bundle
+  (one row, never replaced), `trust_manifests` (append only, `seq` must be max+1),
+  pools, brokers, hashed pairing tokens and `operation_intents`. Every write audits inside
+  its own transaction through `auditTx`, the one place the chained append replaces.
+  `ClaimPairing` consumes a token by compare-and-swap on `consumed_at IS NULL` and expiry.
+
 ## Verification
 - `go test -v ./internal/store/...`
 

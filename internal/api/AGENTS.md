@@ -11,6 +11,9 @@ Owns HTTP routing, request parsing, session cookie validation, CORS headers, and
   back to local allowances on storage errors. SQLite keeps its existing in-memory limits.
 - A successful login refunds only its original window. Office exemption decisions on
   PostgreSQL read the current stored list per request; diagnostic exemption counts stay local.
+- Broker pool, pairing-token and manifest routes live in `broker_handlers.go`. They use the
+  base admin/session middleware and carry `TODO(hawthorn §7.5)` until the route registry and
+  step-up land. `BrokerListener` hands `cmd/server` the separate listener (§4.1).
 - Update `docs/INTERFACES.md` when a route's inputs, outputs, permissions or errors change.
 - POST `/api/auth/change-password` accepts any local-account session (restricted or not; federated accounts get 409), current password and a different policy-valid new password. Browser CSRF and per-IP/account limits apply. Success revokes all sessions and requires sign-in again; flagged sessions get `password_change_required` on protected routes and public-only settings.
 - `GET|HEAD /livez` and `/readyz` (`health.go`) are unauthenticated, `Cache-Control: no-store`,

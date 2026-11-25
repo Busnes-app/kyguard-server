@@ -51,6 +51,10 @@ func sharedFields(c *Config) [][2]string {
 		{"KY_RATE_LIMIT_EXEMPT_NETWORKS", c.Security.RateLimitExemptNetworks},
 		{"KY_BACKUP_DEPOSIT_INTERVAL", c.Backup.DepositInterval.String()},
 		{"KY_BACKUP_ALLOW_PRIVATE_RECOVERY", b(c.Backup.AllowPrivateRecovery)},
+		// Pairing tokens from any replica must name the same broker listener.
+		{"KY_BROKER_LISTEN", c.Broker.Listen},
+		{"KY_BROKER_HOSTNAME", c.Broker.Hostname},
+		{"KY_MIN_BROKER_VERSION", c.Broker.MinVersion},
 	}
 }
 

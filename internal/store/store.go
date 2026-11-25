@@ -24,6 +24,7 @@ type Store interface {
 	Audit() AuditStore
 	Settings() SettingsStore
 	Coordination() CoordinationStore
+	Guard() GuardStore
 
 	// SnapshotToSQLite copies a PostgreSQL database, as of one transaction, into a new SQLite
 	// file; ErrSnapshotSchema for a schema this build does not know.
