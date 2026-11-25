@@ -52,6 +52,12 @@ func seedEveryTable(t *testing.T, st *SQLStore) {
 	must(err)
 	_, err = st.SpendChallenge(ctx, "0123456789abcdef0123456789abcdef", now.Add(time.Minute).UnixMilli())
 	must(err)
+	g := st.Guard()
+	must(g.ImportBundle(ctx, &BootstrapBundle{DeploymentID: "d1", Fingerprint: "f1", Bundle: []byte(`{"b":1}`)}, "host"))
+	must(g.AppendManifest(ctx, &TrustManifest{Seq: 1, Type: "pool", ScopeID: "p1", Epoch: 1, Digest: "dg", Manifest: []byte(`{"m":1}`)}, nil))
+	must(g.CreatePool(ctx, &BrokerPool{ID: "p1", Name: "pool", CreatedAt: now}, nil))
+	must(g.CreatePairingToken(ctx, &PairingToken{TokenHash: "th", PoolID: "p1", CreatedBy: "u1", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}, nil))
+	must(g.ClaimPairing(ctx, "th", now, &Broker{ID: "b1", CertSHA256: "c", CASHA256: "ca", SigKeyID: "s", EncKeyID: "e", Version: "0.1.0"}, "i1", nil))
 	for _, q := range []string{
 		`INSERT INTO mfa_challenges (token_hash, user_id, expires_at) VALUES ('m1', 'u1', now())`,
 		`INSERT INTO sso_directory_events (provider, subject, last_timestamp) VALUES ('kysignon', 'sub-1', 42)`,

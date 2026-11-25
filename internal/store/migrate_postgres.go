@@ -179,6 +179,7 @@ var migrationTables = []string{
 	"mfa_challenges", "sso_logouts", "sso_subject_logouts", "sso_directory_events",
 	"security_windows", "spent_challenges",
 	"mfa_factors", "totp_attempts", "audit_chain_head",
+	"bootstrap_bundles", "trust_manifests", "broker_pools", "brokers", "pairing_tokens", "operation_intents",
 }
 
 type migrationColumn struct{ name, kind string }
