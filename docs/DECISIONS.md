@@ -113,6 +113,19 @@ contradicts itself. Each names its section. The most secure reading wins.
    unpair and schedule now fail on a failed audit append. Export sends no capsule bytes without
    the record. Unpair and schedule answer 500, saying that the change landed and its record did
    not.
+19d. §9.4 (broker CA). The capsule carries `data/broker-ca.key` and `data/broker-ca.crt` when the
+   data directory holds them. One without the other refuses to seal, because a restore could not
+   run brokers with half a CA. The start-time checks of the restored CA (its key matches its
+   certificate, and every paired broker's pinned hash matches) need the broker tables from the
+   broker stack, so they come with the stack join.
+19e. §9.4 (restore). The restored copy loses its sessions, every CLI login code, and the broker
+   pairing tokens not yet consumed. Consumed tokens stay as the record of which broker each one
+   paired. The CLI-code and pairing-token tables are cleared when present, so a capsule from
+   before either feature restores too.
+19f. §9.4 (seal gate). The gate compares the pinned key and topology against the verified
+   `RecoveryKeyManifest`. That verifier is on the trust stack (#4), which is not joined to this
+   stack, so the gate is not built here. Built fail-closed in this stack, it would refuse every
+   pin and backup; built fail-open, it would be a hole if merged alone. It is a join task.
 
 ## Crypto wire format and contracts (§3)
 
