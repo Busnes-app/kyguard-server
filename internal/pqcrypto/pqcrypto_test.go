@@ -29,6 +29,17 @@ func TestTimeStrict(t *testing.T) {
 	if _, err := json.Marshal(Time{time.Date(2026, 1, 1, 0, 0, 0, 5, time.UTC)}); err == nil {
 		t.Error("sub-second time marshalled")
 	}
+	for _, y := range []int{0, 9999} {
+		b, err := json.Marshal(NewTime(time.Date(y, 12, 31, 23, 59, 59, 0, time.UTC)))
+		if err != nil || json.Unmarshal(b, &ts) != nil {
+			t.Errorf("year %d does not round-trip: %s %v", y, b, err)
+		}
+	}
+	for _, y := range []int{-1, 10000} {
+		if _, err := json.Marshal(NewTime(time.Date(y, 1, 1, 0, 0, 0, 0, time.UTC))); !errors.Is(err, ErrTime) {
+			t.Errorf("year %d marshalled: %v", y, err)
+		}
+	}
 }
 
 func TestWrapDEKRequiresMatchingKeyID(t *testing.T) {

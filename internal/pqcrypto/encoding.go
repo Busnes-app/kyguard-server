@@ -170,8 +170,8 @@ type Time struct{ time.Time }
 func NewTime(t time.Time) Time { return Time{t.UTC().Truncate(time.Second)} }
 
 func (t Time) MarshalJSON() ([]byte, error) {
-	if t.Location() != time.UTC || t.Nanosecond() != 0 {
-		return nil, ErrTime
+	if t.Location() != time.UTC || t.Nanosecond() != 0 || t.Year() < 0 || t.Year() > 9999 {
+		return nil, ErrTime // never emit what UnmarshalJSON refuses
 	}
 	return json.Marshal(t.Format(TimeLayout))
 }
