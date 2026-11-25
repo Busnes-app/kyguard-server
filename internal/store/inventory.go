@@ -54,6 +54,10 @@ type InventoryStore interface {
 	// Values maps entity ID to attribute key to value for one entity type.
 	Values(ctx context.Context, entity string) (map[string]map[string]string, error)
 
+	// ForgetUser clears the user as account owner and deletes their attribute values, so
+	// the user row can be deleted.
+	ForgetUser(ctx context.Context, userID string, audit *AuditRecord) error
+
 	// ReportFacts returns, per account, the newest release receipt and the open leases.
 	ReportFacts(ctx context.Context) (map[string]*ReportFacts, error)
 	// RecentRuns and RecentLeases feed the jobs screen, newest (and open leases) first.
@@ -461,4 +465,16 @@ func (v inventoryStore) Values(ctx context.Context, entity string) (map[string]m
 		out[id][key] = val
 	}
 	return out, rows.Err()
+}
+
+func (v inventoryStore) ForgetUser(ctx context.Context, userID string, audit *AuditRecord) error {
+	return v.s.inTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, v.s.rebind(`UPDATE accounts SET owner_user_id = NULL WHERE owner_user_id = ?`), userID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, v.s.rebind(`DELETE FROM attribute_values WHERE entity_id = ? AND definition_id IN (SELECT id FROM attribute_definitions WHERE entity = 'user')`), userID); err != nil {
+			return err
+		}
+		return v.s.auditTx(ctx, tx, audit)
+	})
 }

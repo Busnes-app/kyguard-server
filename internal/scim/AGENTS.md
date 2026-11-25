@@ -21,6 +21,14 @@ Owns local persistence adapters and bearer authentication; the library owns `/sc
 - User PATCH: filtered `emails`/`roles` paths apply only when `selects` matches the value `userResource` emits; only an unmatched emails/roles replace is `noTarget`. Paths into unstored attributes are ignored, never refused.
 - Group PATCH applies `add`/`remove`/`replace` to the current membership. Member sub-attribute paths and member filters other than remove `members[value eq "id"]` are `invalidPath` before any write. Member ids are checked before any write, and only the membership difference is written. Group PATCH and PUT hold `groupResourceHandler.mu`, so a PATCH computing membership from its read cannot drop a concurrent one's change (one server process per database). `UpdateGroup` maps a taken name to `ErrAlreadyExists` (409 `uniqueness`).
 - User writes go through `UpdateUserProfile`, never `UpdateUser`, so SCIM cannot rewrite credential columns from a stale read.
+- The User resource registers the Enterprise User extension (`SchemaEnterpriseUser`).
+  `enterprise.go` syncs core `title` and extension `department` and `manager.value` into
+  user attributes with `source = 'scim'` (spec §8.2): create and PUT set all three (an
+  omitted one is cleared), PATCH changes only what its operations touch (paths with or
+  without the extension URI, `manager.value`, and path-less value maps). Values are trimmed,
+  stripped of control characters and cut to 256 characters. A failed attribute write fails
+  the request so the IdP retries. Delete first runs `Inventory().ForgetUser` (accounts
+  become unowned, values go), because `accounts.owner_user_id` references the user.
 - SCIM protocol models and parsing must come from `github.com/elimity-com/scim`; do not add parallel local request/response implementations.
 
 ## Verification
