@@ -26,7 +26,7 @@ type inproc struct {
 	submissions atomic.Int32
 }
 
-func newInproc(t *testing.T, accept bool, hang bool) *inproc {
+func newInproc(t *testing.T, accept bool, hang bool, stallExec ...bool) *inproc {
 	t.Helper()
 	_, k, _ := ed25519.GenerateKey(rand.Reader)
 	signer, _ := ssh.NewSignerFromKey(k)
@@ -76,6 +76,9 @@ func newInproc(t *testing.T, accept bool, hang bool) *inproc {
 					}
 					go func() {
 						for r := range creqs {
+							if r.Type == "exec" && len(stallExec) > 0 && stallExec[0] {
+								continue // never answer: the command never starts
+							}
 							r.Reply(true, nil) // accept exec and never answer it when hang
 							if !hang {
 								ch.Close()
@@ -127,5 +130,32 @@ func TestPasswordAgeIsBoundedByTheTimeout(t *testing.T) {
 	}
 	if d := time.Since(start); d > 3*time.Second {
 		t.Fatalf("took %v", d)
+	}
+}
+
+// Security review of #14: a target that never starts passwd cannot stall Change, by timeout
+// or by cancellation.
+func TestChangeIsBoundedWhenTheCommandStalls(t *testing.T) {
+	s := newInproc(t, true, true, true)
+	for _, cancel := range []bool{false, true} {
+		timeout := 300 * time.Millisecond
+		if cancel {
+			timeout = time.Hour
+		}
+		sess, err := s.connector(timeout).Login(context.Background(), s.descriptor(), []byte("pw"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, stop := context.WithCancel(context.Background())
+		if cancel {
+			time.AfterFunc(300*time.Millisecond, stop)
+		}
+		start := time.Now()
+		err = sess.Change(ctx, []byte("pw"), []byte("new"), func() error { return nil })
+		stop()
+		sess.Close()
+		if err == nil || time.Since(start) > 3*time.Second {
+			t.Fatalf("cancel=%v: %v after %v", cancel, err, time.Since(start))
+		}
 	}
 }
