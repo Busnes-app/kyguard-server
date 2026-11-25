@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -214,4 +215,60 @@ func TestBackupLoopInterruptsAScheduledDepositOnCancel(t *testing.T) {
 	if next, on, err := recoveryclient.NextRun(cfg.Backup.DepositInterval, settings); err != nil || !on || time.Now().Before(next) {
 		t.Errorf("after the interruption the next run is at %v (on=%v err=%v), want due now", next, on, err)
 	}
+}
+
+// §9.3: a pairing or pin intent too young for startup's reconciliation is settled by the
+// scheduled worker once it is StaleIntent old, not left pending until another such request.
+func TestBackupLoopReconcilesStalePairingAndPinIntents(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{}
+	cfg.Database.Driver = "sqlite"
+	cfg.Database.DataDir = dir
+	cfg.Database.DSN = filepath.Join(dir, "ky_server.db") + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+	cfg.Security.EncryptionKey = bytes.Repeat([]byte{1}, 32)
+	cfg.Database.AuditKey = testdb.AuditKey
+	st, err := store.Open(context.Background(), cfg.Database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var ids []string
+	for _, kind := range []string{"pairing", "pin"} {
+		id, err := st.Intents().Begin(ctx, kind, "subject")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	db, err := sql.Open("sqlite", cfg.Database.DSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE operation_intents SET created_at = ?`, time.Now().UTC().Add(-backup.StaleIntent-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go backupLoop(ctx, cfg, st, nil, 10*time.Millisecond, done)
+	deadline := time.Now().Add(10 * time.Second)
+	for _, id := range ids {
+		for {
+			in, err := st.Intents().Get(context.Background(), id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if in.State == store.IntentUnknown {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("intent %s still %s: the scheduled worker never reconciled it", in.Kind, in.State)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	cancel()
+	<-done
 }

@@ -83,6 +83,8 @@ func (s *Server) exchanged(w http.ResponseWriter, r *http.Request, token string,
 // (spec §7.3 rule 2). On an active session it refreshes the step-up that privileged routes'
 // windows check (rule 6).
 func (s *Server) handleStepupTOTP(w http.ResponseWriter, r *http.Request) {
+	// Pending or active: AuthenticateRequest admits a pending session on /api/auth/stepup/*
+	// (auth.pendingAllowed), and the stage picks the branch below.
 	user, sess, err := s.sessions.AuthenticateRequest(r)
 	if err != nil {
 		s.writeError(w, http.StatusUnauthorized, "Authentication required")

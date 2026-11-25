@@ -72,15 +72,35 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   `stepup_at`, `break_glass_reason`, and the `mfa_factors` and `totp_attempts` tables, both
   carried by `migrate-postgres` and PostgreSQL snapshots. Migration 13 (`kyguard_sso_issuer`)
   adds the issuer columns and replaces the fence tables.
+- The README's OpenSSF Best Practices badge now shows KyGuard's own project (17119), not the
+  one inherited from `ky-server-base`.
 - KyGuard `internal/pqcrypto` wire format (spec §3.1): strict RFC 8785 JCS, decimal-string
   counters capped at 2^63-1, unpadded base64url, the domain digest `D(obj)`, ML-DSA-65 +
   Ed25519 hybrid signatures, `sig_key_id`/`enc_key_id`, the payload and DEK-wrap AADs, the
   X-Wing HPKE DEK wrap, the AES-256-GCM payload and `opid`, with committed golden vectors.
+- KyGuard trust root and manifests (spec §3.2, §3.3, §3.7): the bootstrap bundle and its
+  fingerprint, the five Custodian-signed manifests with M-of-N and the per-`(type, scope.id)`
+  epoch and fork rules, and the target descriptor, as a verifier library with golden vectors.
+- KyGuard transactions, envelopes and receipts (spec §3.4, §3.5, §3.7): access transactions
+  with all four actions, approvals and possession proofs; secret envelopes with the signer,
+  recipient and escrow rules; receipt chains with compare-and-swap, the current-envelope rule
+  and the chain-extension check, with golden vectors.
+- `kyguard-cli` (spec §3.2): `init` runs the offline ceremony (custodian key files, the
+  epoch-1 manifests and the bootstrap bundle, with a 1-of-1 warning), `trust` pins the
+  fingerprint, `import` records verified manifests and refuses rollback and forks,
+  `enroll` creates a user's keys and a self-signed key enrollment draft, and `sign` shows
+  a draft decoded (principals resolved, target descriptor recomputed, Control Plane labels
+  marked unverified) before applying a Custodian signature. Commands that read or write
+  the trust state run one at a time; `sign` checks the whole draft before releasing a
+  signature and remembers what it signed; `enroll` creates the key file and its draft
+  together or not at all.
 
 ### Upgrade impact
 
 - No KyGuard install exists yet, so nothing migrates. The replica configuration fingerprint
   no longer covers the removed `KY_SAML_*` settings.
+- New binary `kyguard-cli` (`go build ./cmd/cli`); `golang.org/x/term` is a new direct
+  dependency and `golang.org/x/crypto` becomes direct (Argon2id).
 - The module declares `go 1.27.0` (for `crypto/mldsa`); builds need Go 1.27, as the pinned
   `go1.27.4` toolchain already provides.
 
