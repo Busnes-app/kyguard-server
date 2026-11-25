@@ -133,12 +133,38 @@ func TestPolicyDraftSigning(t *testing.T) {
 		t.Fatal("draft kept after acceptance")
 	}
 
-	// A draft made for epoch 2 goes stale when another epoch-2 policy is accepted first.
+	// Admitted, but stopped before its draft was removed, then superseded: the draft is still
+	// ready, and a retry removes it instead of being refused as a rollback.
+	created(t, sendJSON(srv, admin, "PUT", path, form("ephemeral", string(dg), string(alice.ID))), &draft)
+	created(t, sendJSON(srv, user, "GET", "/api/policy-drafts/"+draft.ID, ""), &got)
+	half, _ := sign(got.Object, d.Custodians[0])
+	full, _ := sign(half, d.Custodians[1])
+	if err := st.Drafts().SetDraftObject(ctx, draft.ID, got.Object, full, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range [][]byte{full, d.Signed(t, d.ManagedPolicy(pqcrypto.UUID(acct.ID), pool, 3, dg))} {
+		if w := postJSON(srv, admin, "/api/manifests", m); w.Code != http.StatusCreated {
+			t.Fatalf("admit: %d %s", w.Code, w.Body)
+		}
+	}
+	created(t, sendJSON(srv, user, "GET", "/api/policy-drafts", ""), &ready)
+	if len(ready) != 1 || ready[0]["status"] != "ready" {
+		t.Fatalf("admitted draft %v", ready)
+	}
+	created(t, sendJSON(srv, user, "POST", "/api/policy-drafts/"+draft.ID+"/signatures", string(full)), &res)
+	if res["accepted"] != true {
+		t.Fatalf("retry of an admitted draft: %v", res)
+	}
+	if _, err := st.Drafts().GetDraft(ctx, draft.ID); err == nil {
+		t.Fatal("admitted draft kept after the retry")
+	}
+
+	// A draft made for epoch 4 goes stale when another epoch-4 policy is accepted first.
 	created(t, sendJSON(srv, admin, "PUT", path, form("standing", string(dg), string(alice.ID))), &draft)
-	if draft.Epoch != 2 {
+	if draft.Epoch != 4 {
 		t.Fatalf("next epoch %d", draft.Epoch)
 	}
-	pm := d.ManagedPolicy(pqcrypto.UUID(acct.ID), pool, 2, dg)
+	pm := d.ManagedPolicy(pqcrypto.UUID(acct.ID), pool, 4, dg)
 	if w := postJSON(srv, admin, "/api/manifests", d.Signed(t, pm)); w.Code != http.StatusCreated {
 		t.Fatal(w.Code)
 	}

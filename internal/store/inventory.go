@@ -7,6 +7,8 @@ import (
 	"errors"
 	"slices"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ErrInvalid means a write names something that does not exist or breaks a definition's
@@ -30,8 +32,10 @@ type InventoryStore interface {
 	CreateAsset(ctx context.Context, a *Asset, audit *AuditRecord) error
 	// CreateAccount adds a listed account; the owner, when set, must be a user.
 	CreateAccount(ctx context.Context, a *InventoryAccount, audit *AuditRecord) error
-	// UpdateAccount changes name, owner and status; ErrNotFound for an unknown account.
-	UpdateAccount(ctx context.Context, a *InventoryAccount, audit *AuditRecord) error
+	// UpdateAccount sets only the fields p names, in one statement, so concurrent patches
+	// to different fields never undo each other. It returns the stored account; ErrNotFound
+	// for an unknown account.
+	UpdateAccount(ctx context.Context, id string, p AccountPatch, audit *AuditRecord) (*InventoryAccount, error)
 	GetAccount(ctx context.Context, id string) (*InventoryAccount, error)
 	ListAccounts(ctx context.Context) ([]*InventoryAccount, error)
 	// PutDescriptor stores a verified target descriptor's canonical bytes for its account;
@@ -43,8 +47,8 @@ type InventoryStore interface {
 	Definitions(ctx context.Context, entity string) ([]*AttributeDefinition, error)
 	// EnsureDefinition creates d unless (entity, key) exists and returns the stored one.
 	EnsureDefinition(ctx context.Context, d *AttributeDefinition, audit *AuditRecord) (*AttributeDefinition, error)
-	// UpdateDefinition changes the label and enum values of an admin definition. An enum
-	// value still in use cannot be removed (ErrConflict).
+	// UpdateDefinition changes the label and enum values of an admin definition; nil
+	// EnumValues keeps the stored list. An enum value still in use cannot be removed (ErrConflict).
 	UpdateDefinition(ctx context.Context, d *AttributeDefinition, audit *AuditRecord) error
 	// DeleteDefinition removes an admin definition and its values.
 	DeleteDefinition(ctx context.Context, id string, audit *AuditRecord) error
@@ -165,21 +169,38 @@ func (v inventoryStore) CreateAccount(ctx context.Context, a *InventoryAccount, 
 	})
 }
 
-func (v inventoryStore) UpdateAccount(ctx context.Context, a *InventoryAccount, audit *AuditRecord) error {
-	return v.s.inTx(ctx, func(tx *sql.Tx) error {
-		if err := v.checkRefs(ctx, tx, a); err != nil {
-			return err
+// AccountPatch names the account fields a PATCH changes; nil leaves a field as stored.
+type AccountPatch struct{ Name, OwnerUserID, Status *string }
+
+func (v inventoryStore) UpdateAccount(ctx context.Context, id string, p AccountPatch, audit *AuditRecord) (*InventoryAccount, error) {
+	var out *InventoryAccount
+	err := v.s.inTx(ctx, func(tx *sql.Tx) error {
+		set, args := "id = id", []any{}
+		if p.Name != nil {
+			set, args = set+", name = ?", append(args, *p.Name)
 		}
-		res, err := tx.ExecContext(ctx, v.s.rebind(`UPDATE accounts SET name = ?, owner_user_id = ?, status = ? WHERE id = ?`),
-			a.Name, nullable(a.OwnerUserID), a.Status, a.ID)
+		if p.OwnerUserID != nil {
+			if err := v.checkRefs(ctx, tx, &InventoryAccount{OwnerUserID: *p.OwnerUserID}); err != nil {
+				return err
+			}
+			set, args = set+", owner_user_id = ?", append(args, nullable(*p.OwnerUserID))
+		}
+		if p.Status != nil {
+			set, args = set+", status = ?", append(args, *p.Status)
+		}
+		res, err := tx.ExecContext(ctx, v.s.rebind(`UPDATE accounts SET `+set+` WHERE id = ?`), append(args, id)...)
 		if err != nil {
 			return err
 		}
 		if n, err := res.RowsAffected(); err != nil || n == 0 {
 			return errors.Join(err, ErrNotFound)
 		}
+		if out, err = scanInventory(tx.QueryRowContext(ctx, v.s.rebind(`SELECT `+inventoryCols+` FROM accounts a JOIN assets s ON s.id = a.asset_id WHERE a.id = ?`), id)); err != nil {
+			return err
+		}
 		return v.s.auditTx(ctx, tx, audit)
 	})
+	return out, err
 }
 
 const inventoryCols = `a.id, a.asset_id, a.name, a.account_kind, COALESCE(a.pool_id, ''), a.status, COALESCE(a.current_envelope_id, ''),
@@ -349,6 +370,9 @@ func (v inventoryStore) UpdateDefinition(ctx context.Context, d *AttributeDefini
 		if cur.Source != SourceAdmin {
 			return ErrInvalid
 		}
+		if d.EnumValues == nil {
+			d.EnumValues = cur.EnumValues
+		}
 		if cur.Type == AttrEnum {
 			rows, err := tx.QueryContext(ctx, v.s.rebind(`SELECT DISTINCT value FROM attribute_values WHERE definition_id = ?`), d.ID)
 			if err != nil {
@@ -451,9 +475,12 @@ func (v inventoryStore) setValue(ctx context.Context, tx *sql.Tx, definitionID, 
 	return v.s.auditTx(ctx, tx, audit)
 }
 
+// SCIMUserKeys are the user attributes SCIM owns, with their labels (spec §8.2).
+var SCIMUserKeys = map[string]string{"department": "Department", "manager": "Manager", "title": "Title"}
+
 // applySCIMAttributes writes a SCIM user's synced attributes ("" clears one) inside the
-// transaction that writes the user, so the profile and its attributes commit together.
-// Each key's definition must already exist with source scim.
+// transaction that writes the user, so the profile, its attributes and any SCIM definition
+// it needs commit together. A key an admin defined is ErrInvalid.
 func (s *SQLStore) applySCIMAttributes(ctx context.Context, tx *sql.Tx, userID string, attrs map[string]string) error {
 	v := inventoryStore{s}
 	keys := make([]string, 0, len(attrs))
@@ -462,8 +489,24 @@ func (s *SQLStore) applySCIMAttributes(ctx context.Context, tx *sql.Tx, userID s
 	}
 	slices.Sort(keys)
 	for _, k := range keys {
+		label, ok := SCIMUserKeys[k]
+		if !ok {
+			return ErrInvalid
+		}
+		res, err := tx.ExecContext(ctx, s.rebind(`INSERT INTO attribute_definitions (`+definitionCols+`) VALUES (?, 'user', ?, ?, 'string', '[]', 'scim', ?) ON CONFLICT (entity, key) DO NOTHING`),
+			uuid.Must(uuid.NewV7()).String(), k, label, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return err
+		} else if n == 1 {
+			if err := s.auditTx(ctx, tx, &AuditRecord{Action: "attribute.definition_created", Resource: "attribute:user." + k, Details: "source=scim"}); err != nil {
+				return err
+			}
+		}
 		var id string
-		err := tx.QueryRowContext(ctx, s.rebind(`SELECT id FROM attribute_definitions WHERE entity = 'user' AND key = ? AND source = 'scim'`), k).Scan(&id)
+		err = tx.QueryRowContext(ctx, s.rebind(`SELECT id FROM attribute_definitions WHERE entity = 'user' AND key = ? AND source = 'scim'`), k).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrInvalid
 		}

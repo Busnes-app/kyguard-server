@@ -158,6 +158,9 @@ func TestAttributeDefinitionsAndValues(t *testing.T) {
 	if w := sendJSON(srv, admin, "PATCH", "/api/attributes/"+tier.ID, `{"label":"Tier","enum_values":["silver"]}`); w.Code != http.StatusConflict {
 		t.Fatalf("removed a value in use: %d", w.Code)
 	}
+	if w := sendJSON(srv, admin, "PATCH", "/api/attributes/"+tier.ID, `{"label":"Service tier"}`); w.Code != http.StatusOK {
+		t.Fatalf("label-only update: %d %s", w.Code, w.Body)
+	}
 
 	// SCIM attributes are read-only to admins (§8.2).
 	dept, err := st.Inventory().EnsureDefinition(ctx, &store.AttributeDefinition{ID: string(pqtest.UUID()), Entity: store.EntityUser, Key: "department", Label: "Department", Type: store.AttrString, Source: store.SourceSCIM}, nil)

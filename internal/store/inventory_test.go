@@ -32,8 +32,8 @@ func TestAccountOwnerMustBeAUser(t *testing.T) {
 	if err != nil || a.OwnerUserID != "usr_a" || a.AssetName != "dc1" || a.Status != "active" {
 		t.Fatalf("account %+v %v", a, err)
 	}
-	a.OwnerUserID = "usr_nobody"
-	if err := inv.UpdateAccount(ctx, a, nil); !errors.Is(err, ErrInvalid) {
+	ghost := "usr_nobody"
+	if _, err := inv.UpdateAccount(ctx, a.ID, AccountPatch{OwnerUserID: &ghost}, nil); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("unknown owner: %v", err)
 	}
 	if err := inv.CreateAccount(ctx, &InventoryAccount{Account: Account{ID: "ac2", AssetID: "missing", Name: "x", AccountKind: "vaulted"}}, nil); !errors.Is(err, ErrInvalid) {
@@ -76,6 +76,20 @@ func TestAttributeValuesFollowTheirDefinition(t *testing.T) {
 	if err := inv.UpdateDefinition(ctx, tier, nil); !errors.Is(err, ErrConflict) {
 		t.Fatalf("removed an enum value in use: %v", err)
 	}
+	// A label-only change keeps the stored choices, in use or not.
+	for _, id := range []string{tier.ID, "d3"} {
+		if id == "d3" {
+			if _, err := inv.EnsureDefinition(ctx, &AttributeDefinition{ID: id, Entity: EntityAccount, Key: "zone", Label: "Zone", Type: AttrEnum, EnumValues: []string{"a", "b"}, Source: SourceAdmin}, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := inv.UpdateDefinition(ctx, &AttributeDefinition{ID: id, Label: "Renamed"}, nil); err != nil {
+			t.Fatalf("label-only update of %s: %v", id, err)
+		}
+	}
+	if defs, _ := inv.Definitions(ctx, EntityAccount); len(defs) != 2 || len(defs[0].EnumValues) != 2 || len(defs[1].EnumValues) != 2 {
+		t.Fatalf("label-only update changed the choices: %+v %+v", defs[0], defs[1])
+	}
 	vals, err := inv.Values(ctx, EntityAccount)
 	if err != nil || vals["ac"]["tier"] != "gold" {
 		t.Fatalf("values %v %v", vals, err)
@@ -88,6 +102,29 @@ func TestAttributeValuesFollowTheirDefinition(t *testing.T) {
 	}
 	if vals, _ := inv.Values(ctx, EntityAccount); len(vals) != 0 {
 		t.Fatalf("values outlived their definition: %v", vals)
+	}
+}
+
+// A patch writes only the fields it names, so a name change never restores a stale owner
+// or status written by a concurrent patch.
+func TestAccountPatchWritesOnlyItsFields(t *testing.T) {
+	_, inv := inventoryFor(t)
+	ctx := context.Background()
+	gone := "decommissioned"
+	if _, err := inv.UpdateAccount(ctx, "ac", AccountPatch{Status: &gone}, nil); err != nil {
+		t.Fatal(err)
+	}
+	name := "svc2"
+	a, err := inv.UpdateAccount(ctx, "ac", AccountPatch{Name: &name}, nil)
+	if err != nil || a.Name != "svc2" || a.Status != "decommissioned" || a.OwnerUserID != "usr_a" {
+		t.Fatalf("account %+v %v", a, err)
+	}
+	none := ""
+	if a, err := inv.UpdateAccount(ctx, "ac", AccountPatch{OwnerUserID: &none}, nil); err != nil || a.OwnerUserID != "" || a.Name != "svc2" {
+		t.Fatalf("clear owner %+v %v", a, err)
+	}
+	if _, err := inv.UpdateAccount(ctx, "missing", AccountPatch{Name: &name}, nil); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown account: %v", err)
 	}
 }
 
@@ -139,9 +176,10 @@ func TestReportFactsNewestRelease(t *testing.T) {
 	}
 }
 
-// Spec §8.2, §9.3: a SCIM write and its synced attributes commit together. The second
-// attribute write fails here (its definition is gone), so the status change, the session
-// revocation and the first attribute must all roll back.
+// Spec §8.2, §9.3: a SCIM write, its synced attributes and the SCIM definitions it creates
+// commit together. The last attribute write fails here (an admin owns title), so the status
+// change, the session revocation, the first attribute and the new manager definition must
+// all roll back.
 func TestSCIMProfileAndAttributesAreAtomic(t *testing.T) {
 	s, inv := inventoryFor(t)
 	ctx := context.Background()
@@ -161,7 +199,10 @@ func TestSCIMProfileAndAttributesAreAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	u.Status = "inactive"
-	u.SCIMAttributes = map[string]string{"department": "Sales", "title": "CTO"} // no title definition
+	if _, err := inv.EnsureDefinition(ctx, &AttributeDefinition{ID: "dt", Entity: EntityUser, Key: "title", Label: "T", Type: AttrString, Source: SourceAdmin}, nil); err != nil {
+		t.Fatal(err)
+	}
+	u.SCIMAttributes = map[string]string{"department": "Sales", "manager": "m1", "title": "CTO"}
 	if err := s.Users().UpdateSCIMProfile(ctx, u, "user", "active", u.SSOSubject); err == nil {
 		t.Fatal("update with a failing attribute write succeeded")
 	}
@@ -174,5 +215,18 @@ func TestSCIMProfileAndAttributesAreAtomic(t *testing.T) {
 	}
 	if vals, _ := inv.Values(ctx, EntityUser); vals["usr_a"]["department"] != "Ops" {
 		t.Fatalf("first attribute kept: %v", vals["usr_a"])
+	}
+	if defs, _ := inv.Definitions(ctx, EntityUser); len(defs) != 2 {
+		t.Fatalf("a rolled-back write left a definition: %d", len(defs))
+	}
+	// Without the admin title, the same write creates the missing definitions itself.
+	if err := inv.DeleteDefinition(ctx, "dt", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Users().UpdateSCIMProfile(ctx, u, "user", "active", u.SSOSubject); err != nil {
+		t.Fatal(err)
+	}
+	if vals, _ := inv.Values(ctx, EntityUser); vals["usr_a"]["title"] != "CTO" || vals["usr_a"]["manager"] != "m1" {
+		t.Fatalf("values %v", vals["usr_a"])
 	}
 }
