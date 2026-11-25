@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Busnes-app/ky-primitives/keyfile"
 	"github.com/Busnes-app/ky-primitives/recoverykey"
 	"github.com/google/uuid"
 
@@ -145,9 +147,17 @@ func (a *App) cmdTrust(ctx context.Context, args []string) error {
 	if !fp.Valid() {
 		return errors.New("kyguard-cli trust: the fingerprint is 64 hex characters")
 	}
-	if cur, err := a.loadTrust(); err == nil && cur.Fingerprint() != fp && !*replace {
+	s, cur, err := a.load()
+	switch {
+	case err == nil && cur.Fingerprint() == fp:
+		// Re-pinning the same root keeps every accepted manifest and commitment.
+		a.printf("already pinned %s\n", fp)
+		return nil
+	case err == nil && !*replace:
 		return fmt.Errorf("kyguard-cli trust: already pinned to %s; pass --replace only after custodian quorum loss", cur.Fingerprint())
-	} else if err != nil && !errors.Is(err, ErrNotPinned) {
+	case errors.Is(err, ErrNotPinned):
+		s = &state{}
+	case err != nil:
 		return err
 	}
 	var bundle []byte
@@ -170,7 +180,9 @@ func (a *App) cmdTrust(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := a.saveTrust(bundle, tr); err != nil {
+	// A replaced root keeps this CLI's signing commitments: they only ever refuse more.
+	s.Bundle = bundle
+	if err := a.save(s, tr); err != nil {
 		return err
 	}
 	cs := tr.CustodianSet()
@@ -186,7 +198,7 @@ func (a *App) cmdImport(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	tr, err := a.loadTrust()
+	s, tr, err := a.load()
 	if err != nil {
 		return err
 	}
@@ -216,11 +228,7 @@ func (a *App) cmdImport(ctx context.Context, args []string) error {
 		}
 		a.printf("accepted %s %s epoch %s digest %s\n", r.Type, r.ScopeID, r.Epoch, r.Digest.Hex())
 	}
-	bundle, err := a.persistedBundle()
-	if err != nil {
-		return err
-	}
-	return a.saveTrust(bundle, tr)
+	return a.save(s, tr)
 }
 
 // cmdEnroll generates a user's signing and X-Wing keys, writes the key file and a
@@ -249,14 +257,16 @@ func (a *App) cmdEnroll(ctx context.Context, args []string) error {
 	if tr.Enrollment(pid) != nil {
 		return errors.New("kyguard-cli enroll: this principal is already enrolled; key rotation is a later step")
 	}
-	// Check where the draft goes before any key exists, so a failure strands no key file.
-	if *draftOut == "" && a.Client == nil {
-		return ErrNoClient
-	}
-	for _, p := range []string{*keyOut, *draftOut} {
-		if _, err := os.Lstat(p); p != "" && err == nil {
-			return fmt.Errorf("kyguard-cli enroll: %s already exists", p)
+	// Check every destination before any key exists, so a failure strands no key file.
+	draftPath := *draftOut
+	if draftPath == "" {
+		if a.Client == nil {
+			return ErrNoClient
 		}
+		draftPath = *keyOut + ".draft.json"
+	}
+	if err := checkNewFiles(*keyOut, draftPath); err != nil {
+		return fmt.Errorf("kyguard-cli enroll: %w", err)
 	}
 	sk, err := pqcrypto.GenerateSigningKey()
 	if err != nil {
@@ -291,25 +301,20 @@ func (a *App) cmdEnroll(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := writeKeyFile(*keyOut, pass, a.KDF, k); err != nil {
-		return err
-	}
-	switch {
-	case *draftOut != "":
-		err = writeNew(*draftOut, draft, 0o644)
-	case a.Client != nil:
-		if err = writeNew(*keyOut+".draft.json", draft, 0o644); err != nil {
-			return err
-		}
-		var id string
-		if id, err = a.Client.SubmitDraft(ctx, draft); err == nil {
-			a.printf("submitted draft %s\n", id)
-		}
-	default:
-		err = ErrNoClient
-	}
+	sealed, err := sealKeyFile(pass, a.KDF, k)
 	if err != nil {
 		return err
+	}
+	// The key and its draft appear together or not at all.
+	if err := createPair(*keyOut, sealed, draftPath, draft); err != nil {
+		return fmt.Errorf("kyguard-cli enroll: %w", err)
+	}
+	if *draftOut == "" {
+		id, err := a.Client.SubmitDraft(ctx, draft)
+		if err != nil {
+			return fmt.Errorf("kyguard-cli enroll: the draft is saved at %s; submitting it failed: %w", draftPath, err)
+		}
+		a.printf("submitted draft %s\n", id)
 	}
 	a.printf("Give these to a Custodian over a channel the Control Plane does not control:\n")
 	a.printf("issuer        %s\nsubject       %s\nprincipal_id  %s\nsig_key_id    %s\nenc_key_id    %s\n", *issuer, *subject, pid, k.SigKeyID, encID)
@@ -341,7 +346,7 @@ func (a *App) cmdSign(ctx context.Context, args []string) error {
 	if err := required(fs, "key"); err != nil {
 		return err
 	}
-	tr, err := a.loadTrust()
+	s, tr, err := a.load()
 	if err != nil {
 		return err
 	}
@@ -385,6 +390,15 @@ func (a *App) cmdSign(ctx context.Context, args []string) error {
 			return fmt.Errorf("kyguard-cli sign: ALERT: epoch %s already verified with another digest: %w", h.Epoch, pqcrypto.ErrEquivocation)
 		}
 	}
+	// This CLI's own earlier signatures bind it too, even below quorum.
+	if c := s.commitment(h.Type, h.Scope.ID); c != nil {
+		if h.Epoch < c.Epoch {
+			return fmt.Errorf("kyguard-cli sign: epoch %s is below epoch %s already signed here: %w", h.Epoch, c.Epoch, pqcrypto.ErrRollback)
+		}
+		if h.Epoch == c.Epoch && dg.Hex() != c.Digest {
+			return fmt.Errorf("kyguard-cli sign: ALERT: epoch %s already signed here with another digest: %w", h.Epoch, pqcrypto.ErrEquivocation)
+		}
+	}
 	if err := a.show(tr, m, dg, d); err != nil {
 		return err
 	}
@@ -415,7 +429,23 @@ func (a *App) cmdSign(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	// Deliver first: the local high-water mark rises only once the signature is out, so a
+	// Every signature on the draft must verify, and so must the successor rules: only a
+	// short quorum may remain. Otherwise the signature is never released.
+	complete := tr.Check(signed)
+	if complete != nil && !errors.Is(complete, pqcrypto.ErrThreshold) {
+		return fmt.Errorf("kyguard-cli sign: the draft can never be accepted: %w", complete)
+	}
+	// Persist the commitment before the signature leaves, so no later draft can make this
+	// CLI sign a lower epoch or a fork of it.
+	if c := s.commitment(h.Type, h.Scope.ID); c != nil {
+		c.Epoch, c.Digest = h.Epoch, dg.Hex()
+	} else {
+		s.Signed = append(s.Signed, commitment{h.Type, h.Scope.ID, h.Epoch, dg.Hex()})
+	}
+	if err := a.save(s, tr); err != nil {
+		return err
+	}
+	// Deliver next: the local high-water mark rises only once the signature is out, so a
 	// failed write never activates a manifest nobody else has.
 	if *out != "" {
 		err = writeNew(*out, signed, 0o644)
@@ -425,18 +455,18 @@ func (a *App) cmdSign(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if r, err := tr.Accept(signed); err == nil {
-		bundle, err := a.persistedBundle()
-		if err != nil {
-			return err
-		}
-		if err := a.saveTrust(bundle, tr); err != nil {
-			return err
-		}
-		a.printf("complete: accepted %s epoch %s\n", r.Type, r.Epoch)
-	} else {
-		a.printf("signed; not yet complete (%v)\n", err)
+	if complete != nil {
+		a.printf("signed; not yet complete: more custodian signatures are needed\n")
+		return nil
 	}
+	r, err := tr.Accept(signed)
+	if err != nil {
+		return err
+	}
+	if err := a.save(s, tr); err != nil {
+		return err
+	}
+	a.printf("complete: accepted %s epoch %s\n", r.Type, r.Epoch)
 	return nil
 }
 
@@ -447,6 +477,56 @@ func inCustodianSet(tr *pqcrypto.Trust, k *Key) bool {
 		}
 	}
 	return false
+}
+
+// checkNewFiles requires two distinct paths that do not exist yet, in existing directories.
+func checkNewFiles(a, b string) error {
+	var dirs [2]os.FileInfo
+	for i, p := range []string{a, b} {
+		if _, err := os.Lstat(p); !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%s already exists or cannot be checked: %w", p, errors.Join(err, os.ErrExist))
+		}
+		d, err := os.Stat(filepath.Dir(p))
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return fmt.Errorf("%s is not a directory", filepath.Dir(p))
+		}
+		dirs[i] = d
+	}
+	if filepath.Base(a) == filepath.Base(b) && os.SameFile(dirs[0], dirs[1]) {
+		return fmt.Errorf("%s and %s are the same file", a, b)
+	}
+	return nil
+}
+
+// createPair creates the key file (0600, via keyfile.Store) and the draft (0644) at paths
+// that must not exist. Both are staged first, then linked into place; if the second link
+// fails, the first is removed.
+func createPair(keyPath string, key []byte, draftPath string, draft []byte) error {
+	sfx := make([]byte, 8)
+	if _, err := rand.Read(sfx); err != nil {
+		return err
+	}
+	tmpKey := fmt.Sprintf("%s.%x.tmp", keyPath, sfx)
+	tmpDraft := fmt.Sprintf("%s.%x.tmp", draftPath, sfx)
+	defer os.Remove(tmpKey)
+	defer os.Remove(tmpDraft)
+	if err := keyfile.Store(tmpKey, key, keyfile.Raw); err != nil {
+		return err
+	}
+	if err := writeNew(tmpDraft, draft, 0o644); err != nil {
+		return err
+	}
+	if err := os.Link(tmpKey, keyPath); err != nil {
+		return err
+	}
+	if err := os.Link(tmpDraft, draftPath); err != nil {
+		os.Remove(keyPath)
+		return err
+	}
+	return nil
 }
 
 // mkdirNew creates an owner-only directory that must not exist yet.

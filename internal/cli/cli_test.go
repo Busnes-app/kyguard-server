@@ -175,7 +175,7 @@ func TestNoPinRefusesEverything(t *testing.T) {
 	if err := e.run("import", e.path("ceremony/bundle.json")); !errors.Is(err, ErrNotPinned) {
 		t.Fatalf("after a failed trust: err %v, want ErrNotPinned", err)
 	}
-	if _, err := os.Stat(e.app.Home); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(e.app.Home, stateFile)); !os.IsNotExist(err) {
 		t.Fatalf("a failed trust left state behind: %v", err)
 	}
 	out := e.must("trust", fp, "--bundle", e.path("ceremony/bundle.json"))
@@ -412,5 +412,207 @@ func TestSignDeliversBeforeRaisingHighWater(t *testing.T) {
 	}
 	if e.pinned().Lookup(pqcrypto.TypePolicy, account) != nil {
 		t.Fatal("an undelivered signature raised the local high-water mark")
+	}
+}
+
+func TestTrustSamePinKeepsHistory(t *testing.T) {
+	e := newEnv(t)
+	fp := e.ceremony("ceremony", "3", "2")
+	e.must("trust", fp, "--bundle", e.path("ceremony/bundle.json"))
+	tr := e.pinned()
+	ep1 := e.signBy(e.write("p1.json", vaultedPolicy(tr, account, 1, alice)), nil, 1, 2)
+	e.signBy(e.write("p2.json", vaultedPolicy(tr, account, 2, alice)), nil, 1, 2)
+	for _, extra := range [][]string{nil, {"--replace"}} {
+		e.must(append([]string{"trust", fp, "--bundle", e.path("ceremony/bundle.json")}, extra...)...)
+		if r := e.pinned().Lookup(pqcrypto.TypePolicy, account); r == nil || r.Epoch != 2 {
+			t.Fatalf("re-pinning the same fingerprint %v dropped history: %+v", extra, r)
+		}
+		if err := e.run("import", ep1); !errors.Is(err, pqcrypto.ErrRollback) {
+			t.Fatalf("import lower epoch after re-pin %v: err %v, want ErrRollback", extra, err)
+		}
+	}
+}
+
+func TestSignRefusesInvalidCoSignature(t *testing.T) {
+	e := newEnv(t)
+	fp := e.ceremony("ceremony", "3", "2")
+	e.must("trust", fp, "--bundle", e.path("ceremony/bundle.json"))
+	half := e.signBy(e.write("p.json", vaultedPolicy(e.pinned(), account, 1, alice)), nil, 1)
+	var p pqcrypto.PolicyManifest
+	raw, err := os.ReadFile(half)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := canonical.Decode(raw, &p); err != nil {
+		t.Fatal(err)
+	}
+	p.Signatures[0].Sig.MLDSA65[0] ^= 1
+	bad := e.write("bad.json", &p)
+	// A co-signature by a key outside the custodian set is refused the same way.
+	g := newEnv(t)
+	g.ceremony("ceremony", "1", "1")
+	k, err := openKeyFile(g.path("ceremony/custodian-1.key"), pass, KindCustodian)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := vaultedPolicy(e.pinned(), account, 1, alice)
+	if err := pqcrypto.Sign(q, pqcrypto.RoleCustodian, k.Sign); err != nil {
+		t.Fatal(err)
+	}
+	outsider := e.write("outsider.json", q)
+	// A key enrollment draft without its self-signature, with no custodian signature yet.
+	e.must("enroll", "--principal-id", string(alice), "--issuer", "https://idp", "--subject", "alice",
+		"--key-out", e.path("alice.key"), "--draft-out", e.path("alice.json"))
+	var ke pqcrypto.KeyEnrollmentManifest
+	if raw, err = os.ReadFile(e.path("alice.json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := canonical.Decode(raw, &ke); err != nil {
+		t.Fatal(err)
+	}
+	ke.Signatures = []pqcrypto.Signature{}
+	unsigned := e.write("unsigned.json", &ke)
+	for _, d := range []string{bad, outsider, unsigned} {
+		err := e.run("sign", "--key", e.path("ceremony/custodian-2.key"), "--draft", d, "--out", d+".out")
+		if err == nil || errors.Is(err, pqcrypto.ErrThreshold) {
+			t.Fatalf("%s: err %v, want a refusal", filepath.Base(d), err)
+		}
+		if _, err := os.Stat(d + ".out"); !os.IsNotExist(err) {
+			t.Fatalf("%s: a signature was released for an invalid draft", filepath.Base(d))
+		}
+	}
+}
+
+func TestSignCommitsBelowQuorum(t *testing.T) {
+	e := newEnv(t)
+	fp := e.ceremony("ceremony", "3", "2")
+	e.must("trust", fp, "--bundle", e.path("ceremony/bundle.json"))
+	tr := e.pinned()
+	e.signBy(e.write("p2.json", vaultedPolicy(tr, account, 2, alice)), nil, 1)
+	if !strings.Contains(e.out.String(), "not yet complete") {
+		t.Fatalf("one of 2-of-3 completed: %s", e.out)
+	}
+	key := e.path("ceremony/custodian-1.key")
+	// Each run reloads trust.json, so the commitment has survived a restart.
+	if err := e.run("sign", "--key", key, "--draft", e.write("p2x.json", vaultedPolicy(tr, account, 2)), "--out", e.path("o2x")); !errors.Is(err, pqcrypto.ErrEquivocation) {
+		t.Fatalf("conflicting same-epoch draft after a partial signature: err %v, want ErrEquivocation", err)
+	}
+	if err := e.run("sign", "--key", key, "--draft", e.write("p1.json", vaultedPolicy(tr, account, 1, alice)), "--out", e.path("o1")); !errors.Is(err, pqcrypto.ErrRollback) {
+		t.Fatalf("lower-epoch draft after a partial signature: err %v, want ErrRollback", err)
+	}
+	e.signBy(e.write("p3.json", vaultedPolicy(tr, account, 3, alice)), nil, 2)
+}
+
+// gatePrompt blocks in Passphrase until released, holding a command mid-flight.
+type gatePrompt struct{ entered, release chan struct{} }
+
+func (g *gatePrompt) Passphrase(string, bool) (string, error) {
+	close(g.entered)
+	<-g.release
+	return pass, nil
+}
+func (g *gatePrompt) Confirm(string) (bool, error) { return true, nil }
+
+func TestStateLockSerializesWriters(t *testing.T) {
+	e := newEnv(t)
+	fp := e.ceremony("ceremony", "3", "2")
+	e.must("trust", fp, "--bundle", e.path("ceremony/bundle.json"))
+	// A second CLI produces a complete epoch-2 policy for e to import.
+	h := newEnv(t)
+	h.dir = e.dir
+	h.must("trust", fp, "--bundle", e.path("ceremony/bundle.json"))
+	ep2 := h.signBy(e.write("p2.json", vaultedPolicy(e.pinned(), account, 2, alice)), nil, 1, 2)
+
+	other := pqcrypto.UUID("0190b2a4-3333-7333-8333-000000000002")
+	gate := &gatePrompt{entered: make(chan struct{}), release: make(chan struct{})}
+	signer := &App{Home: e.app.Home, Out: &bytes.Buffer{}, Prompt: gate, KDF: cheap}
+	importer := &App{Home: e.app.Home, Out: &bytes.Buffer{}, Prompt: e.prompt, KDF: cheap}
+	draft := e.write("o.json", vaultedPolicy(e.pinned(), other, 1))
+	signed, imported := make(chan error, 1), make(chan error, 1)
+	go func() {
+		signed <- signer.Run(context.Background(), []string{"sign", "--key", e.path("ceremony/custodian-3.key"),
+			"--draft", draft, "--out", e.path("o.out")})
+	}()
+	<-gate.entered // the signer has loaded the state and waits for its passphrase
+	go func() { imported <- importer.Run(context.Background(), []string{"import", ep2}) }()
+	select {
+	case err := <-imported:
+		t.Errorf("import ran while another command held the state (err %v)", err)
+		imported <- err
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(gate.release)
+	if err := <-signed; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-imported; err != nil {
+		t.Fatal(err)
+	}
+	s, tr, err := e.app.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := tr.Lookup(pqcrypto.TypePolicy, account); r == nil || r.Epoch != 2 {
+		t.Fatalf("a stale writer erased the imported epoch: %+v", r)
+	}
+	if s.commitment(pqcrypto.TypePolicy, other) == nil {
+		t.Fatal("the signer's commitment was lost")
+	}
+}
+
+func TestEnrollStrandsNoKey(t *testing.T) {
+	e := newEnv(t)
+	fp := e.ceremony("ceremony", "3", "2")
+	e.must("trust", fp, "--bundle", e.path("ceremony/bundle.json"))
+	if err := os.WriteFile(e.path("taken.key.draft.json"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(e.dir, e.path("alias")); err != nil {
+		t.Fatal(err)
+	}
+	base := []string{"enroll", "--principal-id", string(alice), "--issuer", "https://idp", "--subject", "alice"}
+	for name, c := range map[string]struct {
+		key, draft, want string
+		client           bool
+	}{
+		"draft-out is key-out":        {key: e.path("a.key"), draft: e.path("a.key"), want: "same file"},
+		"draft-out aliases key-out":   {key: e.path("a.key"), draft: e.path("alias/a.key"), want: "same file"},
+		"draft directory is missing":  {key: e.path("a.key"), draft: e.path("missing/a.json"), want: "no such file"},
+		"key directory is missing":    {key: e.path("missing/a.key"), draft: e.path("a.json"), want: "no such file"},
+		"client draft already exists": {key: e.path("taken.key"), client: true, want: "already exists"},
+	} {
+		e.app.Client = nil
+		args := append(base, "--key-out", c.key)
+		if c.client {
+			e.app.Client = &fakeClient{}
+		} else {
+			args = append(args, "--draft-out", c.draft)
+		}
+		if err := e.run(args...); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: err %v, want %q before any key exists", name, err, c.want)
+		}
+		if _, err := os.Lstat(c.key); !os.IsNotExist(err) {
+			t.Errorf("%s: a key file was left without its draft", name)
+		}
+	}
+	// A draft that appears between the check and the commit removes the new key.
+	if err := os.WriteFile(e.path("late.json"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := createPair(e.path("late.key"), bytes.Repeat([]byte("k"), 64), e.path("late.json"), []byte("d")); err == nil {
+		t.Fatal("createPair replaced an existing draft")
+	}
+	if ents, _ := filepath.Glob(e.path("late.key*")); len(ents) != 0 {
+		t.Fatalf("createPair left %v behind", ents)
+	}
+	e.app.Client = nil
+	e.must(append(base, "--key-out", e.path("ok.key"), "--draft-out", e.path("ok.json"))...)
+	for p, mode := range map[string]os.FileMode{e.path("ok.key"): 0o600, e.path("ok.json"): 0o644} {
+		if info, err := os.Stat(p); err != nil || info.Mode().Perm() != mode {
+			t.Fatalf("%s: %v %v, want mode %v", p, info, err, mode)
+		}
+	}
+	if ents, _ := filepath.Glob(e.path("*.tmp")); len(ents) != 0 {
+		t.Fatalf("staged files left behind: %v", ents)
 	}
 }

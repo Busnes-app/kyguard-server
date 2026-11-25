@@ -34,7 +34,10 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   fingerprint, `import` records verified manifests and refuses rollback and forks,
   `enroll` creates a user's keys and a self-signed key enrollment draft, and `sign` shows
   a draft decoded (principals resolved, target descriptor recomputed, Control Plane labels
-  marked unverified) before applying a Custodian signature.
+  marked unverified) before applying a Custodian signature. Commands that read or write
+  the trust state run one at a time; `sign` checks the whole draft before releasing a
+  signature and remembers what it signed; `enroll` creates the key file and its draft
+  together or not at all.
 
 ### Upgrade impact
 

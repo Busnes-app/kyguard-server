@@ -87,8 +87,17 @@ func deriveKey(pass string, k KDF) ([]byte, error) {
 
 // writeKeyFile seals k under pass and creates path (0600, never replacing a file).
 func writeKeyFile(path, pass string, cost password.Params, k *Key) error {
+	b, err := sealKeyFile(pass, cost, k)
+	if err != nil {
+		return err
+	}
+	return keyfile.Store(path, b, keyfile.Raw)
+}
+
+// sealKeyFile returns the key file contents for k sealed under pass.
+func sealKeyFile(pass string, cost password.Params, k *Key) ([]byte, error) {
 	if len(pass) < MinPassphrase {
-		return fmt.Errorf("kyguard-cli: passphrase must be at least %d characters", MinPassphrase)
+		return nil, fmt.Errorf("kyguard-cli: passphrase must be at least %d characters", MinPassphrase)
 	}
 	m, e := k.Sign.Seeds()
 	s := secrets{MLDSA65: m, Ed25519: e}
@@ -99,30 +108,30 @@ func writeKeyFile(path, pass string, cost password.Params, k *Key) error {
 		f.EncKeyID = pqcrypto.HexID(k.Enc.Public().ID())
 	}
 	if _, err := rand.Read(f.KDF.Salt); err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := rand.Read(f.Nonce); err != nil {
-		return err
+		return nil, err
 	}
 	pt, err := json.Marshal(s)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer clear(pt)
 	g, err := keyAEAD(pass, f.KDF)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	aad, err := f.aad()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	f.Ciphertext = g.Seal(nil, f.Nonce, pt, aad)
 	out, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return keyfile.Store(path, append(out, '\n'), keyfile.Raw)
+	return append(out, '\n'), nil
 }
 
 func keyAEAD(pass string, k KDF) (cipher.AEAD, error) {

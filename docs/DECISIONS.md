@@ -99,3 +99,26 @@ contradicts itself. Each names its section. The most secure reading wins.
     rebuilds a user's own X-Wing key from that user's passphrase-sealed key file with
     `recoverykey.FromSeed` (§3.1 names `recoverykey` for these keys); it is part of
     `kyguard-cli`, not the server, and never handles the suite recovery key.
+28. §3.2 rules 3 and 5 (`trust`, same fingerprint). Re-pinning the fingerprint already
+    pinned changes nothing, with or without `--replace`: every accepted manifest and
+    signing commitment stays. A different fingerprint with `--replace` keeps this CLI's
+    signing commitments too, since they only ever refuse more.
+29. §3.2 rules 3 and 4, §3.7 rule 1 (`sign`, below quorum). The spec's high-water mark
+    covers accepted manifests only. `kyguard-cli` also persists, before any signature
+    leaves, the highest `(epoch, digest)` it has signed per `(type, scope.id)` and refuses
+    a lower epoch or a same-epoch fork against it, even when the earlier draft never
+    reached quorum. The commitment is per CLI state directory, not per custodian key, so
+    custodians sharing one state are bound together (the stricter reading). An abandoned
+    draft is replaced by a draft at the next epoch.
+30. §3.2 rule 4 (`sign`, existing signatures). Before releasing a signature the CLI runs
+    every acceptance check on the signed draft (`pqcrypto.Trust.Check`); only a short
+    custodian quorum may remain. An invalid co-signature, a missing self-signature or a
+    broken successor rule refuses the draft.
+31. §3.2 rule 3 (state concurrency). `trust`, `import`, `enroll` and `sign` hold an
+    exclusive OS file lock on `$KYGUARD_HOME/trust.lock` for the whole command, so
+    concurrent `kyguard-cli` processes run one at a time and none saves a stale snapshot.
+    A second command waits while the first one prompts.
+32. §3.2 rule 4 (`enroll` delivery). Before generating keys, `enroll` checks that the key
+    and draft paths are distinct, absent and in existing directories. It stages both files
+    and links them into place without replacing anything; if the draft cannot be placed,
+    the new key file is removed. A failed Control Plane submission keeps both files.

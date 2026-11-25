@@ -64,6 +64,13 @@ func (a *App) Run(ctx context.Context, args []string) error {
 	if !ok {
 		return fmt.Errorf("kyguard-cli: unknown command %q\n%s", args[0], usage)
 	}
+	if args[0] != "init" { // init touches no trust state
+		unlock, err := a.lockState()
+		if err != nil {
+			return err
+		}
+		defer unlock()
+	}
 	return cmd(ctx, args[1:])
 }
 
