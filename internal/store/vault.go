@@ -20,9 +20,13 @@ var ErrTooLarge = errors.New("record over its size limit")
 
 // MaxChain bounds an envelope with all its receipts, and MaxDescriptor a target descriptor,
 // in canonical bytes, so one chain and its descriptor always fit one sync reply.
+// MaxEnvelope leaves room in the chain for a terminal receipt (abort, release or
+// vault_commit carry no extra recipients), so a stored envelope can always be finished
+// (security review of #15).
 const (
 	MaxChain      = 256 << 10
 	MaxDescriptor = 64 << 10
+	MaxEnvelope   = MaxChain - 32<<10
 )
 
 // ErrLeaseOpen refuses a policy that changes the target descriptor of an account with an
@@ -365,7 +369,7 @@ func (v vaultStore) requireLock(ctx context.Context, tx *sql.Tx, accountID, op s
 }
 
 func (v vaultStore) PutEnvelope(ctx context.Context, op string, e *StoredEnvelope) error {
-	if len(e.Envelope) > MaxChain {
+	if len(e.Envelope) > MaxEnvelope {
 		return ErrTooLarge
 	}
 	return v.s.inTx(ctx, func(tx *sql.Tx) error {

@@ -245,10 +245,7 @@ func runConfiguredServer(cfg *config.Config) {
 	}
 
 	<-stop
-	if brokerServer != nil {
-		_ = brokerServer.Close()
-		srv.BrokerListener().CloseAll()
-	}
+	stopBrokerListener(srv, brokerServer)
 	gracefulStop(srv, httpServer, stopBackups, cancel, backupDone, readinessDrainDelay)
 }
 

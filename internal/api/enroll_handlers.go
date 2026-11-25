@@ -153,7 +153,10 @@ func (s *Server) handleSubmitEnrollment(w http.ResponseWriter, r *http.Request) 
 	txd, _ := pqcrypto.ObjDigest(tx)
 	vs := s.store.Vault()
 	if err := vs.PutEnvelope(r.Context(), string(op), &store.StoredEnvelope{EnvelopeID: string(v.EnvelopeID), AccountID: string(account), SecretVersion: version,
-		EnvelopeKind: v.EnvelopeKind, Digest: string(v.Digest.Hex()), Envelope: req.Envelope}); err != nil {
+		EnvelopeKind: v.EnvelopeKind, Digest: string(v.Digest.Hex()), Envelope: req.Envelope}); errors.Is(err, store.ErrTooLarge) {
+		s.writeError(w, http.StatusRequestEntityTooLarge, "candidate envelope too large")
+		return
+	} else if err != nil {
 		s.writeError(w, http.StatusConflict, "the reservation changed")
 		return
 	}

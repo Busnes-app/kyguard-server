@@ -173,3 +173,12 @@ func TestStandingReleaseIsRefusedAtSubmission(t *testing.T) {
 		t.Fatalf("standing_release: %d %s", w.Code, w.Body)
 	}
 }
+
+// Startup serves and shutdown closes the same listener, the one holding the broker
+// connections (security review of #8).
+func TestBrokerListenerIsOneInstance(t *testing.T) {
+	srv, _, _, _ := setupBrokerServer(t)
+	if l := srv.BrokerListener(); l == nil || l != srv.BrokerListener() {
+		t.Fatal("BrokerListener returned a new listener")
+	}
+}
