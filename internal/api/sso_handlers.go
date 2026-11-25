@@ -102,7 +102,8 @@ func (s *Server) handleSSOCallback(name string) http.HandlerFunc {
 			return
 		}
 
-		_, _, err = s.sessions.IssueSSOSession(r.Context(), w, r, user, claims.Issuer, claims.SessionID, claims.IssuedAt)
+		// Never an active session: a pending one that only TOTP step-up exchanges (spec §7.3).
+		_, _, err = s.sessions.IssuePendingSession(r.Context(), w, r, user, claims.Issuer, claims.SessionID, claims.IssuedAt, claims.MFA)
 		if errors.Is(err, store.ErrSSOSessionEnded) {
 			s.writeError(w, http.StatusUnauthorized, "SSO session already ended")
 			return

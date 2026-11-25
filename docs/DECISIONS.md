@@ -45,6 +45,12 @@ contradicts itself. Each names its section. The most secure reading wins.
 12a. §7.2 (fence migration). Migration 13 replaces the sid- and provider-keyed fence tables with
    issuer-keyed ones instead of converting rows: fences live ten minutes and no KyGuard
    install exists.
+13. §7.3 rule 3 (enrollment routes). Enrollment is two calls under `/api/auth/stepup/`:
+   `enroll` offers a secret (stored sealed on the pending session) and `enroll/confirm` takes the
+   first code, stores the factor and exchanges in one transaction. The confirming code's counter
+   becomes the factor's `last_counter`, so it cannot be replayed.
+14. §7.3 rule 2 (12 hours). The active SSO session lifetime is the constant `SSOSessionTTL`,
+   not configurable; `KY_SESSION_TTL` style overrides are not offered.
 
 ## Crypto wire format and contracts (§3)
 

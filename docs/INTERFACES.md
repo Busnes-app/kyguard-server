@@ -78,7 +78,10 @@ Sources: [auth handlers](../internal/api/auth_handlers.go),
 |---|---|---|
 | GET `/api/auth/pow-challenge` | Anonymous; no body | 200 challenge object described below |
 | POST `/api/auth/login` | Anonymous JSON: `username`, `password`, `totp_code` (all required, else 400), optional `captcha_token`. Break-glass accounts only: an SSO account with a correct password gets 403 | 200 authenticated user and session/CSRF cookies; the session is active, stepped up and ends 30 minutes later |
-| GET `/api/auth/me` | Optional session; no body | 200 `{"authenticated":false}` or `{"authenticated":true,"user":User}`; a break-glass session adds `break_glass: {reason, expires_at}` |
+| GET `/api/auth/me` | Optional session, pending included; no body | 200 `{"authenticated":false}` or `{"authenticated":true,"user":User}`; a pending session adds `stepup: {required, enrolled, can_enroll}`, a break-glass session `break_glass: {reason, expires_at}` |
+| POST `/api/auth/stepup/totp` | Pending SSO session; JSON `{"code":"123456"}`; cookie CSRF applies | 200 `{"authenticated":true}` and new session/CSRF cookies: the pending session is deleted and a new active one issued; 401 for a refused code, an expired pending session or a login the IdP ended |
+| POST `/api/auth/stepup/enroll` | Pending SSO session of a user with no factor, whose ID token asserted MFA; no body | 200 `{"secret","otpauth_uri"}`; 403 without IdP MFA (audited `auth.enrollment_blocked`, `severity=critical`); 409 when a factor exists |
+| POST `/api/auth/stepup/enroll/confirm` | The same pending session; JSON `{"code":"123456"}` from the offered secret | As `/stepup/totp`, storing the factor in the same transaction |
 | POST `/api/auth/break-glass/reason` | Break-glass session (403 otherwise); JSON `{"reason":"…"}`, 1–500 characters; cookie CSRF applies | 200 `{"recorded":true}`; 409 when the session already has one; audited `break_glass.reason` |
 | POST `/api/auth/change-password` | Break-glass session (also a restricted one); JSON: `current_password`, `new_password`, `totp_code`; cookie CSRF applies; 409 for an SSO account | 200 `{"password_changed":true,"login_required":true}`; replacement flag cleared; all sessions revoked |
 | POST `/api/auth/logout` | Optional session; no body; cookie CSRF applies | 200 `{"logged_out":true}`; current session revoked and cookies expired |
@@ -93,6 +96,17 @@ unique regardless of letter case: creating or renaming to a case variant of anot
 account's name is refused (SCIM 409 `uniqueness`, KyIdentity sign-in 409). An
 installation that already holds such duplicates keeps them, logs each clash at
 startup and builds the case-insensitive unique index once they are resolved.
+
+Every SSO sign-in ends in a pending session (spec §7.3): five minutes long, authenticating
+only GET `/api/auth/me`, POST `/api/auth/logout` and `/api/auth/stepup/*`. Anything else
+answers 403 `{"code":"stepup_required"}`, and `GET /api/settings` gives it only the public
+payload, by cookie or Bearer. A TOTP code exchanges it for a new active session with a new
+token, lasting 12 hours without sliding and still bound to the login's issuer, `sid` and
+original ID-token `iat`, so back-channel logout reaches it; the pending token never becomes
+active. Codes are single-use; five failed codes end the pending session, and past ten failed
+codes per user in 15 minutes every code fails, even a correct one. Every failure is audited
+(`auth.stepup_failed`). A user without a factor may enroll one only when the ID token asserted
+MFA.
 
 Local sign-in is for break-glass accounts only (spec §7.4). They are created on the host
 with `kyguard-server break-glass create` and carry a TOTP factor (`mfa_factors`, sealed under

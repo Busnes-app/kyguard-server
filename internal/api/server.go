@@ -310,6 +310,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/auth/me", s.handleMe)
 	s.mux.HandleFunc("/api/auth/change-password", s.handleChangePassword)
 	s.mux.HandleFunc("POST /api/auth/break-glass/reason", s.handleBreakGlassReason)
+	s.mux.HandleFunc("POST /api/auth/stepup/totp", s.handleStepupTOTP)
+	s.mux.HandleFunc("POST /api/auth/stepup/enroll", s.handleStepupEnroll)
+	s.mux.HandleFunc("POST /api/auth/stepup/enroll/confirm", s.handleStepupEnrollConfirm)
 
 	// SSO
 	s.mux.HandleFunc("/api/sso/kysignon/login", s.handleSSOLogin("kysignon"))
@@ -355,11 +358,7 @@ func (s *Server) requireAdmin(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		user, sess, err := s.sessions.AuthenticateRequest(r)
 		if err != nil {
-			if errors.Is(err, auth.ErrPasswordChangeRequired) {
-				s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "Change your password before continuing", "code": "password_change_required"})
-			} else {
-				s.writeError(w, http.StatusUnauthorized, "Authentication required")
-			}
+			s.authFailed(w, err)
 			return
 		}
 		if user.Role != "admin" {
@@ -377,14 +376,23 @@ func (s *Server) requireAdmin(h http.HandlerFunc) http.HandlerFunc {
 func (s *Server) requireAuthenticated(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, _, err := s.sessions.AuthenticateRequest(r); err != nil {
-			if errors.Is(err, auth.ErrPasswordChangeRequired) {
-				s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "Change your password before continuing", "code": "password_change_required"})
-			} else {
-				s.writeError(w, http.StatusUnauthorized, "Authentication required")
-			}
+			s.authFailed(w, err)
 			return
 		}
 		h(w, r)
+	}
+}
+
+// authFailed answers a refused session: restricted sessions get 403 with a code the web shell
+// acts on, everything else 401.
+func (s *Server) authFailed(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, auth.ErrPasswordChangeRequired):
+		s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "Change your password before continuing", "code": "password_change_required"})
+	case errors.Is(err, auth.ErrStepUpRequired):
+		s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "Enter your authenticator code to finish signing in", "code": "stepup_required"})
+	default:
+		s.writeError(w, http.StatusUnauthorized, "Authentication required")
 	}
 }
 

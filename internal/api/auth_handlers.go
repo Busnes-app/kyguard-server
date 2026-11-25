@@ -236,6 +236,10 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	me := map[string]any{"authenticated": true, "user": user}
+	if sess.Stage == store.StagePending { // the shell shows the step-up screen
+		_, err := s.store.MFA().GetFactor(r.Context(), user.ID, store.FactorTOTP)
+		me["stepup"] = map[string]bool{"required": true, "enrolled": err == nil, "can_enroll": errors.Is(err, store.ErrNotFound) && sess.MFAAsserted}
+	}
 	if user.AccountType == store.AccountBreakGlass { // drives the persistent banner
 		me["break_glass"] = map[string]any{"reason": sess.BreakGlassReason, "expires_at": sess.ExpiresAt}
 	}

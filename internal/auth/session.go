@@ -24,13 +24,18 @@ var ErrPasswordChangeRequired = errors.New("password change required")
 // ErrStepUpRequired refuses a pending session anywhere but its own routes (spec §7.3).
 var ErrStepUpRequired = errors.New("TOTP step-up required")
 
-// PendingTTL is how long a pending session waits for its TOTP step-up (spec §7.3).
-const PendingTTL = 5 * time.Minute
+// PendingTTL is how long a pending session waits for its step-up; SSOSessionTTL is how long the
+// active session it becomes lasts, without sliding (spec §7.3).
+const (
+	PendingTTL    = 5 * time.Minute
+	SSOSessionTTL = 12 * time.Hour
+)
 
-// pendingAllowed is what a pending session authenticates: its identity and sign-out.
+// pendingAllowed is what a pending session authenticates: its identity, sign-out and step-up.
 func pendingAllowed(r *http.Request) bool {
 	return (r.Method == http.MethodGet && r.URL.Path == "/api/auth/me") ||
-		(r.Method == http.MethodPost && r.URL.Path == "/api/auth/logout")
+		(r.Method == http.MethodPost && r.URL.Path == "/api/auth/logout") ||
+		strings.HasPrefix(r.URL.Path, "/api/auth/stepup/")
 }
 
 // CookieName is the name a cookie has on this server: with host cookies (an https app URL,
@@ -62,7 +67,7 @@ const BreakGlassTTL = 30 * time.Minute
 // IssueSession creates an active session for credentials verified just now and writes the
 // HttpOnly cookie + CSRF token.
 func (sm *SessionManager) IssueSession(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User) (*store.Session, string, error) {
-	return sm.issue(ctx, w, r, user, time.Now().UTC(), "", "", 0, nil, "", nil, store.StageActive)
+	return sm.issue(ctx, w, r, user, time.Now().UTC(), "", "", 0, nil, "", nil)
 }
 
 // IssueBreakGlassSession issues the session for a break-glass login whose password and TOTP
@@ -71,31 +76,46 @@ func (sm *SessionManager) IssueSession(ctx context.Context, w http.ResponseWrite
 // commits.
 func (sm *SessionManager) IssueBreakGlassSession(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User, factorID string, audit *store.AuditRecord) (*store.Session, string, error) {
 	now := time.Now().UTC()
-	return sm.issue(ctx, w, r, user, now, "", "", BreakGlassTTL, &now, factorID, audit, store.StageActive)
+	return sm.issue(ctx, w, r, user, now, "", "", BreakGlassTTL, &now, factorID, audit)
 }
 
-// IssueSSOSession issues the pending session an SSO login gets (spec §7.3): it only names its
-// user until a local TOTP step-up exchanges it, and ends after PendingTTL. It is bound to the
-// login the issuer names by sid and dated by the ID token's issuedAt, so a back-channel
-// logout for that (issuer, sid) or (issuer, subject) ends it.
-// It fails with store.ErrSSOSessionEnded when the provider already ended that login.
-func (sm *SessionManager) IssueSSOSession(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User, issuer, sid string, issuedAt time.Time) (*store.Session, string, error) {
-	return sm.issue(ctx, w, r, user, issuedAt.UTC(), issuer, sid, PendingTTL, nil, "", nil, store.StagePending)
+// IssuePendingSession is what an SSO callback issues (spec §7.3): a restricted pending session
+// bound to the verified login (issuer, sid, the token's original iat) that only TOTP step-up
+// turns into an active one. mfa records whether the ID token asserted MFA.
+func (sm *SessionManager) IssuePendingSession(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User, issuer, sid string, issuedAt time.Time, mfa bool) (*store.Session, string, error) {
+	return sm.create(ctx, w, user, &store.Session{
+		UserID: user.ID, UserAgent: r.UserAgent(), IPAddress: ClientIP(r, sm.config.TrustedProxies),
+		CreatedAt: issuedAt.UTC(), ExpiresAt: time.Now().UTC().Add(PendingTTL),
+		SSOSID: sid, SSOIssuer: issuer, Stage: store.StagePending, MFAAsserted: mfa,
+	}, nil)
 }
 
-func (sm *SessionManager) issue(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User, authenticatedAt time.Time, issuer, sid string, ttl time.Duration, stepupAt *time.Time, factorID string, audit *store.AuditRecord, stage string) (*store.Session, string, error) {
-	rawToken := crypto.RandomHex(32)
-	tokenHash := crypto.SHA256Hex([]byte(rawToken))
+// ExchangePending deletes the pending session and issues a new active one with a new token
+// (spec §7.3 rule 2): stepped up now, ending SSOSessionTTL later, and still bound to the
+// pending session's login (issuer, sid, original iat) so the logout fences reach it.
+// factorID names the factor whose code was checked; newFactor is a first factor enrolled in
+// the same transaction. audit commits with the session.
+func (sm *SessionManager) ExchangePending(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User, pending *store.Session, factorID string, newFactor *store.MFAFactor, audit *store.AuditRecord) (*store.Session, string, error) {
+	now := time.Now().UTC()
+	active := &store.Session{
+		UserID: user.ID, UserAgent: r.UserAgent(), IPAddress: ClientIP(r, sm.config.TrustedProxies),
+		CreatedAt: pending.CreatedAt, ExpiresAt: now.Add(SSOSessionTTL), StepupAt: &now,
+		SSOSID: pending.SSOSID, SSOIssuer: pending.SSOIssuer, FactorID: factorID, Audit: audit,
+	}
+	return sm.create(ctx, w, user, active, func(s *store.Session) error {
+		return sm.store.Sessions().ExchangeSession(ctx, pending.TokenHash, user.PasswordHash, s, newFactor)
+	})
+}
 
+func (sm *SessionManager) issue(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User, authenticatedAt time.Time, issuer, sid string, ttl time.Duration, stepupAt *time.Time, factorID string, audit *store.AuditRecord) (*store.Session, string, error) {
 	if ttl <= 0 {
 		ttl = sm.config.SessionTTL
 	}
 	if ttl <= 0 {
-		ttl = 7 * 24 * time.Hour
+		ttl = SSOSessionTTL
 	}
 
 	sess := &store.Session{
-		TokenHash: tokenHash,
 		UserID:    user.ID,
 		UserAgent: r.UserAgent(),
 		IPAddress: ClientIP(r, sm.config.TrustedProxies),
@@ -103,13 +123,23 @@ func (sm *SessionManager) issue(ctx context.Context, w http.ResponseWriter, r *h
 		ExpiresAt: time.Now().UTC().Add(ttl),
 		SSOSID:    sid,
 		SSOIssuer: issuer,
-		Stage:     stage,
 		StepupAt:  stepupAt,
 		FactorID:  factorID,
 		Audit:     audit,
 	}
 
-	if err := sm.store.Sessions().CreateSession(ctx, sess, user.PasswordHash); err != nil {
+	return sm.create(ctx, w, user, sess, nil)
+}
+
+// create stores sess under a new token (through save, or CreateSession when nil) and only then
+// sets the session and CSRF cookies.
+func (sm *SessionManager) create(ctx context.Context, w http.ResponseWriter, user *store.User, sess *store.Session, save func(*store.Session) error) (*store.Session, string, error) {
+	rawToken := crypto.RandomHex(32)
+	sess.TokenHash = crypto.SHA256Hex([]byte(rawToken))
+	if save == nil {
+		save = func(s *store.Session) error { return sm.store.Sessions().CreateSession(ctx, s, user.PasswordHash) }
+	}
+	if err := save(sess); err != nil {
 		return nil, "", err
 	}
 

@@ -501,29 +501,78 @@ func (s *SQLStore) withPassword(ctx context.Context, userID, expectedHash string
 }
 
 func (s *sessionStore) CreateSession(ctx context.Context, sess *Session, expectedPasswordHash string) error {
-	err := s.store.withPassword(ctx, sess.UserID, expectedPasswordHash, func(tx *sql.Tx) error {
-		if sess.Stage == "" {
-			sess.Stage = StageActive
-		}
-		if sess.FactorID != "" {
-			if err := factorStillCurrent(ctx, s.store, tx, sess.UserID, sess.FactorID); err != nil {
-				return err
-			}
-		}
-		if _, err := tx.ExecContext(ctx, s.store.rebind(`INSERT INTO sessions (token_hash, user_id, user_agent, ip_address, created_at, expires_at, sso_sid, stage, stepup_at, break_glass_reason, sso_issuer) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), sess.TokenHash, sess.UserID, sess.UserAgent, sess.IPAddress, sess.CreatedAt, sess.ExpiresAt, sess.SSOSID, sess.Stage, nullTime(sess.StepupAt), sess.BreakGlassReason, sess.SSOIssuer); err != nil {
+	if err := s.store.withPassword(ctx, sess.UserID, expectedPasswordHash, func(tx *sql.Tx) error {
+		return s.insertSession(ctx, tx, sess)
+	}); err != nil {
+		return err
+	}
+	return s.fenceCheck(ctx, sess)
+}
+
+// ExchangeSession turns a pending session into a new active one in one transaction holding
+// the user row: the pending row is deleted (it must still be pending and unexpired, else
+// ErrNotFound), newFactor is inserted when given (ErrAlreadyExists if the user has one), and
+// active is inserted with its audit record. The pending token never becomes active. Like
+// CreateSession, the logout fences are checked after commit.
+func (s *sessionStore) ExchangeSession(ctx context.Context, pendingHash, passwordHash string, active *Session, newFactor *MFAFactor) error {
+	if err := s.store.withPassword(ctx, active.UserID, passwordHash, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, s.store.rebind(`DELETE FROM sessions WHERE token_hash = ? AND user_id = ? AND stage = ? AND expires_at > ?`), pendingHash, active.UserID, StagePending, time.Now().UTC())
+		if err != nil {
 			return err
 		}
-		if sess.Audit != nil {
-			return s.store.insertAudit(ctx, tx, sess.Audit)
+		if n, _ := res.RowsAffected(); n != 1 {
+			return ErrNotFound
 		}
-		return nil
-	})
+		if newFactor != nil {
+			newFactor.UserID, newFactor.Kind, newFactor.CreatedAt = active.UserID, FactorTOTP, time.Now().UTC()
+			if _, err := tx.ExecContext(ctx, s.store.rebind(`INSERT INTO mfa_factors (id, user_id, kind, secret_enc, last_counter, created_at) VALUES (?, ?, ?, ?, ?, ?)`),
+				newFactor.ID, newFactor.UserID, newFactor.Kind, newFactor.SecretEnc, newFactor.LastCounter, newFactor.CreatedAt); err != nil {
+				return uniqueErr(err)
+			}
+			active.FactorID = newFactor.ID
+		}
+		return s.insertSession(ctx, tx, active)
+	}); err != nil {
+		return err
+	}
+	return s.fenceCheck(ctx, active)
+}
+
+// SetPendingSecret stores the sealed enrollment secret on a pending session.
+func (s *sessionStore) SetPendingSecret(ctx context.Context, tokenHash, sealed string) error {
+	res, err := s.store.db.ExecContext(ctx, s.store.rebind(`UPDATE sessions SET pending_secret_enc = ? WHERE token_hash = ? AND stage = ?`), sealed, tokenHash, StagePending)
 	if err != nil {
 		return err
 	}
-	// Check the fences only after the session committed: EndSSOSession and EndSSOSubject
-	// commit their fence before deleting, so under read committed one of the two always
-	// sees the other.
+	if n, _ := res.RowsAffected(); n != 1 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *sessionStore) insertSession(ctx context.Context, tx *sql.Tx, sess *Session) error {
+	if sess.Stage == "" {
+		sess.Stage = StageActive
+	}
+	if sess.FactorID != "" {
+		if err := factorStillCurrent(ctx, s.store, tx, sess.UserID, sess.FactorID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, s.store.rebind(`INSERT INTO sessions (token_hash, user_id, user_agent, ip_address, created_at, expires_at, sso_sid, stage, stepup_at, break_glass_reason, sso_issuer, mfa_asserted, pending_secret_enc) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		sess.TokenHash, sess.UserID, sess.UserAgent, sess.IPAddress, sess.CreatedAt, sess.ExpiresAt, sess.SSOSID, sess.Stage, nullTime(sess.StepupAt), sess.BreakGlassReason, sess.SSOIssuer, sess.MFAAsserted, sess.PendingSecretEnc); err != nil {
+		return err
+	}
+	if sess.Audit != nil {
+		return s.store.insertAudit(ctx, tx, sess.Audit)
+	}
+	return nil
+}
+
+// fenceCheck runs after the session committed: EndSSOSession and EndSSOSubject commit their
+// fence before deleting, so under read committed one of the two always sees the other. A
+// fenced session is deleted and ErrSSOSessionEnded returned.
+func (s *sessionStore) fenceCheck(ctx context.Context, sess *Session) error {
 	now := time.Now().UTC()
 	var fenced int
 	if err := s.store.db.QueryRowContext(ctx, s.store.rebind(`SELECT
@@ -612,14 +661,14 @@ func (u *userStore) revokePasswordGrants(ctx context.Context, tx *sql.Tx, userID
 
 func (s *sessionStore) GetSession(ctx context.Context, tokenHash string) (*Session, error) {
 	q := s.store.rebind(`
-SELECT token_hash, user_id, user_agent, ip_address, created_at, expires_at, sso_sid, stage, stepup_at, break_glass_reason, sso_issuer
+SELECT token_hash, user_id, user_agent, ip_address, created_at, expires_at, sso_sid, stage, stepup_at, break_glass_reason, sso_issuer, mfa_asserted, pending_secret_enc
 FROM sessions WHERE token_hash = ?
 `)
 	var sess Session
 	var stepup sql.NullTime
 	err := s.store.db.QueryRowContext(ctx, q, tokenHash).Scan(
 		&sess.TokenHash, &sess.UserID, &sess.UserAgent, &sess.IPAddress,
-		&sess.CreatedAt, &sess.ExpiresAt, &sess.SSOSID, &sess.Stage, &stepup, &sess.BreakGlassReason, &sess.SSOIssuer,
+		&sess.CreatedAt, &sess.ExpiresAt, &sess.SSOSID, &sess.Stage, &stepup, &sess.BreakGlassReason, &sess.SSOIssuer, &sess.MFAAsserted, &sess.PendingSecretEnc,
 	)
 	if stepup.Valid {
 		sess.StepupAt = &stepup.Time

@@ -52,6 +52,11 @@ type Session struct {
 	// BreakGlassReason is the reason a break-glass session gave before its first privileged
 	// action (§7.4).
 	BreakGlassReason string `json:"-"`
+	// MFAAsserted records that a pending session's ID token asserted MFA (spec §7.2), the
+	// condition for enrolling a first factor.
+	MFAAsserted bool `json:"-"`
+	// PendingSecretEnc is the sealed TOTP secret offered to a pending session for enrollment.
+	PendingSecretEnc string `json:"-"`
 	// FactorID, when set, is the factor whose code authorized this session; CreateSession
 	// refuses it once that factor has been replaced. Not stored.
 	FactorID string `json:"-"`

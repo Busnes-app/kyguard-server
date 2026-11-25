@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Busnes-app/ky-primitives/totp"
 	"github.com/Busnes-app/kyguard-server/internal/api"
 	"github.com/Busnes-app/kyguard-server/internal/auth"
 	"github.com/Busnes-app/kyguard-server/internal/crypto"
@@ -123,8 +124,8 @@ func TestOIDCSignInIsPendingUntilStepUp(t *testing.T) {
 		req.AddCookie(c)
 		rec := httptest.NewRecorder()
 		srv.ServeHTTP(rec, req)
-		if rec.Code != http.StatusUnauthorized {
-			t.Errorf("pending session on %s: %d, want 401", path, rec.Code)
+		if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "stepup_required") {
+			t.Errorf("pending session on %s: %d %s, want 403 stepup_required", path, rec.Code, rec.Body)
 		}
 	}
 	req = httptest.NewRequest(http.MethodPost, "/api/auth/logout", nil)
@@ -139,6 +140,47 @@ func TestOIDCSignInIsPendingUntilStepUp(t *testing.T) {
 	if rec.Code != http.StatusOK || signedIn(srv, c) {
 		t.Fatalf("logout: %d %s, or it left the pending session", rec.Code, rec.Body)
 	}
+}
+
+// §7.3 end to end through the generic OIDC routes: the pending session reaches the step-up
+// routes, enrolls a first factor and becomes active; the next sign-in steps up with a code.
+func TestOIDCSignInStepsUpToActive(t *testing.T) {
+	srv, st, cfg := setupTestServer(t)
+	f := newFakeKySignOn(t)
+	cfg.SSO.GenericOIDCIssuer, cfg.SSO.GenericOIDCClientID, cfg.SSO.AutoProvision = f.issuer, "client", true
+	srv = api.NewServer(cfg, st)
+	login := func(sid string) *http.Cookie {
+		w := ssoLoginVia(t, srv, f, "oidc", "ada-sub", sid, "ada", mfaClaims)
+		c := sessionCookie(w)
+		if w.Code != http.StatusFound || c == nil {
+			t.Fatalf("OIDC callback: %d %s", w.Code, w.Body)
+		}
+		if w := status(srv, "GET", "/api/admin/users", c, false); w.Code != http.StatusForbidden {
+			t.Fatalf("pending session on an admin route: %d", w.Code)
+		}
+		return c
+	}
+	works := func(pending, active *http.Cookie) {
+		t.Helper()
+		if signedIn(srv, pending) {
+			t.Fatal("the pending token survived the exchange")
+		}
+		if w := status(srv, "GET", "/api/admin/users", active, false); w.Code != http.StatusOK {
+			t.Fatalf("active session: %d %s", w.Code, w.Body)
+		}
+	}
+
+	c := login("sid-1")
+	secret, active := enroll(t, srv, c)
+	works(c, active)
+
+	c = login("sid-2")
+	code, _ := totp.Code(secret, time.Now().Add(totp.Period*time.Second))
+	w := post(srv, c, "/api/auth/stepup/totp", map[string]string{"code": code})
+	if w.Code != http.StatusOK || sessionCookie(w) == nil {
+		t.Fatalf("step-up: %d %s", w.Code, w.Body)
+	}
+	works(c, sessionCookie(w))
 }
 
 // ssoLoginVia is ssoLoginClaims against the named provider's routes, with a username.

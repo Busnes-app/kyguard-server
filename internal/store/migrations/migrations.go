@@ -457,6 +457,17 @@ CREATE TABLE sso_subject_logouts (
     PRIMARY KEY (issuer, subject)
 );`,
 	},
+	{
+		// A pending SSO session (spec §7.3) records whether its ID token asserted MFA, which
+		// alone allows first-factor enrollment, and holds the sealed TOTP secret offered for
+		// enrollment until a code confirms it.
+		Version: 14,
+		Name:    "kyguard_pending_sessions",
+		SQLite: `ALTER TABLE sessions ADD COLUMN mfa_asserted INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN pending_secret_enc TEXT NOT NULL DEFAULT '';`,
+		Postgres: `ALTER TABLE sessions ADD COLUMN mfa_asserted BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE sessions ADD COLUMN pending_secret_enc TEXT NOT NULL DEFAULT '';`,
+	},
 }
 
 // EnsureUsernameIndex builds the case-insensitive unique index on usernames when existing

@@ -244,7 +244,7 @@ func LoadFromEnv() (*Config, error) {
 			CookieSecure:            cookieSecure,
 			CookieDomain:            cookieDomain,
 			HostCookies:             https,
-			SessionTTL:              7 * 24 * time.Hour,
+			SessionTTL:              12 * time.Hour, // spec §7.3: an active session lasts 12 hours
 			TrustedProxies:          trustedProxies,
 			RateLimitExemptNetworks: exemptNetworks.String(),
 		},
