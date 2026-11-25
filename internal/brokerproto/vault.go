@@ -47,6 +47,10 @@ func (l *Listener) handle(ctx context.Context, b *store.Broker, m Message) (any,
 			err = l.status(ctx, tr, b, m.Body)
 		case MsgAccept:
 			err = l.accept(ctx, tr, b, m.Body)
+		case MsgChallenge, MsgDelivery, MsgTxResult:
+			err = l.mailbox(ctx, tr, b, m.Type, m.Body)
+		case MsgLease:
+			err = l.lease(ctx, tr, b, m.Body)
 		default:
 			err = errUnsupported
 		}
@@ -371,4 +375,61 @@ func (l *Listener) accept(ctx context.Context, tr *pqcrypto.Trust, b *store.Brok
 		return err
 	}
 	return l.Store.Vault().AcceptEnrollment(ctx, string(req.AccountID), string(req.OperationID), l.now())
+}
+
+// txAccount checks that a relayed transaction exists for an account of this broker's pool.
+func (l *Listener) txAccount(ctx context.Context, tr *pqcrypto.Trust, b *store.Broker, requestID pqcrypto.UUID) error {
+	acct, err := l.Store.Vault().TxAccount(ctx, string(requestID))
+	if err != nil {
+		return errNotInPool
+	}
+	_, _, err = l.account(ctx, tr, b, pqcrypto.UUID(acct))
+	return err
+}
+
+// mailbox stores what the broker returns for a transaction for the CLI to collect. The
+// Control Plane cannot open a delivery: it is sealed to the requester's key.
+func (l *Listener) mailbox(ctx context.Context, tr *pqcrypto.Trust, b *store.Broker, typ string, body json.RawMessage) error {
+	var m store.TxMail
+	var id pqcrypto.UUID
+	switch typ {
+	case MsgChallenge:
+		var r ChallengeRequest
+		if err := decode(body, &r); err != nil || len(r.Challenge) != 32 {
+			return errors.New("malformed request")
+		}
+		id, m.Challenge, m.Purpose = r.RequestID, pqcrypto.EncodeB64(r.Challenge), r.Purpose
+	case MsgDelivery:
+		var r DeliveryRequest
+		if err := decode(body, &r); err != nil {
+			return err
+		}
+		raw, err := canonical.Marshal(r.Wrap)
+		if err != nil {
+			return err
+		}
+		id, m.Delivery, m.Result = r.RequestID, string(raw), "ok"
+	case MsgTxResult:
+		var r TxResultRequest
+		if err := decode(body, &r); err != nil || r.Result == "" {
+			return errors.New("malformed request")
+		}
+		id, m.Result = r.RequestID, r.Result
+	}
+	if err := l.txAccount(ctx, tr, b, id); err != nil {
+		return err
+	}
+	return l.Store.Vault().SetTxMailbox(ctx, string(id), &m)
+}
+
+func (l *Listener) lease(ctx context.Context, tr *pqcrypto.Trust, b *store.Broker, body json.RawMessage) error {
+	var r LeaseRequest
+	if err := decode(body, &r); err != nil {
+		return err
+	}
+	if _, _, err := l.account(ctx, tr, b, r.AccountID); err != nil {
+		return err
+	}
+	return l.Store.Vault().MirrorLease(ctx, &store.Lease{RequestID: string(r.RequestID), AccountID: string(r.AccountID), BrokerID: b.ID,
+		SecretVersion: uint64(r.SecretVersion), State: r.State, CloseReason: r.CloseReason, OpenedAt: r.OpenedAt.Time, ExpiresAt: r.ExpiresAt.Time})
 }

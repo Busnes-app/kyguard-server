@@ -57,6 +57,7 @@ func (m *Machine) Tick(ctx context.Context) error {
 		return err
 	}
 	now := m.now()
+	var cleanups []pqcrypto.UUID
 	for _, a := range accts {
 		// Journaled enrollment receipts the Control Plane has not acknowledged block
 		// rotation; re-send them, never verifying again.
@@ -73,6 +74,21 @@ func (m *Machine) Tick(ctx context.Context) error {
 				errs = append(errs, err)
 				continue
 			}
+		}
+		if l := a.Lease; l.Open() {
+			// Expiry moves the lease to rotation_pending; then its cleanup is the only
+			// rotation path and scheduled occurrences wait (§3.6 step 5).
+			if l.State == LeaseActive && !now.Before(l.ExpiresAt) {
+				l.State, l.NextAttemptAt, l.Mirrored = LeaseRotationPending, now, false
+				if err := m.J.Save(a); err != nil {
+					errs = append(errs, err)
+				}
+				m.mirror(ctx, a)
+			}
+			if l.State == LeaseRotationPending && !a.Run.Open() && !now.Before(l.NextAttemptAt) {
+				cleanups = append(cleanups, a.ID)
+			}
+			continue
 		}
 		p, _ := m.Trust.Policy(a.ID)
 		if p == nil || p.AccountKind != pqcrypto.KindManaged || p.RotationSchedule == nil || a.Quarantined || a.Run.Open() ||
@@ -94,6 +110,11 @@ func (m *Machine) Tick(ctx context.Context) error {
 		}
 	}
 	m.mu.Unlock()
+	for _, id := range cleanups {
+		if err := m.Cleanup(ctx, id); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	for _, d := range run {
 		if err := m.Rotate(ctx, d.account, d.k, d.at); err != nil && !errors.Is(err, ErrNotActive) {
 			errs = append(errs, err)

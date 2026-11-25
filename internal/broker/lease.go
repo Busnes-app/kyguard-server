@@ -1,0 +1,380 @@
+package broker
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/json"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
+	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
+	"github.com/Busnes-app/kyguard-server/internal/pqcrypto/canonical"
+)
+
+// Lease and transaction refusals.
+var (
+	ErrLeaseOpen   = errors.New("broker: a checkout lease is open for this account")
+	ErrNoChallenge = errors.New("broker: no challenge is outstanding for this request")
+	ErrMinAge      = errors.New("broker: the target's minimum password age has not passed")
+)
+
+// CleanupRetry is the pace of a refused lease cleanup (§4.4).
+const CleanupRetry = time.Hour
+
+// currentEnvelope is the account's current envelope as VerifyTx needs it.
+func (m *Machine) currentEnvelope(a *Account) (*pqcrypto.Chain, *pqcrypto.CurrentEnvelope, error) {
+	chains, err := m.chains(a)
+	if err != nil {
+		return nil, nil, err
+	}
+	cur := pqcrypto.CurrentEnvelopeOf(chains)
+	if cur == nil {
+		return nil, nil, nil
+	}
+	return cur, &pqcrypto.CurrentEnvelope{EnvelopeID: cur.Envelope.EnvelopeID, SecretVersion: cur.Envelope.SecretVersion, ReceiptHead: cur.Head}, nil
+}
+
+// verifyTx runs §3.4 against the broker's journal state.
+func (m *Machine) verifyTx(a *Account, raw []byte) (*pqcrypto.AccessTransaction, pqcrypto.Digest, *pqcrypto.Chain, error) {
+	chain, cur, err := m.currentEnvelope(a)
+	if err != nil {
+		return nil, pqcrypto.Digest{}, nil, err
+	}
+	tx, d, err := m.Trust.VerifyTx(raw, pqcrypto.TxContext{BrokerID: m.ID, Now: m.now(), Seen: m.J.Burned, Current: cur, HighestVersion: a.HighestVersion})
+	return tx, d, chain, err
+}
+
+func accountOf(raw []byte) (pqcrypto.UUID, error) {
+	var head struct {
+		Scope pqcrypto.Scope `json:"scope"`
+	}
+	if err := json.Unmarshal(raw, &head); err != nil || !head.Scope.ID.Valid() {
+		return "", pqcrypto.ErrHeader
+	}
+	return head.Scope.ID, nil
+}
+
+// Tx takes a relayed vault_checkout or manual_rotation (§3.4, §3.6).
+func (m *Machine) Tx(ctx context.Context, raw []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	id, err := accountOf(raw)
+	if err != nil {
+		return err
+	}
+	a, err := m.J.Account(id)
+	if err != nil {
+		return err
+	}
+	tx, _, _, err := m.verifyTx(a, raw)
+	if err != nil {
+		return err
+	}
+	switch tx.Action.ActionType {
+	case pqcrypto.ActionVaultCheckout:
+		return m.checkout(ctx, a, tx, raw)
+	case pqcrypto.ActionManualRotation:
+		return m.manualRotation(ctx, a, tx)
+	}
+	return pqcrypto.ErrAction
+}
+
+// blocked is the §4.2 blocking rule plus open leases, enrollments and quarantine.
+func blocked(a *Account) error {
+	switch {
+	case a.Quarantined:
+		return ErrQuarantined
+	case a.Run.Open() || a.Enrollment.Open():
+		return ErrBlocked
+	case a.Lease.Open():
+		return ErrLeaseOpen
+	}
+	return nil
+}
+
+// checkout sends a single-use challenge (§3.6 step 2). Nothing else is persisted until the
+// possession proof verifies.
+func (m *Machine) checkout(ctx context.Context, a *Account, tx *pqcrypto.AccessTransaction, raw []byte) error {
+	if err := blocked(a); err != nil {
+		return err
+	}
+	return m.challenge(ctx, a, tx.RequestID, pqcrypto.PurposeDeliver, raw, tx.ExpiresAt.Time)
+}
+
+func (m *Machine) challenge(ctx context.Context, a *Account, id pqcrypto.UUID, purpose string, raw []byte, until time.Time) error {
+	c := make([]byte, pqcrypto.ChallengeBytes)
+	if _, err := rand.Read(c); err != nil {
+		return err
+	}
+	if err := m.J.PutChallenge(id, &Challenge{Purpose: purpose, Challenge: c, Account: a.ID, Tx: raw, ExpiresAt: until}); err != nil {
+		return err
+	}
+	return m.CP.Challenge(ctx, brokerproto.ChallengeRequest{RequestID: id, Challenge: c, Purpose: purpose})
+}
+
+// Checkin issues a check-in challenge to the lease holder.
+func (m *Machine) Checkin(ctx context.Context, id pqcrypto.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, err := m.leaseAccount(id)
+	if err != nil {
+		return err
+	}
+	if a.Lease.State != LeaseActive {
+		return ErrNoChallenge
+	}
+	return m.challenge(ctx, a, id, pqcrypto.PurposeCheckin, a.Lease.Tx, m.now().Add(pqcrypto.MaxTxLifetime))
+}
+
+func (m *Machine) leaseAccount(id pqcrypto.UUID) (*Account, error) {
+	c := m.J.GetChallenge(id)
+	var acct pqcrypto.UUID
+	if c != nil {
+		acct = c.Account
+	} else {
+		accts, err := m.J.Accounts()
+		if err != nil {
+			return nil, err
+		}
+		for _, a := range accts {
+			if a.Lease != nil && a.Lease.RequestID == id {
+				acct = a.ID
+			}
+		}
+	}
+	if acct == "" {
+		return nil, ErrNoChallenge
+	}
+	a, err := m.J.Account(acct)
+	if err != nil {
+		return nil, err
+	}
+	if a.Lease == nil || a.Lease.RequestID != id {
+		return nil, ErrNoChallenge
+	}
+	return a, nil
+}
+
+// Proof takes a possession proof for an outstanding challenge. A proof that fails persists
+// nothing and opens nothing (§3.6 step 2).
+func (m *Machine) Proof(ctx context.Context, id pqcrypto.UUID, raw []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c := m.J.GetChallenge(id)
+	if c == nil || !m.now().Before(c.ExpiresAt) {
+		return ErrNoChallenge
+	}
+	a, err := m.J.Account(c.Account)
+	if err != nil {
+		return err
+	}
+	switch c.Purpose {
+	case pqcrypto.PurposeDeliver:
+		return m.deliver(ctx, a, c, raw)
+	case pqcrypto.PurposeCheckin:
+		return m.checkinProof(ctx, a, c, raw)
+	}
+	return ErrNoChallenge
+}
+
+// deliver opens the lease, then verifies the credential once at the pinned target and wraps
+// the DEK to the requester's enc_key_id (§3.6 steps 3–4).
+func (m *Machine) deliver(ctx context.Context, a *Account, c *Challenge, raw []byte) error {
+	// Re-check expiry, the current policy and envelope, then the proof.
+	tx, d, chain, err := m.verifyTx(a, c.Tx)
+	if err != nil {
+		return err
+	}
+	if _, err := pqcrypto.VerifyPoP(raw, tx, d, c.Challenge, pqcrypto.PurposeDeliver); err != nil {
+		return err
+	}
+	if err := blocked(a); err != nil {
+		return err
+	}
+	now := m.now()
+	a.Lease = &Lease{RequestID: tx.RequestID, Tx: c.Tx, TxDigest: d.Hex(), SecretVersion: tx.Action.SecretVersion, EncKeyID: tx.Action.EncKeyID,
+		OpenedAt: now, ExpiresAt: now.Add(time.Duration(tx.Action.CheckoutTTLSeconds) * time.Second), State: LeaseActive}
+	if err := m.J.SaveConsume(a, tx.RequestID, tx.ExpiresAt.Time); err != nil {
+		return err
+	}
+	if err := m.hook("lease_open"); err != nil {
+		return err
+	}
+	m.mirror(ctx, a)
+
+	rc, err := m.target(a)
+	if err != nil {
+		return m.endDelivery(ctx, a, "no_target", false)
+	}
+	dek, err := chain.Envelope.OpenDEK(pqcrypto.RecipientBroker, string(m.ID), m.Keys.Enc)
+	if err != nil {
+		return m.endDelivery(ctx, a, "not_openable", false)
+	}
+	defer clear(dek)
+	pw, err := chain.Envelope.OpenPassword(dek)
+	if err != nil {
+		return m.endDelivery(ctx, a, "not_openable", false)
+	}
+	s, err := rc.conn.Login(ctx, rc.target, pw)
+	clear(pw)
+	if errors.Is(err, ErrAuthFailed) {
+		return m.endDelivery(ctx, a, HealthAuthFailed, true) // §4.6: deliver nothing, quarantine
+	}
+	if err != nil {
+		return m.endDelivery(ctx, a, "target_unavailable", false)
+	}
+	s.Close()
+	ke := m.Trust.Enrollment(tx.RequesterPrincipalID)
+	key := ke.ActiveEncKey(tx.Action.EncKeyID)
+	if key == nil {
+		return m.endDelivery(ctx, a, string(pqcrypto.ErrNotAllowed), false)
+	}
+	wrap, err := chain.Envelope.WrapTo(dek, tx.RequesterPrincipalID, key.EncPub)
+	if err != nil {
+		return err
+	}
+	return m.CP.Delivery(ctx, brokerproto.DeliveryRequest{RequestID: tx.RequestID, Wrap: wrap})
+}
+
+// endDelivery closes a lease that delivered nothing and, after a denied login, quarantines.
+func (m *Machine) endDelivery(ctx context.Context, a *Account, reason string, quarantine bool) error {
+	a.Lease.State, a.Lease.CloseReason, a.Lease.Mirrored = LeaseClosed, reason, false
+	if quarantine {
+		log.Printf("[BROKER] ALERT: account %s quarantined: the current credential was denied at checkout", a.ID)
+		a.Quarantined, a.Health, a.HealthReason = true, HealthAuthFailed, "checkout verification with the current credential was denied"
+	}
+	if err := m.J.Save(a); err != nil {
+		return err
+	}
+	m.mirror(ctx, a)
+	m.report(ctx, a, "")
+	return m.CP.TxResult(ctx, brokerproto.TxResultRequest{RequestID: a.Lease.RequestID, Result: reason})
+}
+
+// checkinProof moves the lease to rotation_pending on a proof from the transaction's cnf
+// key (§3.6 step 5).
+func (m *Machine) checkinProof(ctx context.Context, a *Account, c *Challenge, raw []byte) error {
+	if a.Lease == nil || a.Lease.State != LeaseActive {
+		return ErrNoChallenge
+	}
+	var tx pqcrypto.AccessTransaction
+	if _, err := canonical.Decode(a.Lease.Tx, &tx); err != nil {
+		return err
+	}
+	d, err := pqcrypto.ObjDigest(&tx)
+	if err != nil || d.Hex() != a.Lease.TxDigest {
+		return pqcrypto.ErrStale
+	}
+	if _, err := pqcrypto.VerifyPoP(raw, &tx, d, c.Challenge, pqcrypto.PurposeCheckin); err != nil {
+		return err
+	}
+	a.Lease.State, a.Lease.NextAttemptAt, a.Lease.Mirrored = LeaseRotationPending, m.now(), false
+	if err := m.J.SaveConsume(a, a.Lease.RequestID, time.Time{}); err != nil {
+		return err
+	}
+	m.mirror(ctx, a)
+	return nil
+}
+
+// mirror sends the lease state to checkout_leases; Recover re-sends it until acknowledged.
+func (m *Machine) mirror(ctx context.Context, a *Account) {
+	l := a.Lease
+	if l == nil || l.Mirrored {
+		return
+	}
+	err := m.CP.Lease(ctx, brokerproto.LeaseRequest{RequestID: l.RequestID, AccountID: a.ID, SecretVersion: l.SecretVersion, State: l.State,
+		CloseReason: l.CloseReason, OpenedAt: pqcrypto.NewTime(l.OpenedAt), ExpiresAt: pqcrypto.NewTime(l.ExpiresAt)})
+	if err != nil {
+		log.Printf("[BROKER] lease %s not mirrored: %v", l.RequestID, err)
+		return
+	}
+	l.Mirrored = true
+	if err := m.J.Save(a); err != nil {
+		log.Printf("[BROKER] journal: %v", err)
+	}
+}
+
+// manualRotation runs a rotation now under its own request (§3.4): refused with any rotation
+// open or an active lease; with an idle rotation_pending lease it re-arms that lease's
+// cleanup instead. It resets the refusal counter but still waits for the minimum age.
+func (m *Machine) manualRotation(ctx context.Context, a *Account, tx *pqcrypto.AccessTransaction) error {
+	if a.Quarantined {
+		return ErrQuarantined
+	}
+	if a.Run.Open() || a.Enrollment.Open() {
+		return ErrBlocked
+	}
+	now := m.now()
+	next := now
+	if a.MinAgeDeadline.After(next) {
+		next = a.MinAgeDeadline
+	}
+	if a.Lease.Open() {
+		if a.Lease.State != LeaseRotationPending {
+			return ErrLeaseOpen
+		}
+		a.Lease.NextAttemptAt = next
+		return m.J.SaveBurn(a, tx.RequestID, tx.ExpiresAt.Time)
+	}
+	a.Refusals = 0
+	if next.After(now) {
+		a.NextAttemptAt = next
+		if err := m.J.SaveBurn(a, tx.RequestID, tx.ExpiresAt.Time); err != nil {
+			return err
+		}
+		return ErrMinAge
+	}
+	rc, err := m.rotationContext(a)
+	if err != nil {
+		return err
+	}
+	op, err := pqcrypto.RequestOpID(tx.RequestID, 0)
+	if err != nil {
+		return err
+	}
+	return m.start(ctx, a, rc, runSpec{op: op, due: now, burn: tx})
+}
+
+// Cleanup runs the next attempt of a rotation_pending lease's cleanup rotation (§3.6 step 5).
+func (m *Machine) Cleanup(ctx context.Context, account pqcrypto.UUID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, err := m.J.Account(account)
+	if err != nil {
+		return err
+	}
+	l := a.Lease
+	if l == nil || l.State != LeaseRotationPending || a.Run.Open() || a.Quarantined || m.now().Before(l.NextAttemptAt) {
+		return nil
+	}
+	rc, err := m.rotationContext(a)
+	if err != nil {
+		return err
+	}
+	op, err := pqcrypto.RequestOpID(l.RequestID, l.Attempt)
+	if err != nil {
+		return err
+	}
+	return m.start(ctx, a, rc, runSpec{op: op, due: m.now(), lease: l.RequestID, attempt: l.Attempt})
+}
+
+// leaseAttemptEnded advances a cleanup lease after an attempt that did not release: a
+// refusal waits max(min-age deadline, now + 1 h) and never stops; anything else retries.
+func (m *Machine) leaseAttemptEnded(a *Account, refused bool) {
+	l := a.Lease
+	if l == nil || a.Run == nil || l.RequestID != a.Run.Lease {
+		return
+	}
+	l.Attempt++
+	l.NextAttemptAt = m.now()
+	if refused {
+		next := m.now().Add(CleanupRetry)
+		if a.MinAgeDeadline.After(next) {
+			next = a.MinAgeDeadline
+		}
+		l.NextAttemptAt = next
+		log.Printf("[BROKER] ALERT: account %s: lease cleanup refused; the checked-out credential stays live until %s", a.ID, next.Format(time.RFC3339))
+	}
+}

@@ -350,6 +350,7 @@ func (s *Server) routes() {
 	// SAML is removed (spec §7.2); keep its old paths out of the SPA fallback.
 	s.brokerRoutes()
 	s.enrollRoutes()
+	s.txRoutes()
 
 	s.mux.Handle("/saml/", http.NotFoundHandler())
 

@@ -69,6 +69,7 @@ func seedEveryTable(t *testing.T, st *SQLStore) {
 	must(v.Complete(ctx, "op1", "ac1", []*StoredReceipt{{EnvelopeID: "e1", ReceiptSeq: 1, ReceiptType: "commit_target", OperationID: "op1", Digest: "r1", PrevReceiptHash: zeroHash, Receipt: []byte(`{"r":1}`)}}, "", "target_verified", LockKeep))
 	must(v.PutTx(ctx, "rq1", "ac1", "enroll", "txd", []byte(`{"t":1}`)))
 	must(v.QueuePush(ctx, &Push{BrokerID: "b1", Type: "enroll", Body: []byte(`{"p":1}`), ExpiresAt: now.Add(time.Hour)}))
+	must(v.MirrorLease(ctx, &Lease{RequestID: "rq1", AccountID: "ac1", BrokerID: "b1", SecretVersion: 1, State: "active", OpenedAt: now, ExpiresAt: now.Add(time.Hour)}))
 	for _, q := range []string{
 		`INSERT INTO mfa_challenges (token_hash, user_id, expires_at) VALUES ('m1', 'u1', now())`,
 		`INSERT INTO sso_directory_events (provider, subject, last_timestamp) VALUES ('kysignon', 'sub-1', 42)`,

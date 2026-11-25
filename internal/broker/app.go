@@ -165,6 +165,8 @@ func (a *App) serve(ctx context.Context, j *Journal, k *Keys, id pqcrypto.UUID, 
 					log.Printf("[BROKER] enrollment refused: %v", err)
 				}
 			}()
+		case brokerproto.MsgTx, brokerproto.MsgProof, brokerproto.MsgCheckin:
+			go a.transaction(cctx, m, msg)
 		case brokerproto.MsgNudge:
 			select {
 			case a.Nudges <- struct{}{}:
@@ -175,4 +177,44 @@ func (a *App) serve(ctx context.Context, j *Journal, k *Keys, id pqcrypto.UUID, 
 		}
 	}
 	return errors.New("channel closed")
+}
+
+// transaction handles a relayed transaction, proof or check-in request and tells the CLI,
+// through the Control Plane, when the broker refuses it.
+func (a *App) transaction(ctx context.Context, m *Machine, msg brokerproto.Message) {
+	var id pqcrypto.UUID
+	var err error
+	switch msg.Type {
+	case brokerproto.MsgTx:
+		var p brokerproto.TxPush
+		if err = json.Unmarshal(msg.Body, &p); err == nil {
+			var tx struct {
+				RequestID pqcrypto.UUID `json:"request_id"`
+			}
+			json.Unmarshal(p.Tx, &tx)
+			id, err = tx.RequestID, m.Tx(ctx, p.Tx)
+		}
+	case brokerproto.MsgProof:
+		var p brokerproto.ProofPush
+		if err = json.Unmarshal(msg.Body, &p); err == nil {
+			id, err = p.RequestID, m.Proof(ctx, p.RequestID, p.Proof)
+		}
+	case brokerproto.MsgCheckin:
+		var p brokerproto.CheckinPush
+		if err = json.Unmarshal(msg.Body, &p); err == nil {
+			id, err = p.RequestID, m.Checkin(ctx, p.RequestID)
+		}
+	}
+	if err == nil || !id.Valid() {
+		return
+	}
+	log.Printf("[BROKER] %s %s refused: %v", msg.Type, id, err)
+	code := err.Error()
+	var perr pqcrypto.Error
+	if errors.As(err, &perr) {
+		code = string(perr)
+	}
+	if rerr := m.CP.TxResult(ctx, brokerproto.TxResultRequest{RequestID: id, Result: code}); rerr != nil {
+		log.Printf("[BROKER] result for %s not delivered: %v", id, rerr)
+	}
 }

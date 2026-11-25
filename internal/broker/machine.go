@@ -213,14 +213,28 @@ func (m *Machine) Rotate(ctx context.Context, account pqcrypto.UUID, occurrence 
 	if r := a.Run; r != nil && r.PolicyEpoch == rc.policy.Epoch && r.Occurrence == occurrence {
 		attempt = r.Attempt + 1
 	}
+	if a.Lease.Open() {
+		return ErrLeaseOpen // scheduled occurrences wait for the lease (§3.6 step 5)
+	}
 	op, err := pqcrypto.RotationOpID(account, rc.policy.Epoch, occurrence, attempt)
 	if err != nil {
 		return err
 	}
-	return m.start(ctx, a, rc, op, occurrence, attempt, due)
+	return m.start(ctx, a, rc, runSpec{op: op, occurrence: occurrence, attempt: attempt, due: due})
 }
 
-func (m *Machine) start(ctx context.Context, a *Account, rc *rotationContext, op pqcrypto.UUID, occurrence, attempt pqcrypto.Counter, due time.Time) error {
+// runSpec says which rotation an attempt belongs to: a scheduled occurrence, a lease's
+// cleanup (lease set) or a manual_rotation (burn set, burned with the first durable state).
+type runSpec struct {
+	op                  pqcrypto.UUID
+	occurrence, attempt pqcrypto.Counter
+	due                 time.Time
+	lease               pqcrypto.UUID
+	burn                *pqcrypto.AccessTransaction
+}
+
+func (m *Machine) start(ctx context.Context, a *Account, rc *rotationContext, spec runSpec) error {
+	op := spec.op
 	// A run whose journaled receipts the Control Plane has not acknowledged is delivered
 	// before a new run replaces it; otherwise its operation ID and lock would be lost.
 	if r := a.Run; r != nil && len(r.Receipts) > 0 && !r.Sent {
@@ -230,9 +244,14 @@ func (m *Machine) start(ctx context.Context, a *Account, rc *rotationContext, op
 	}
 	// The attempt is journaled before the reservation, so a crash or a lost reply can
 	// never leave a Control Plane lock with no local run to settle it.
-	a.Run = &Run{OperationID: op, PolicyEpoch: rc.policy.Epoch, Occurrence: occurrence, Attempt: attempt, Due: due,
-		State: StateReserving, SeenBefore: a.HighestVersion, OldEnvelopeID: rc.current.Envelope.EnvelopeID}
-	if err := m.J.Save(a); err != nil {
+	// A manual_rotation burns its request_id with this first durable state (§3.4 step 6).
+	a.Run = &Run{OperationID: op, PolicyEpoch: rc.policy.Epoch, Occurrence: spec.occurrence, Attempt: spec.attempt, Due: spec.due,
+		State: StateReserving, SeenBefore: a.HighestVersion, OldEnvelopeID: rc.current.Envelope.EnvelopeID, Lease: spec.lease}
+	save := m.J.Save
+	if spec.burn != nil {
+		save = func(a *Account) error { return m.J.SaveBurn(a, spec.burn.RequestID, spec.burn.ExpiresAt.Time) }
+	}
+	if err := save(a); err != nil {
 		return err
 	}
 	if err := m.hook("reserving"); err != nil {
@@ -523,8 +542,14 @@ func (m *Machine) abort(ctx context.Context, a *Account, reason string) error {
 		return err
 	}
 	a.Run.State, a.Run.Reason, a.Run.Receipts = StateAborted, reason, []pqcrypto.B64{r}
-	if reason == pqcrypto.ReasonRefused {
+	refused := reason == pqcrypto.ReasonRefused
+	if refused {
 		setHealth(a, HealthRotationFailed, "the target refused the change")
+	}
+	switch {
+	case a.Run.Lease != "":
+		m.leaseAttemptEnded(a, refused) // cleanup retries and never stops (§4.4)
+	case refused:
 		m.refused(a)
 	}
 	if err := m.J.Save(a); err != nil {
@@ -579,10 +604,14 @@ func (m *Machine) send(ctx context.Context, a *Account) error {
 		a.LastConsumedDue, a.CurrentCommitAt = a.Run.Due, m.now()
 		setHealth(a, HealthHealthy, "")
 		a.Refusals, a.NextAttemptAt = 0, time.Time{}
+		if l := a.Lease; l != nil && l.RequestID == a.Run.Lease && l.Open() {
+			l.State, l.CloseReason, l.Mirrored = LeaseClosed, "closed_by_release", false // only release closes a lease
+		}
 	}
 	if err := m.J.Save(a); err != nil {
 		return err
 	}
+	m.mirror(ctx, a)
 	m.report(ctx, a, "")
 	return nil
 }
@@ -648,6 +677,9 @@ func (m *Machine) Recover(ctx context.Context) error {
 		}
 		if err := m.recoverEnrollment(ctx, a); err != nil {
 			errs = append(errs, fmt.Errorf("account %s enrollment: %w", a.ID, err))
+		}
+		if b, err := m.J.Account(a.ID); err == nil {
+			m.mirror(ctx, b)
 		}
 	}
 	return errors.Join(errs...)

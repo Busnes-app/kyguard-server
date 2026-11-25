@@ -180,7 +180,7 @@ var migrationTables = []string{
 	"security_windows", "spent_challenges",
 	"bootstrap_bundles", "trust_manifests", "broker_pools", "brokers", "pairing_tokens", "operation_intents",
 	"assets", "accounts", "target_descriptors", "secret_envelopes", "envelope_receipts", "rotation_locks", "rotation_runs",
-	"access_transactions", "broker_outbox",
+	"access_transactions", "broker_outbox", "checkout_leases",
 }
 
 type migrationColumn struct{ name, kind string }

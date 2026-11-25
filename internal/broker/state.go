@@ -17,6 +17,7 @@ var (
 	bucketDescriptors = []byte("descriptors") // digest -> canonical target descriptor
 	bucketAccounts    = []byte("accounts")    // account_id -> JSON Account
 	bucketBurned      = []byte("burned")      // request_id -> RFC 3339 expiry (§3.7)
+	bucketChallenges  = []byte("challenges")  // request_id -> JSON Challenge, single use (§3.7)
 )
 
 // Rotation states (§4.2).
@@ -68,6 +69,44 @@ type Account struct {
 	Run *Run `json:"run,omitempty"`
 	// Enrollment is the latest enrollment attempt (§4.5).
 	Enrollment *Enrollment `json:"enrollment,omitempty"`
+	// Lease is the latest checkout lease (§3.6).
+	Lease *Lease `json:"lease,omitempty"`
+}
+
+// Lease states (§3.6).
+const (
+	LeaseActive          = "active"
+	LeaseRotationPending = "rotation_pending"
+	LeaseClosed          = "closed"
+)
+
+// Lease is an ephemeral checkout lease. Its cleanup rotation is the only rotation path while
+// it is rotation_pending, and only an attempt that appends release closes it.
+type Lease struct {
+	RequestID     pqcrypto.UUID    `json:"request_id"`
+	Tx            pqcrypto.B64     `json:"tx"`
+	TxDigest      pqcrypto.HexID   `json:"tx_digest"`
+	SecretVersion pqcrypto.Counter `json:"secret_version"`
+	EncKeyID      pqcrypto.HexID   `json:"enc_key_id"`
+	OpenedAt      time.Time        `json:"opened_at"`
+	ExpiresAt     time.Time        `json:"expires_at"`
+	State         string           `json:"state"`
+	CloseReason   string           `json:"close_reason,omitempty"`
+	Attempt       pqcrypto.Counter `json:"attempt"`
+	NextAttemptAt time.Time        `json:"next_attempt_at"`
+	Mirrored      bool             `json:"mirrored,omitempty"` // the Control Plane holds this state
+}
+
+// Open reports whether the lease is not closed.
+func (l *Lease) Open() bool { return l != nil && l.State != LeaseClosed }
+
+// Challenge is a single-use broker challenge awaiting its possession proof.
+type Challenge struct {
+	Purpose   string        `json:"purpose"`
+	Challenge pqcrypto.B64  `json:"challenge"`
+	Account   pqcrypto.UUID `json:"account"`
+	Tx        pqcrypto.B64  `json:"tx"`
+	ExpiresAt time.Time     `json:"expires_at"`
 }
 
 // Enrollment is one enroll transaction, journaled from its acceptance (§4.5 step 2).
@@ -123,6 +162,8 @@ type Run struct {
 	// Receipts are the run's signed receipts; Sent once the Control Plane acknowledged them.
 	Receipts []pqcrypto.B64 `json:"receipts,omitempty"`
 	Sent     bool           `json:"sent,omitempty"`
+	// Lease is the request ID of the lease this cleanup rotation closes, if any.
+	Lease pqcrypto.UUID `json:"lease,omitempty"`
 }
 
 // Open reports whether the run still blocks the account (§4.2 blocking rule).
@@ -134,7 +175,7 @@ func seqKey(n uint64) []byte { return binary.BigEndian.AppendUint64(nil, n) }
 
 func (j *Journal) init() error {
 	return j.db.Update(func(tx *bolt.Tx) error {
-		for _, b := range [][]byte{bucketMeta, bucketManifests, bucketDescriptors, bucketAccounts, bucketBurned} {
+		for _, b := range [][]byte{bucketMeta, bucketManifests, bucketDescriptors, bucketAccounts, bucketBurned, bucketChallenges} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -269,6 +310,50 @@ func (j *Journal) SaveBurn(a *Account, id pqcrypto.UUID, until time.Time) error 
 	return j.db.Update(func(tx *bolt.Tx) error {
 		if err := tx.Bucket(bucketBurned).Put([]byte(id), []byte(until.UTC().Format(time.RFC3339))); err != nil {
 			return err
+		}
+		return tx.Bucket(bucketAccounts).Put([]byte(a.ID), v)
+	})
+}
+
+// PutChallenge journals a challenge for a request, replacing an earlier one.
+func (j *Journal) PutChallenge(id pqcrypto.UUID, c *Challenge) error {
+	v, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	return j.db.Update(func(tx *bolt.Tx) error { return tx.Bucket(bucketChallenges).Put([]byte(id), v) })
+}
+
+// GetChallenge reads a request's challenge, or nil.
+func (j *Journal) GetChallenge(id pqcrypto.UUID) *Challenge {
+	var c *Challenge
+	j.db.View(func(tx *bolt.Tx) error {
+		if v := tx.Bucket(bucketChallenges).Get([]byte(id)); v != nil {
+			c = &Challenge{}
+			if json.Unmarshal(v, c) != nil {
+				c = nil
+			}
+		}
+		return nil
+	})
+	return c
+}
+
+// SaveConsume writes an account record, deletes the request's challenge (single use) and,
+// with a non-zero until, burns the request ID, all in one transaction.
+func (j *Journal) SaveConsume(a *Account, id pqcrypto.UUID, until time.Time) error {
+	v, err := json.Marshal(a)
+	if err != nil {
+		return err
+	}
+	return j.db.Update(func(tx *bolt.Tx) error {
+		if err := tx.Bucket(bucketChallenges).Delete([]byte(id)); err != nil {
+			return err
+		}
+		if !until.IsZero() {
+			if err := tx.Bucket(bucketBurned).Put([]byte(id), []byte(until.UTC().Format(time.RFC3339))); err != nil {
+				return err
+			}
 		}
 		return tx.Bucket(bucketAccounts).Put([]byte(a.ID), v)
 	})
