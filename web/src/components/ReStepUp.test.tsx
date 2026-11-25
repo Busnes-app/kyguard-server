@@ -149,3 +149,35 @@ it('cancels a stalled code check', async () => {
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   expect(screen.queryByRole('alert')).toBeNull();
 });
+
+// A cancelled check whose refusal body arrives late must not touch the next prompt.
+it('ignores a cancelled check that finishes after a new prompt opened', async () => {
+  let release: () => void = () => {};
+  let checks = 0;
+  const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+    if (String(input) !== '/api/auth/stepup/totp') return stale();
+    if (++checks > 1) return new Promise<Response>(() => {});
+    // Headers now, body later: the read ignores the abort, as a body already buffered would.
+    const body = new ReadableStream<Uint8Array>({ start(c) { release = () => { c.enqueue(new TextEncoder().encode('{"error":"old refusal"}')); c.close(); }; } });
+    return new Response(body, { status: 401 });
+  });
+  vi.stubGlobal('fetch', fetcher);
+  render(<ReStepUp />);
+  const first = secureFetch('/api/backup/deposit', { method: 'POST' });
+  fireEvent.change(await screen.findByLabelText('Authenticator code'), { target: { value: '111111' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+  await waitFor(() => expect(checks).toBe(1));
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect((await first).status).toBe(403);
+  const second = secureFetch('/api/backup/deposit', { method: 'POST' });
+  fireEvent.change(await screen.findByLabelText('Authenticator code'), { target: { value: '222222' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+  await waitFor(() => expect(checks).toBe(2));
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect((screen.getByLabelText('Authenticator code') as HTMLInputElement).value).toBe('222222');
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect((screen.getByRole('button', { name: 'Confirm' }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect((await second).status).toBe(403);
+});

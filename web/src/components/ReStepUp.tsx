@@ -32,6 +32,7 @@ export function ReStepUp() {
   const finish = (ok: boolean) => {
     inFlight.current?.abort();
     inFlight.current = null;
+    setBusy(false);
     const resolvers = waiting.current;
     waiting.current = [];
     setOpen(false);
@@ -59,22 +60,25 @@ export function ReStepUp() {
     event.preventDefault();
     const controller = new AbortController();
     inFlight.current = controller;
+    // Only the current submission may change the dialog: a cancelled one can finish late,
+    // after another prompt opened.
+    const current = () => inFlight.current === controller;
     setBusy(true);
     setError('');
     try {
       const response = await secureFetch('/api/auth/stepup/totp', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }), signal: controller.signal,
       });
-      if (controller.signal.aborted) return;
+      if (!current()) return;
       if (response.ok) { finish(true); return; }
       const body: unknown = await response.json().catch(() => ({}));
+      if (!current()) return;
       setError(typeof body === 'object' && body !== null && 'error' in body && typeof body.error === 'string' ? body.error : 'The code was not accepted.');
       setCode('');
     } catch {
-      if (!controller.signal.aborted) setError('Could not reach the server. Check the connection and try again.');
+      if (current()) setError('Could not reach the server. Check the connection and try again.');
     } finally {
-      if (inFlight.current === controller) inFlight.current = null;
-      setBusy(false);
+      if (current()) { inFlight.current = null; setBusy(false); }
     }
   }
 
