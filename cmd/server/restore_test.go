@@ -22,6 +22,7 @@ import (
 	"github.com/Busnes-app/ky-primitives/recoverykey"
 	"github.com/Busnes-app/kyguard-server/internal/api"
 	"github.com/Busnes-app/kyguard-server/internal/backup"
+	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
 	"github.com/Busnes-app/kyguard-server/internal/config"
 	"github.com/Busnes-app/kyguard-server/internal/store"
 )
@@ -282,8 +283,13 @@ func TestSQLiteBackupRestoreRoundTrip(t *testing.T) {
 	_, err = st.Intents().Begin(ctx, "deposit", "busnes_app")
 	must(err)
 	must(st.Settings().SetSetting(ctx, "theme", "busnes"))
-	for name, data := range map[string]string{"broker-ca.key": "ca key", "broker-ca.crt": "ca cert"} {
-		must(os.WriteFile(filepath.Join(cfg.Database.DataDir, name), []byte(data), 0600))
+	// A real broker CA: the restored server loads it before it serves (prepareStart).
+	_, err = brokerproto.CreateCA(cfg.Database.DataDir)
+	must(err)
+	caFiles := map[string][]byte{}
+	for _, name := range []string{brokerproto.CAKeyFile, brokerproto.CACertFile} {
+		caFiles[name], err = os.ReadFile(filepath.Join(cfg.Database.DataDir, name))
+		must(err)
 	}
 	key, _, shares := throwawayKit(t)
 	pinKey(t, cfg, st, key)
@@ -309,9 +315,9 @@ func TestSQLiteBackupRestoreRoundTrip(t *testing.T) {
 			t.Errorf("table %s differs after the restore", table)
 		}
 	}
-	for name, data := range map[string]string{"broker-ca.key": "ca key", "broker-ca.crt": "ca cert"} {
-		if got, err := os.ReadFile(filepath.Join(target, "data", name)); err != nil || string(got) != data {
-			t.Errorf("restored %s: %q %v", name, got, err)
+	for name, data := range caFiles {
+		if got, err := os.ReadFile(filepath.Join(target, "data", name)); err != nil || !bytes.Equal(got, data) {
+			t.Errorf("restored %s differs: %v", name, err)
 		}
 	}
 
