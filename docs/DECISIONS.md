@@ -270,4 +270,6 @@ contradicts itself. Each names its section. The most secure reading wins.
     manifest through the normal admission path and deletes the draft. The Control Plane
     never adds a signature itself. Storing a below-quorum copy is a compare-and-swap on the
     exact object that was checked, so two submissions from one snapshot cannot overwrite
-    each other's signatures; the loser gets 409 and re-fetches.
+    each other's signatures; the loser gets 409 and re-fetches. At quorum the draft is
+    consumed by the same compare-and-swap before admission, so a draft replaced or deleted
+    meanwhile is never admitted.

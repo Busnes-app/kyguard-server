@@ -19,6 +19,8 @@ type DraftStore interface {
 	// leaves signatures out, so it cannot detect a concurrent signature change.
 	SetDraftObject(ctx context.Context, id string, prev, object []byte, audit *AuditRecord) error
 	DeleteDraft(ctx context.Context, id string, audit *AuditRecord) error
+	// TakeDraft deletes the draft only while its object is still prev; ErrConflict otherwise.
+	TakeDraft(ctx context.Context, id string, prev []byte, audit *AuditRecord) error
 }
 
 // PolicyDraft is an unsigned or partly signed PolicyManifest.
@@ -108,6 +110,19 @@ func (v draftStore) DeleteDraft(ctx context.Context, id string, audit *AuditReco
 		}
 		if n, err := res.RowsAffected(); err != nil || n == 0 {
 			return errors.Join(err, ErrNotFound)
+		}
+		return v.s.auditTx(ctx, tx, audit)
+	})
+}
+
+func (v draftStore) TakeDraft(ctx context.Context, id string, prev []byte, audit *AuditRecord) error {
+	return v.s.inTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, v.s.rebind(`DELETE FROM policy_drafts WHERE id = ? AND object = ?`), id, string(prev))
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil || n == 0 {
+			return errors.Join(err, ErrConflict)
 		}
 		return v.s.auditTx(ctx, tx, audit)
 	})

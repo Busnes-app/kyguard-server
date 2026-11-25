@@ -28,3 +28,24 @@ func TestDraftObjectCompareAndSwap(t *testing.T) {
 		t.Fatalf("stored %s %v", got.Object, err)
 	}
 }
+
+// Admission consumes the draft it checked: a stale copy cannot take a replaced draft.
+func TestTakeDraftCompareAndSwap(t *testing.T) {
+	s, _ := inventoryFor(t)
+	ctx := context.Background()
+	if err := s.Drafts().PutDraft(ctx, &PolicyDraft{ID: "pd", AccountID: "ac", Epoch: 1, Digest: "dg", Object: []byte(`{"v":1}`), CreatedBy: "usr_a"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Drafts().TakeDraft(ctx, "pd", []byte(`{"v":0}`), nil); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale take: %v", err)
+	}
+	if _, err := s.Drafts().GetDraft(ctx, "pd"); err != nil {
+		t.Fatalf("draft gone after a refused take: %v", err)
+	}
+	if err := s.Drafts().TakeDraft(ctx, "pd", []byte(`{"v":1}`), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Drafts().GetDraft(ctx, "pd"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("draft kept after take: %v", err)
+	}
+}

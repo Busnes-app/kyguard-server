@@ -297,12 +297,18 @@ func (s *Server) handleSignDraft(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusOK, map[string]any{"accepted": false, "signatures": len(pm.Signatures)})
 		return
 	}
-	if _, _, err := s.trust.Submit(ctx, canon, s.actor(r), s.requestIP(r)); err != nil {
-		s.refuse(w, err)
+	// Consume the draft first, by compare-and-swap on the object checked: a draft replaced or
+	// deleted meanwhile is never admitted. A refused admission after this leaves no draft;
+	// it could only be refused because the verified state moved, which makes it stale.
+	if err := s.store.Drafts().TakeDraft(ctx, d.ID, d.Object, audit); errors.Is(err, store.ErrConflict) {
+		s.writeError(w, http.StatusConflict, "the draft changed meanwhile; fetch it again and re-sign")
+		return
+	} else if err != nil {
+		s.inventoryError(w, err, "policy draft")
 		return
 	}
-	if err := s.store.Drafts().DeleteDraft(ctx, d.ID, audit); err != nil && !errors.Is(err, store.ErrNotFound) {
-		s.writeError(w, http.StatusInternalServerError, "policy accepted; the draft could not be removed")
+	if _, _, err := s.trust.Submit(ctx, canon, s.actor(r), s.requestIP(r)); err != nil {
+		s.refuse(w, err)
 		return
 	}
 	s.writeJSON(w, http.StatusCreated, map[string]any{"accepted": true, "epoch": pm.Epoch.String(), "digest": d.Digest})
