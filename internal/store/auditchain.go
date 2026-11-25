@@ -194,19 +194,22 @@ func (s *SQLStore) VerifyAuditChain(ctx context.Context) error {
 	return auditchain.Verify(s.auditKey, recs, anchor)
 }
 
-// adoptLegacyAudit chains the records written before migration 15 (seq IS NULL), oldest
-// first, in their canonical form, after any chained ones. Open runs it, so the first append
-// finds one whole chain. A store without the chain key (a drill copy) leaves them.
-func (s *SQLStore) adoptLegacyAudit(ctx context.Context) error {
+// auditChainMigration is the version that adds the chain columns.
+const auditChainMigration = 15
+
+// adoptLegacyAudit chains the records written before the audit chain (seq IS NULL), oldest
+// first, in their canonical form. It runs only inside the transaction of auditChainMigration,
+// so the new columns and the chained records commit together: an interrupted upgrade retries
+// both, and no later unchained row (one a writer without the key inserted) is ever signed.
+// Without the chain key a database holding such records refuses to migrate.
+func (s *SQLStore) adoptLegacyAudit(ctx context.Context, tx *sql.Tx) error {
 	var n int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM audit_records WHERE seq IS NULL`).Scan(&n); err != nil || n == 0 || len(s.auditKey) < 32 {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM audit_records WHERE seq IS NULL`).Scan(&n); err != nil || n == 0 {
 		return err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
+	if len(s.auditKey) < 32 {
+		return fmt.Errorf("%d audit records need chaining and no chain key is configured", n)
 	}
-	defer tx.Rollback()
 	chain, err := s.chainFor(ctx, tx)
 	if err != nil {
 		return err
@@ -244,9 +247,6 @@ func (s *SQLStore) adoptLegacyAudit(ctx context.Context) error {
 		}, auditFields(&r)...); err != nil {
 			return err
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return err
 	}
 	log.Printf("[STORE] chained %d audit records written before the audit chain", len(found))
 	return nil

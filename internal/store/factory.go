@@ -21,19 +21,14 @@ func Open(ctx context.Context, cfg config.DatabaseConfig) (Store, error) {
 	driver := strings.ToLower(cfg.Driver)
 	switch driver {
 	case "sqlite", "sqlite3", "":
-		s, err = openSQLite(ctx, cfg.DSN)
+		s, err = openSQLite(ctx, cfg.DSN, cfg.AuditKey)
 	case "postgres", "postgresql", "pgx":
-		s, err = openPostgres(ctx, cfg.DSN, cfg.MaxOpenConns, cfg.MaxIdleConns, cfg.ConnMaxLifetime)
+		s, err = openPostgres(ctx, cfg.DSN, cfg.MaxOpenConns, cfg.MaxIdleConns, cfg.ConnMaxLifetime, cfg.AuditKey)
 	default:
 		return nil, fmt.Errorf("unsupported database driver: %q (supported: sqlite, postgres)", cfg.Driver)
 	}
 	if err != nil {
 		return nil, err
-	}
-	s.(*SQLStore).auditKey = append([]byte(nil), cfg.AuditKey...)
-	if err := s.(*SQLStore).adoptLegacyAudit(ctx); err != nil {
-		_ = s.Close()
-		return nil, fmt.Errorf("chain the audit records written before the audit chain: %w", err)
 	}
 	return s, nil
 }
@@ -45,7 +40,7 @@ func sqliteParam(dsn, param string) string {
 	return dsn + "?" + param
 }
 
-func openSQLite(ctx context.Context, dsn string) (Store, error) {
+func openSQLite(ctx context.Context, dsn string, auditKey []byte) (Store, error) {
 	filePath, err := SQLitePath(dsn)
 	if err != nil {
 		return nil, err
@@ -81,7 +76,7 @@ func openSQLite(ctx context.Context, dsn string) (Store, error) {
 		return nil, fmt.Errorf("failed to ping sqlite database: %w", err)
 	}
 
-	s, err := newSQLStore(ctx, db, "sqlite")
+	s, err := newSQLStore(ctx, db, "sqlite", auditKey)
 	if err != nil {
 		_ = db.Close()
 		return nil, err
@@ -90,12 +85,12 @@ func openSQLite(ctx context.Context, dsn string) (Store, error) {
 	return s, nil
 }
 
-func openPostgres(ctx context.Context, dsn string, maxOpen, maxIdle int, maxLifetime time.Duration) (Store, error) {
+func openPostgres(ctx context.Context, dsn string, maxOpen, maxIdle int, maxLifetime time.Duration, auditKey []byte) (Store, error) {
 	db, err := openPostgresDB(ctx, dsn, maxOpen, maxIdle, maxLifetime)
 	if err != nil {
 		return nil, err
 	}
-	s, err := newSQLStore(ctx, db, "postgres")
+	s, err := newSQLStore(ctx, db, "postgres", auditKey)
 	if err != nil {
 		_ = db.Close()
 	}

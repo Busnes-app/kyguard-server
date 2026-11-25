@@ -1,0 +1,33 @@
+[
+  {
+    "name": "rotation attempt 0",
+    "kind": "rotation",
+    "inputs": [
+      "0190b2a4-0000-7000-8000-00000000a001",
+      "3",
+      "12",
+      "0"
+    ],
+    "opid": "836252bc-b65e-ab95-2b63-ae27f12a8b31"
+  },
+  {
+    "name": "rotation attempt 1",
+    "kind": "rotation",
+    "inputs": [
+      "0190b2a4-0000-7000-8000-00000000a001",
+      "3",
+      "12",
+      "1"
+    ],
+    "opid": "373e040e-26d6-add8-4577-cc0e67cf77fd"
+  },
+  {
+    "name": "request attempt 0",
+    "kind": "request",
+    "inputs": [
+      "0190b2a4-0000-7000-8000-0000000000f1",
+      "0"
+    ],
+    "opid": "ef7ac73f-d0d6-05e8-78e5-fabd03ebfaba"
+  }
+]
