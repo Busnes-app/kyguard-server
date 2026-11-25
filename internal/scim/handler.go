@@ -145,10 +145,9 @@ func (h *userResourceHandler) Create(r *http.Request, attrs protocol.ResourceAtt
 	if err := h.checkRole("", user.Role); err != nil {
 		return protocol.Resource{}, err
 	}
-	if err := h.store.Users().CreateUser(r.Context(), user); err != nil {
+	if err := h.store.Users().CreateUser(store.WithAudit(r.Context(), &store.AuditRecord{UserID: user.ID, Action: "scim.user.create", Resource: user.Username}), user); err != nil {
 		return protocol.Resource{}, scimStoreError(err, user.ID)
 	}
-	_ = h.store.Audit().LogAudit(r.Context(), &store.AuditRecord{UserID: user.ID, Action: "scim.user.create", Resource: user.Username})
 	return userResource(user), nil
 }
 
@@ -198,12 +197,11 @@ func (h *userResourceHandler) takeOver(r *http.Request, user *store.User, attrs 
 	if err := h.checkRole(oldRole, user.Role); err != nil {
 		return protocol.Resource{}, err
 	}
-	if err := h.store.Users().TakeOverForSCIM(r.Context(), user, oldRole, oldStatus); errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrNotFound) {
+	if err := h.store.Users().TakeOverForSCIM(store.WithAudit(r.Context(), &store.AuditRecord{UserID: user.ID, Action: "scim.user.adopt", Resource: user.Username}), user, oldRole, oldStatus); errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrNotFound) {
 		return protocol.Resource{}, protocolErrors.ScimErrorUniqueness // changed or taken meanwhile; the IdP retries
 	} else if err != nil {
 		return protocol.Resource{}, scimStoreError(err, user.ID)
 	}
-	_ = h.store.Audit().LogAudit(r.Context(), &store.AuditRecord{UserID: user.ID, Action: "scim.user.adopt", Resource: user.Username})
 	return userResource(user), nil
 }
 

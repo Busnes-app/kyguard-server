@@ -134,7 +134,10 @@ type GroupStore interface {
 
 // AuditStore logs security events.
 type AuditStore interface {
+	// LogAudit appends r to the audit chain in its own transaction.
 	LogAudit(ctx context.Context, r *AuditRecord) error
+	// VerifyAuditChain checks the whole chain against its head (spec §9.3).
+	VerifyAuditChain(ctx context.Context) error
 	ListAuditRecords(ctx context.Context, offset, limit int) ([]*AuditRecord, int, error)
 }
 
