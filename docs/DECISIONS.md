@@ -80,14 +80,17 @@ contradicts itself. Each names its section. The most secure reading wins.
    collected, so refused and local-only runs leave none.
 19a. §9.3 (reconciliation). Deposits run under the `backup-run` lock, so `backup.Run`, and
    startup when it wins that lock, settle every pending deposit before depositing. Pairing and
-   pin requests hold no shared lock, so startup and the next request of the same kind settle
-   only intents older than 20 minutes (longer than any detached backup request). A pending
+   pin requests hold no shared lock, so startup, the next request of the same kind and every
+   tick of the elected scheduled worker settle only intents older than 20 minutes (longer than
+   any detached backup request). The worker tick runs only while the backup scheduler does; a
+   deployment key that cannot seal stops it, leaving startup and the next request. A pending
    intent settles to its noted outcome, else to `outcome_unknown` with a critical
    `operation.outcome_unknown` record. A noted outcome carries an HMAC under a key derived from
    the audit chain key. The HMAC binds the operation ID, kind, subject, state and exact record,
    and a note that fails it ends `outcome_unknown` with `operation.outcome_rejected`; its record
    is never appended. Settling is one conditional `UPDATE`. Reconciliation moves only `pending`
-   intents, so concurrent reconcilers append once, and the owning process may still correct an
+   intents whose note is still the one it read, so concurrent reconcilers append once, a note
+   written after the read is replayed on the next pass rather than lost, and the owning process may still correct an
    `outcome_unknown`. A completed deposit supersedes every `outcome_unknown`
    deposit, and a fresh capsule is sealed for each run, so lost bytes are never replayed.
 19b. §9.3 (states). Besides the spec's `pending`, `complete`, `outcome_unknown` and `superseded`,
