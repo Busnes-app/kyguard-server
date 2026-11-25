@@ -224,8 +224,20 @@ func (l *Listener) handleChannel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var m Message
-		if err := json.Unmarshal(data, &m); err != nil || m.V != 1 {
+		if err := json.Unmarshal(data, &m); err != nil || m.V != 1 || m.ID == 0 {
 			c.Close(websocket.StatusUnsupportedData, "unsupported message")
+			return
+		}
+		res := Message{V: 1, Type: MsgResult, ID: m.ID}
+		out, err := l.handle(r.Context(), b, m)
+		if err == nil && out != nil {
+			res.Body, err = json.Marshal(out)
+		}
+		if err != nil {
+			res.Body, res.Error = nil, refusal(err)
+		}
+		reply, _ := json.Marshal(res)
+		if err := c.Write(r.Context(), websocket.MessageText, reply); err != nil {
 			return
 		}
 	}
@@ -276,4 +288,23 @@ func parseVersion(s string) ([3]int, bool) {
 		out[i] = n
 	}
 	return out, true
+}
+
+// refusal is what the broker is told: stable codes for the refusals it acts on, a generic
+// word for internal failures.
+func refusal(err error) string {
+	var perr pqcrypto.Error
+	switch {
+	case errors.Is(err, store.ErrLocked):
+		return "locked"
+	case errors.Is(err, store.ErrConflict):
+		return "conflict"
+	case errors.As(err, &perr):
+		return string(perr)
+	case errors.Is(err, errNotActive), errors.Is(err, errNotInPool), errors.Is(err, errNotSigner),
+		errors.Is(err, errOperation), errors.Is(err, errUnsupported):
+		return err.Error()
+	}
+	log.Printf("[BROKER] channel request failed: %v", err)
+	return "internal error"
 }

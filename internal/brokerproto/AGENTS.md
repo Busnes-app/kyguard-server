@@ -28,6 +28,14 @@ Owns `/broker/v1/*`. It is never mounted on the main mux. Signed-object rules ar
 - One channel per broker: a reconnect replaces the map entry under the listener lock and
   closes the old connection after unlocking. Never block (a close handshake, a write) while
   holding it.
+- Channel RPC (`rpc.go`, `vault.go`): broker requests carry an ID and get one `result`;
+  Control Plane pushes carry ID 0. Signed objects travel as base64url of their canonical
+  bytes. Every request re-checks that the broker is its pool's active member and that the
+  account's current managed policy names that pool. The Control Plane verifies every
+  envelope (`New: true`, signed by this broker, a rotation envelope) and every new receipt
+  (`Trust.Append`, `New: true`, the request's operation) before storing it, and derives the
+  current envelope, run state and lock release from the verified receipts alone, never
+  from the broker's word. Refusals are stable codes (`locked`, `conflict`, pqcrypto codes).
 - `CreateCA` never replaces existing files; `LoadCA` refuses a key that is not the
   certificate's.
 

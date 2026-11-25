@@ -55,7 +55,72 @@ CREATE TABLE operation_intents (
     created_at {{ts}} NOT NULL,
     updated_at {{ts}} NOT NULL
 );
-CREATE INDEX idx_operation_intents_state ON operation_intents(state);`))
+CREATE INDEX idx_operation_intents_state ON operation_intents(state);`),
+		dialects(101, "kyguard_vault", `
+CREATE TABLE assets (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_at {{ts}} NOT NULL
+);
+CREATE TABLE accounts (
+    id TEXT PRIMARY KEY,
+    asset_id TEXT NOT NULL REFERENCES assets(id),
+    name TEXT NOT NULL,
+    account_kind TEXT NOT NULL CHECK (account_kind IN ('managed', 'vaulted')),
+    pool_id TEXT REFERENCES broker_pools(id),
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'decommissioned')),
+    owner_user_id TEXT REFERENCES users(id),
+    current_envelope_id TEXT,
+    min_password_age_seconds BIGINT,
+    highest_secret_version BIGINT NOT NULL DEFAULT 0 CHECK (highest_secret_version >= 0),
+    health TEXT NOT NULL DEFAULT '',
+    health_reason TEXT NOT NULL DEFAULT '',
+    created_at {{ts}} NOT NULL
+);
+CREATE TABLE target_descriptors (
+    digest TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    descriptor TEXT NOT NULL,
+    created_at {{ts}} NOT NULL
+);
+CREATE TABLE secret_envelopes (
+    envelope_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    secret_version BIGINT NOT NULL CHECK (secret_version > 0),
+    envelope_kind TEXT NOT NULL CHECK (envelope_kind IN ('managed', 'vaulted')),
+    digest TEXT NOT NULL UNIQUE,
+    envelope TEXT NOT NULL,
+    created_at {{ts}} NOT NULL,
+    UNIQUE (account_id, secret_version)
+);
+CREATE TABLE envelope_receipts (
+    envelope_id TEXT NOT NULL REFERENCES secret_envelopes(envelope_id),
+    receipt_seq BIGINT NOT NULL CHECK (receipt_seq > 0),
+    receipt_type TEXT NOT NULL CHECK (receipt_type IN ('commit_target', 'abort', 'vault_commit', 'release', 'rewrap_user')),
+    operation_id TEXT NOT NULL,
+    digest TEXT NOT NULL UNIQUE,
+    prev_receipt_hash TEXT NOT NULL,
+    receipt TEXT NOT NULL,
+    created_at {{ts}} NOT NULL,
+    PRIMARY KEY (envelope_id, receipt_seq)
+);
+CREATE TABLE rotation_locks (
+    account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+    operation_id TEXT NOT NULL UNIQUE,
+    secret_version BIGINT NOT NULL CHECK (secret_version > 0),
+    created_at {{ts}} NOT NULL
+);
+CREATE TABLE rotation_runs (
+    operation_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    broker_id TEXT NOT NULL,
+    secret_version BIGINT NOT NULL CHECK (secret_version > 0),
+    intent TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('mutating', 'write_outcome_unknown', 'target_verified', 'release_authorized', 'aborted')),
+    created_at {{ts}} NOT NULL,
+    updated_at {{ts}} NOT NULL
+);
+CREATE INDEX idx_rotation_runs_account ON rotation_runs(account_id);`))
 }
 
 // dialects builds one migration from shared DDL; {{ts}} is the timestamp type.

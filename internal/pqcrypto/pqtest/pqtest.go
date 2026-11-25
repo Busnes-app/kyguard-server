@@ -5,6 +5,7 @@ package pqtest
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -129,4 +130,42 @@ func Canon(t testing.TB, v any) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// SSHTarget returns a canonical ssh_passwd descriptor and its digest.
+func (d *Deployment) SSHTarget(t testing.TB, account, asset pqcrypto.UUID, host string, port int, user string, hostKeySHA256 pqcrypto.HexID) ([]byte, pqcrypto.HexID) {
+	t.Helper()
+	return d.target(t, &pqcrypto.TargetDescriptor{DescriptorVersion: "1", DeploymentID: d.ID, AccountID: account, AssetID: asset,
+		ConnectorType: pqcrypto.ConnectorSSHPasswd, AuthenticatedTargetIdentity: user,
+		Endpoint: pqcrypto.Endpoint{Host: host, Port: port, SSHHostKeySHA256: string(hostKeySHA256)}})
+}
+
+// ADTarget returns a canonical ad_ldaps descriptor and its digest.
+func (d *Deployment) ADTarget(t testing.TB, account, asset pqcrypto.UUID, host string, port int, dn, caPEM string) ([]byte, pqcrypto.HexID) {
+	t.Helper()
+	return d.target(t, &pqcrypto.TargetDescriptor{DescriptorVersion: "1", DeploymentID: d.ID, AccountID: account, AssetID: asset,
+		ConnectorType: pqcrypto.ConnectorADLDAPS, AuthenticatedTargetIdentity: dn,
+		Endpoint: pqcrypto.Endpoint{Host: host, Port: port, TLSCAPEM: caPEM}})
+}
+
+func (d *Deployment) target(t testing.TB, td *pqcrypto.TargetDescriptor) ([]byte, pqcrypto.HexID) {
+	t.Helper()
+	td.ConnectorConfig, td.Dependencies = map[string]json.RawMessage{}, []json.RawMessage{}
+	raw := Canon(t, td)
+	_, dg, err := pqcrypto.DecodeTargetDescriptor(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw, dg.Hex()
+}
+
+// ManagedPolicy is an unsigned managed policy with no users, no approvals, escrow off and
+// no schedule; tests adjust it and sign it with Signed.
+func (d *Deployment) ManagedPolicy(account, pool pqcrypto.UUID, epoch pqcrypto.Counter, target pqcrypto.HexID) *pqcrypto.PolicyManifest {
+	f := false
+	return &pqcrypto.PolicyManifest{Header: d.Header(pqcrypto.TypePolicy, pqcrypto.ScopeAccount, account, epoch),
+		AccountID: account, AccountKind: pqcrypto.KindManaged, PoolID: pool, TargetDescriptorDigest: target,
+		CheckoutMode: pqcrypto.ModeEphemeral, EnrollerPrincipalIDs: []pqcrypto.UUID{}, AutoStandingRelease: &f,
+		StandingRecipientPrincipalIDs: []pqcrypto.UUID{}, AllowedUserPrincipalIDs: []pqcrypto.UUID{},
+		AllowedApproverPrincipalIDs: []pqcrypto.UUID{}, MaxCheckoutTTLSeconds: 3600}
 }
