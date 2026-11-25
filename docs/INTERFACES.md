@@ -500,6 +500,20 @@ Sources: [broker handlers](../internal/api/broker_handlers.go),
 | POST `/broker/v1/pair` (broker listener) | No client certificate; JSON pairing request with the token secret, an Ed25519 CSR, both broker public keys and its version | 200 broker certificate (`urn:uuid:<broker_id>` URI SAN), CA certificate and bundle; 403 for an unknown, used or expired token. A response that cannot be written leaves the pairing intent `outcome_unknown` (audited); startup and a once-a-minute sweep settle intents pending over 2 minutes the same way |
 | GET `/broker/v1/channel` (broker listener) | Internal-CA client certificate of a broker listed `active` with that certificate's SHA-256 in its pool's current manifest; `KyGuard-Broker-Version` header | 101 WebSocket; 403 otherwise; 426 below `KY_MIN_BROKER_VERSION` |
 
+### kyguard-broker
+
+Source: [cmd/broker](../cmd/broker/main.go). State lives in `KYGUARD_BROKER_DIR` (default
+`/var/lib/kyguard-broker`): `broker.key` (0600) and `journal.db` (bbolt, 0600, exclusive
+lock). The systemd unit is [deploy/broker/kyguard-broker.service](../deploy/broker/kyguard-broker.service).
+
+| Invocation | Effect | Output |
+|---|---|---|
+| `kyguard-broker pair --token T (--bootstrap-fingerprint HEX \| --bootstrap-bundle FILE)` | Generate the keys locally (or reuse an unpaired key file), pair over the pinned CA and hostname, verify the bundle against the fingerprint and record the pairing; refused when already paired | `broker_id`, `sig_key_id`, `enc_key_id`, `cert_sha256` for the Custodian check |
+| `kyguard-broker run` (default) | Hold the control channel, reconnecting with backoff (1 s to 1 min) | Logs |
+| `kyguard-broker version` | None | Version |
+
+The token on the command line is one-time and expires after 10 minutes.
+
 The listener is TLS 1.3 only with `X25519MLKEM768` preferred. Startup refuses a broker CA
 whose SHA-256 differs from the one any paired broker pinned.
 
