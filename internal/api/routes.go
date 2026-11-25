@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Busnes-app/kyguard-server/internal/auth"
 	"github.com/Busnes-app/kyguard-server/internal/store"
 )
 
@@ -71,11 +72,15 @@ func (s *Server) route(class RouteClass, pattern string, h http.Handler, opts ..
 // Routes lists every main-mux route with its class, in registration order.
 func (s *Server) Routes() []Route { return append([]Route(nil), s.registered...) }
 
-// activeSession admits only an active session (AuthenticateRequest refuses a pending one) whose
-// last step-up is within fresh, when fresh is set.
+// activeSession admits only an active session whose last step-up is within fresh, when fresh
+// is set. AuthenticateRequest admits a pending session on the step-up paths, so the stage is
+// checked here too: a session route is never reachable before step-up, whatever its path.
 func (s *Server) activeSession(h http.Handler, fresh time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, sess, err := s.sessions.AuthenticateRequest(r)
+		if err == nil && sess.Stage != store.StageActive {
+			err = auth.ErrStepUpRequired
+		}
 		if err != nil {
 			s.authFailed(w, err)
 			return

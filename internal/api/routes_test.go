@@ -193,3 +193,27 @@ func TestAdminFactorResetNeedsAFreshCode(t *testing.T) {
 		t.Fatalf("factor %v, session kept %v", err, signedIn(srv, userSession))
 	}
 }
+
+// A session route refuses a pending session by its stage, not by its path: AuthenticateRequest
+// admits pending sessions on /api/auth/stepup/*, so a session route there must still say 403.
+func TestSessionClassChecksTheStageOnStepUpPaths(t *testing.T) {
+	srv, st, _ := setupTestServer(t)
+	ctx := context.Background()
+	u := &store.User{ID: "usr_q", Username: "pendq", Role: "user", Status: "active", SSOProvider: "kysignon", SSOSubject: "q", SSOIssuer: "https://idp"}
+	if err := st.Users().CreateUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	raw := crypto.RandomHex(32)
+	now := time.Now().UTC()
+	if err := st.Sessions().CreateSession(ctx, &store.Session{TokenHash: crypto.SHA256Hex([]byte(raw)), UserID: u.ID, CreatedAt: now, ExpiresAt: now.Add(time.Minute), Stage: store.StagePending}, ""); err != nil {
+		t.Fatal(err)
+	}
+	api.RegisterForTest(srv, api.ClassSession, "GET /api/auth/stepup/probe")
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/stepup/probe", nil)
+	req.AddCookie(&http.Cookie{Name: "ky_session", Value: raw})
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "stepup_required") {
+		t.Fatalf("pending session on a session route: %d %s, want 403 stepup_required", w.Code, w.Body.String())
+	}
+}
