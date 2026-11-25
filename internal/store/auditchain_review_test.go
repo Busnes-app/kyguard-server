@@ -39,8 +39,9 @@ func TestNoncanonicalStoredFieldBreaksTheChain(t *testing.T) {
 	}
 }
 
-// §9.3 upgrade: records written before migration 15 carry no chain fields. The open that
-// applies the migration chains them, so the next append and verification succeed. A row that
+// §9.3 upgrade: records written before migration 15 carry no chain fields. Migration 15
+// chains them in its own transaction, so the next append and verification succeed, and an
+// upgrade interrupted before chaining leaves the migration unapplied. A row that
 // shows up unchained afterwards (a writer without the key) is never signed: verification
 // keeps reporting it.
 func TestRecordsFromBeforeTheChainAreChainedOnce(t *testing.T) {
@@ -72,7 +73,19 @@ func TestRecordsFromBeforeTheChainAreChainedOnce(t *testing.T) {
 	exec(`INSERT INTO audit_records (user_id, action, resource, details, ip_address, created_at) VALUES (?, ?, ?, ?, ?, ?)`, "u", "legacy.one", "r", "d\x01", "", time.Now().UTC())
 	exec(`INSERT INTO audit_records (user_id, action, resource, details, ip_address, created_at) VALUES (?, ?, ?, ?, ?, ?)`, "u", "legacy.two", "r", "d", "", time.Now().UTC())
 
-	st, err = store.Open(ctx, cfg) // applies migration 15
+	// An upgrade that cannot chain them (no key here) fails whole: migration 15 stays unapplied,
+	// so the next start retries schema and chaining together.
+	keyless := cfg
+	keyless.AuditKey = nil
+	if broken, err := store.Open(ctx, keyless); err == nil {
+		_ = broken.Close()
+		t.Fatal("migration 15 applied without chaining the records it found")
+	}
+	var applied int
+	if err := db.QueryRow(q(`SELECT COUNT(1) FROM schema_migrations WHERE version = 15`)).Scan(&applied); err != nil || applied != 0 {
+		t.Fatalf("an interrupted upgrade recorded migration 15 (%d, %v)", applied, err)
+	}
+	st, err = store.Open(ctx, cfg) // applies migration 15 and chains the two records
 	if err != nil {
 		t.Fatal(err)
 	}

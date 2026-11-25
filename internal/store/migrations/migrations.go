@@ -535,12 +535,14 @@ func EnsureUsernameIndex(ctx context.Context, db *sql.DB) (clashes [][]string, e
 
 // Run executes all pending migrations for the specified database driver.
 func Run(ctx context.Context, db *sql.DB, driver string) error {
-	_, err := RunApplied(ctx, db, driver)
+	_, err := RunApplied(ctx, db, driver, nil)
 	return err
 }
 
-// RunApplied is Run that also returns the versions it applied in this call.
-func RunApplied(ctx context.Context, db *sql.DB, driver string) (applied []int, err error) {
+// RunApplied is Run that also returns the versions it applied in this call. after[v], when
+// set, runs inside version v's transaction once its DDL has, so the schema change and the
+// work that must accompany it commit together or not at all.
+func RunApplied(ctx context.Context, db *sql.DB, driver string, after map[int]func(context.Context, *sql.Tx) error) (applied []int, err error) {
 	driver = strings.ToLower(driver)
 	if driver == "postgresql" {
 		driver = "postgres"
@@ -594,6 +596,12 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 		if _, err := tx.ExecContext(ctx, ddl); err != nil {
 			_ = tx.Rollback()
 			return applied, fmt.Errorf("failed executing migration v%d (%s): %w", m.Version, m.Name, err)
+		}
+		if hook := after[m.Version]; hook != nil {
+			if err := hook(ctx, tx); err != nil {
+				_ = tx.Rollback()
+				return applied, fmt.Errorf("migration v%d (%s): %w", m.Version, m.Name, err)
+			}
 		}
 
 		recordQuery := "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)"

@@ -15,32 +15,29 @@ import (
 
 // SQLStore implements Store on top of database/sql.
 type SQLStore struct {
-	db     *sql.DB
-	driver string
-	// chainLegacy is set when this open applied the audit chain migration, so the records it
-	// found may be chained once (adoptLegacyAudit).
-	chainLegacy bool
-	users       *userStore
-	sessions    *sessionStore
-	groups      *groupStore
-	audit       *auditStore
-	settings    *settingsStore
-	lockPath    string
-	auditKey    []byte
+	db       *sql.DB
+	driver   string
+	users    *userStore
+	sessions *sessionStore
+	groups   *groupStore
+	audit    *auditStore
+	settings *settingsStore
+	lockPath string
+	auditKey []byte
 }
 
 // newSQLStore creates and initializes a SQLStore, running migrations automatically.
-func newSQLStore(ctx context.Context, db *sql.DB, driver string) (*SQLStore, error) {
+func newSQLStore(ctx context.Context, db *sql.DB, driver string, auditKey []byte) (*SQLStore, error) {
 	driver = strings.ToLower(driver)
 	if driver == "postgresql" {
 		driver = "postgres"
 	}
 
-	s := &SQLStore{db: db, driver: driver}
+	s := &SQLStore{db: db, driver: driver, auditKey: append([]byte(nil), auditKey...)}
+	// The records written before the audit chain are chained inside the migration that adds
+	// it, and nowhere else (adoptLegacyAudit).
 	apply := func(ctx context.Context) error {
-		applied, err := applySchema(ctx, db, driver)
-		// Only the open that adds the chain columns may chain the records it found (Open).
-		s.chainLegacy = slices.Contains(applied, auditChainMigration)
+		_, err := applySchema(ctx, db, driver, map[int]func(context.Context, *sql.Tx) error{auditChainMigration: s.adoptLegacyAudit})
 		return err
 	}
 	if driver == "postgres" {
@@ -72,8 +69,8 @@ func newSQLStore(ctx context.Context, db *sql.DB, driver string) (*SQLStore, err
 	return s, nil
 }
 
-func applySchema(ctx context.Context, db *sql.DB, driver string) ([]int, error) {
-	applied, err := migrations.RunApplied(ctx, db, driver)
+func applySchema(ctx context.Context, db *sql.DB, driver string, after map[int]func(context.Context, *sql.Tx) error) ([]int, error) {
+	applied, err := migrations.RunApplied(ctx, db, driver, after)
 	if err != nil {
 		return applied, fmt.Errorf("migration failure on driver %s: %w", driver, err)
 	}
