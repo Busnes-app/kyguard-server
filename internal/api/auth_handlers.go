@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Busnes-app/ky-primitives/password"
 	"github.com/Busnes-app/kyguard-server/internal/auth"
@@ -199,7 +200,7 @@ func (s *Server) handleBreakGlassReason(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	req.Reason = strings.TrimSpace(req.Reason)
-	if req.Reason == "" || len(req.Reason) > 500 {
+	if req.Reason == "" || utf8.RuneCountInString(req.Reason) > 500 { // characters, as the form counts
 		s.writeError(w, http.StatusBadRequest, "Give a reason of 1 to 500 characters")
 		return
 	}

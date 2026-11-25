@@ -562,10 +562,11 @@ func TestReplicaFailover(t *testing.T) {
 	step("AC17 SIGKILL one replica under load", func(t *testing.T) {
 		stop := make(chan struct{})
 		results := p.meLoop(admin, stop)
+		totpCode := p.admin.code(t) // before the kill: waiting for a fresh TOTP step must not delay the probe
 		time.Sleep(2 * time.Second)
 		victim := p.appContainers()[0]
 		p.must(nil, "docker", "kill", "-s", "KILL", victim)
-		if code, _ := p.login(p.admin.name, p.admin.pass, p.admin.code(t)); code != http.StatusOK {
+		if code, _ := p.login(p.admin.name, p.admin.pass, totpCode); code != http.StatusOK {
 			t.Errorf("login straight after the kill: %d", code)
 		}
 		time.Sleep(6 * time.Second)

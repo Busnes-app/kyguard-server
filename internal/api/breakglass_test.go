@@ -244,3 +244,26 @@ func TestFailedAuditLeavesNoSessionOrReason(t *testing.T) {
 		t.Fatalf("retry after auditing recovered: %d", code)
 	}
 }
+
+// The reason limit is 500 characters, as the form counts them, not 500 bytes.
+func TestBreakGlassReasonCountsCharacters(t *testing.T) {
+	srv, st, _ := setupTestServer(t)
+	bg := newBreakGlass(t, srv, st, "root")
+	w := loginWithCode(t, srv, "root", bg.Password, bg.Code(t), "192.0.2.1:1")
+	c := sessionCookie(w)
+	reason := func(r string) int {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/break-glass/reason", strings.NewReader(`{"reason":"`+r+`"}`))
+		req.AddCookie(c)
+		req.AddCookie(&http.Cookie{Name: auth.CSRFCookieName, Value: "c"})
+		req.Header.Set(auth.HeaderCSRF, "c")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		return w.Code
+	}
+	if code := reason(strings.Repeat("障", 501)); code != http.StatusBadRequest {
+		t.Fatalf("501 characters: %d", code)
+	}
+	if code := reason(strings.Repeat("障", 500)); code != http.StatusOK { // 1500 bytes
+		t.Fatalf("500 multibyte characters: %d", code)
+	}
+}
