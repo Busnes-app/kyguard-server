@@ -98,6 +98,9 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 - Policy drafts (spec §3.3, §10): admins draft an account's next policy; the Control
   Plane checks it as it would admit it, Custodians fetch it with its pinned target, sign
   it in `kyguard-cli` and post it back, and it is admitted only at quorum.
+- Web screens (spec §10): one Accounts page with class, health, pool and attribute
+  filters, the traffic light and one-click CSV/JSON export, plus Attributes, Policies and
+  Jobs, and a traffic-light Overview with a 1-of-1 Custodian warning.
 
 ### Upgrade impact
 
