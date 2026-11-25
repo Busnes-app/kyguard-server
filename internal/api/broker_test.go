@@ -158,3 +158,12 @@ func TestSubmitManifestEpochAtTheCounterLimit(t *testing.T) {
 		t.Fatalf("over-limit manifest stored: %d rows", len(ms))
 	}
 }
+
+// Startup serves and shutdown closes the same listener, the one holding the broker
+// connections (security review of #8).
+func TestBrokerListenerIsOneInstance(t *testing.T) {
+	srv, _, _, _ := setupBrokerServer(t)
+	if l := srv.BrokerListener(); l == nil || l != srv.BrokerListener() {
+		t.Fatal("BrokerListener returned a new listener")
+	}
+}

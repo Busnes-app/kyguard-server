@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -820,5 +821,16 @@ func TestAccountListReadsOnlyOnePage(t *testing.T) {
 	}
 	if len(seen) != 7 || gets.Load() != 0 || pages < 5 {
 		t.Fatalf("%d accounts in %d pages, %d per-account reads", len(seen), pages+1, gets.Load())
+	}
+}
+
+// An account whose policy names a descriptor the store cannot return is an error, never a
+// state without its descriptor (PR Reviewer Guide on #10).
+func TestAccountSyncNeedsTheDescriptor(t *testing.T) {
+	f := newVault(t)
+	pol := f.cp.Account(func(p *pqcrypto.PolicyManifest) { p.TargetDescriptorDigest = pqcrypto.HexID(strings.Repeat("cd", 32)) })
+	var st brokerproto.AccountState
+	if err := f.call(brokerproto.MsgSyncAccount, brokerproto.SyncAccountRequest{AccountID: pol.AccountID}, &st); err == nil {
+		t.Fatalf("sync without the descriptor: %+v", st)
 	}
 }

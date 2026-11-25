@@ -129,9 +129,13 @@ func (l *Listener) syncAccount(ctx context.Context, tr *pqcrypto.Trust, b *store
 		return nil, err
 	}
 	st := &AccountState{AccountID: req.AccountID, HighestVersion: pqcrypto.Counter(a.HighestSecretVersion), Chains: []ChainState{}}
-	if raw, err := l.Store.Vault().TargetDescriptor(ctx, string(p.TargetDescriptorDigest)); err == nil {
-		st.Descriptor = raw
+	// The broker cannot use a state without its policy's descriptor, so a failed lookup is
+	// an error it retries, not a quiet omission (PR Reviewer Guide on #10).
+	raw, err := l.Store.Vault().TargetDescriptor(ctx, string(p.TargetDescriptorDigest))
+	if err != nil {
+		return nil, err
 	}
+	st.Descriptor = raw
 	// One page is the chains above From, in version order: the open ones up to AfterVersion,
 	// then every newer one. At most SyncChains+1 are read and the whole reply, descriptor
 	// included, stays within SyncBudget; a page always carries one chain, which fits a frame
