@@ -3,6 +3,7 @@ package api
 import (
 	"time"
 
+	"github.com/Busnes-app/kyguard-server/internal/auth"
 	"github.com/Busnes-app/kyguard-server/internal/store"
 )
 
@@ -40,3 +41,6 @@ func RegisterDetachedForTest(s *Server) func() {
 	s.detached.add()
 	return s.detached.done
 }
+
+// FactorsForTest is the server's TOTP factor store, so a test can enrol a known secret.
+func FactorsForTest(s *Server) *auth.Factors { return s.factors }

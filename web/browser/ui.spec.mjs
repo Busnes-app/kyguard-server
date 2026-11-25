@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { THEME_CATALOG } from '../src/ky-ui/themes.js';
+import { accounts, totp } from './totp.mjs';
 
 // Relative luminance of a computed colour: rgb() channels are 0-255, color(srgb …) 0-1.
 const luminance = color => {
@@ -29,16 +30,26 @@ test('production CSP, worker, themes, keyboard and responsive shell', async ({ p
   });
   // Online navigation must refresh the shell rather than pinning a previous deploy.
   await page.reload();
-  await page.getByPlaceholder('admin', { exact: true }).fill('admin');
+  // Break-glass sign-in through the form: this project's own account (codes are single-use).
+  const username = `op-${testInfo.project.name}`;
+  const account = accounts()[username];
+  await page.getByPlaceholder('admin', { exact: true }).fill(username);
   await page.locator('input[type=password]').fill('IncorrectPassword123!');
+  await page.getByLabel('Authenticator code').fill('000000');
   await page.getByRole('button', { name: 'Sign In', exact: true }).click();
   await expect(page.locator('form').locator('..')).toContainText(/invalid|incorrect|failed/i);
   await fits(page);
-  await page.locator('input[type=password]').fill('BrowserUpdated456!');
+  await page.locator('input[type=password]').fill(account.password);
+  await page.getByLabel('Authenticator code').fill(totp(account.secret));
   await page.getByRole('button', { name: 'Sign In', exact: true }).click();
   const nav = page.getByRole('navigation', { name: 'Primary' });
   await expect(nav).toBeVisible();
   await expect(page.getByRole('heading', { name: /Welcome/ })).toBeVisible();
+  // The break-glass banner stays on every page and asks for the session's reason first.
+  const banner = page.getByRole('region', { name: 'Break-glass session' });
+  await banner.getByLabel('Reason for this session').fill('browser regression');
+  await banner.getByRole('button', { name: 'Record reason' }).click();
+  await expect(banner).toContainText('Reason: browser regression');
   await fits(page);
   // The Appearance page is the only theme control in the signed-in shell.
   await expect(page.locator('select[aria-label="Color theme"]')).toHaveCount(0);
