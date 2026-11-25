@@ -410,3 +410,33 @@ func TestQueuedPushesAreTakenOnce(t *testing.T) {
 		t.Fatalf("other broker: %+v", ps)
 	}
 }
+
+// Concurrent identical retries of an envelope store and an intent all succeed: the
+// account lock is taken before the existence check (PR Reviewer Guide on #10).
+func TestConcurrentIdenticalRetriesSucceed(t *testing.T) {
+	v, a := vaultAccount(t)
+	ctx := context.Background()
+	ver, err := v.Reserve(ctx, a, "op", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &StoredEnvelope{EnvelopeID: "env", AccountID: a, SecretVersion: ver, EnvelopeKind: "managed", Digest: "d", Envelope: []byte("{}")}
+	run := &RotationRun{OperationID: "op", AccountID: a, BrokerID: "b", SecretVersion: ver, Intent: []byte(`{"i":1}`)}
+	var wg sync.WaitGroup
+	errs := make([]error, 16)
+	for i := range errs {
+		wg.Go(func() {
+			if i%2 == 0 {
+				errs[i] = v.PutEnvelope(ctx, "op", e)
+			} else {
+				errs[i] = v.RecordIntent(ctx, run)
+			}
+		})
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("retry %d: %v", i, err)
+		}
+	}
+}
