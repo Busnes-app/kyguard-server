@@ -22,6 +22,10 @@ Owns HTTP routing, request parsing, session cookie validation, CORS headers, and
   with `format=json|csv`, an audited download from the same `reporting.Build` dataset and
   filter; GET `/api/jobs` (admin). `callerIssuer` names the caller's issuer only for
   KySignOn users until `users.sso_issuer` is joined in.
+- `draft_handlers.go`: policy drafts are built from the form, checked with `Trust.Check`
+  (only `ErrThreshold` may remain) and stored canonical; signed copies must keep the digest
+  and every collected signature, and at quorum go through `trust.Submit`. Also GET
+  `/api/principals` and `/api/trust`.
 - Update `docs/INTERFACES.md` when a route's inputs, outputs, permissions or errors change.
 - POST `/api/auth/change-password` accepts any local-account session (restricted or not; federated accounts get 409), current password and a different policy-valid new password. Browser CSRF and per-IP/account limits apply. Success revokes all sessions and requires sign-in again; flagged sessions get `password_change_required` on protected routes and public-only settings.
 - `GET|HEAD /livez` and `/readyz` (`health.go`) are unauthenticated, `Cache-Control: no-store`,

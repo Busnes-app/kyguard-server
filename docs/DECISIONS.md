@@ -260,4 +260,13 @@ contradicts itself. Each names its section. The most secure reading wins.
     attribute values. GET responses do not echo the synced attributes back.
     A SCIM write and its synced attributes are one transaction: the profile, session
     revocation, attribute values and their audit rows commit or roll back together.
+210. §9.2, §10 (policy drafts). One draft per account, always for the next epoch. Saving it
+    runs every `Trust.Check` rule except the quorum, so a draft no Custodian could ever get
+    accepted is refused before anyone signs it. Every principal it names must already have
+    a verified `KeyEnrollmentManifest`. Saving again replaces the draft and drops its
+    signatures, because any change makes a new digest.
+211. §3.2 rule 1 (collecting signatures). A returned draft must have the stored digest and
+    keep every signature already collected; at quorum the Control Plane submits it as a
+    manifest through the normal admission path and deletes the draft. The Control Plane
+    never adds a signature itself.
 
