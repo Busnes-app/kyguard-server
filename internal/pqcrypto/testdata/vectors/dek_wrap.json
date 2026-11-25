@@ -1,0 +1,132 @@
+[
+  {
+    "name": "broker wrap",
+    "recipient_xwing_seed": "f12Jc9YxJQHl3LkC8bTt3gGYSXfKAJAWNMz8YuqNrGc",
+    "seal_fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "key_id": "66399103b05cddaa4c9e0e6b47fcf84dee376151a6a67c768e236b7fe4af1f9e",
+      "recipient_id": "4c2f0e1a-9b8d-4c6e-a7f3-2d1b0c9e8f7a",
+      "recipient_type": "broker",
+      "secret_version": "7"
+    },
+    "open_fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "key_id": "66399103b05cddaa4c9e0e6b47fcf84dee376151a6a67c768e236b7fe4af1f9e",
+      "recipient_id": "4c2f0e1a-9b8d-4c6e-a7f3-2d1b0c9e8f7a",
+      "recipient_type": "broker",
+      "secret_version": "7"
+    },
+    "dek": "xu6WEgxE-RDVCQ8dXi7k4W4kQsu4K02RO2AjxBQc5LY",
+    "enc": "6V6vyz3UmWrKEUt6yHrUzvsssjhgqsk37ZVilwT8sMaFeKpoffBhrbnbRspi4nya5QlJ0FVU68Qb0OqN6ZtakmONMqqsJ1gblAGvgOoYIDvUWoT4ZkKrqjTKVu_bojZBCygTktqWeopqbX8VdIUk8SZAbHO1E6sN2z298oOXEl7R1gR6j1sPT7FkQ1dMAqR811AJvG4SQEPiaqpcENxMxeAWSn3NMskQEZ4cFsog7UPDMM4YMJyx-afnTg0arY3JUDRLPD6kLhUdUknjcnwv6ru-5m7flhrwDtMgbp-A-fa-1L8AB2oAtkQLl4GFSS7J7_v9o3ug_d03E4yFYku6T9kLi0k8tZxMmjL7yiuB5uj0tuaPxoxfkmUJJtrqgWkBuPNo81xXdmRpUM3OHJmv--KxmAh9hTnVFI6vpqchFh5fukRh4KEbbvySqjd9AFhUCvRyCgLalDtU2NhWutW8QkvUl0QisHH3vDycLT6_tRWZpG8-S4p62RmbLjqUNobxj3hFEvohebtvVclfgzEDSEX9_DozF7ehMl6dLz_jXTCC7lM4x0QGgZxOFUeS5HJrn6K3P-sALbnS9LRVexMF3nZdzpF3dl9tM8_1vPTw_D7gjB39kXhVEt6meHVszV65HJVbX44sKb1qi_ypXhAF4thFqgmqRRtPfj_VyIKvHxFAlZ0ET2lIZmx7o8_QuC67AWzQ2DYgdD-v4Wc94wFGYyX9XnAlv6hvUUZAPZ0lObIMZ5ZRU65vbpnp0KTkomioXxplneEyvPKeaaRKn2jaaU6gt-oSGtKWqMg4liQ5HQuXVHjCBGfzpx5ItFDWNxDuCgRqq_Bto-0KNG3u0c6WN0PzknwxNTHjXlXalqOn5-qHkrOJ_Qm8I7DAeTXjXACyPzHuY2v_8lpwkcN9yujI_kqILP7t95NTXHUD6xKcTFj6bcoqUlfVO3JNyj9dwS48fS2ruPGdZYdQcrtzu3c0yZSTCKQSJRIbZq3mda1_R21R32orSye-pi5UqmnXcG6zYjTWWD271Ag0iwY-iwXnfJAWcfSGYx3K0hvMcqfrI4FBDpTm5pqfHFPXEUwcXa1dqy2rYvreuGv2JafEZY-s1Zx3zR2n99uXlfxQtytjNkca08oUcPDfuvA0wJy-KrIhlg4NO6Hyuwr2Iwpx97wKe_9L-C7iu95src4YOVnsVRcfXk2HywZiuE3jwIEZ5DWwG7q_peuJH7vG9RWGqQSHReOxMbh7aPuFSNHQgTKTSX2qv3-YCcmkMeLz4-v1Q6aEGDW-TcH_c-36r7dEasQB8mbpy51waIJTYBTR3rJyGWJoR-rcRuexg43ygVQCyQQoOVFlEe60G65UW_ej7Op9LpCpu0OG-_2fe9nHakkJy8vUcQDea-yY2c9rzhIaEGeozE-AzpqlPoI1msC_nd_5zfHlnrQVuBv_b1gBbtxzbYfebC3Tz0E4Zm04tzTRRWt4LdBAWlKgB8h1dgV7Vdx9Vw",
+    "wrapped_dek": "s7eeNRtKPv-Fz-16XPPQ6FNo47tKk71Rk81RgnDriYiYJM20X5zfrx2XhpKXiUNo",
+    "verdict": "ok"
+  },
+  {
+    "name": "opened as user recipient",
+    "recipient_xwing_seed": "f12Jc9YxJQHl3LkC8bTt3gGYSXfKAJAWNMz8YuqNrGc",
+    "seal_fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "key_id": "66399103b05cddaa4c9e0e6b47fcf84dee376151a6a67c768e236b7fe4af1f9e",
+      "recipient_id": "4c2f0e1a-9b8d-4c6e-a7f3-2d1b0c9e8f7a",
+      "recipient_type": "broker",
+      "secret_version": "7"
+    },
+    "open_fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "key_id": "66399103b05cddaa4c9e0e6b47fcf84dee376151a6a67c768e236b7fe4af1f9e",
+      "recipient_id": "4c2f0e1a-9b8d-4c6e-a7f3-2d1b0c9e8f7a",
+      "recipient_type": "user",
+      "secret_version": "7"
+    },
+    "dek": "xu6WEgxE-RDVCQ8dXi7k4W4kQsu4K02RO2AjxBQc5LY",
+    "enc": "6V6vyz3UmWrKEUt6yHrUzvsssjhgqsk37ZVilwT8sMaFeKpoffBhrbnbRspi4nya5QlJ0FVU68Qb0OqN6ZtakmONMqqsJ1gblAGvgOoYIDvUWoT4ZkKrqjTKVu_bojZBCygTktqWeopqbX8VdIUk8SZAbHO1E6sN2z298oOXEl7R1gR6j1sPT7FkQ1dMAqR811AJvG4SQEPiaqpcENxMxeAWSn3NMskQEZ4cFsog7UPDMM4YMJyx-afnTg0arY3JUDRLPD6kLhUdUknjcnwv6ru-5m7flhrwDtMgbp-A-fa-1L8AB2oAtkQLl4GFSS7J7_v9o3ug_d03E4yFYku6T9kLi0k8tZxMmjL7yiuB5uj0tuaPxoxfkmUJJtrqgWkBuPNo81xXdmRpUM3OHJmv--KxmAh9hTnVFI6vpqchFh5fukRh4KEbbvySqjd9AFhUCvRyCgLalDtU2NhWutW8QkvUl0QisHH3vDycLT6_tRWZpG8-S4p62RmbLjqUNobxj3hFEvohebtvVclfgzEDSEX9_DozF7ehMl6dLz_jXTCC7lM4x0QGgZxOFUeS5HJrn6K3P-sALbnS9LRVexMF3nZdzpF3dl9tM8_1vPTw_D7gjB39kXhVEt6meHVszV65HJVbX44sKb1qi_ypXhAF4thFqgmqRRtPfj_VyIKvHxFAlZ0ET2lIZmx7o8_QuC67AWzQ2DYgdD-v4Wc94wFGYyX9XnAlv6hvUUZAPZ0lObIMZ5ZRU65vbpnp0KTkomioXxplneEyvPKeaaRKn2jaaU6gt-oSGtKWqMg4liQ5HQuXVHjCBGfzpx5ItFDWNxDuCgRqq_Bto-0KNG3u0c6WN0PzknwxNTHjXlXalqOn5-qHkrOJ_Qm8I7DAeTXjXACyPzHuY2v_8lpwkcN9yujI_kqILP7t95NTXHUD6xKcTFj6bcoqUlfVO3JNyj9dwS48fS2ruPGdZYdQcrtzu3c0yZSTCKQSJRIbZq3mda1_R21R32orSye-pi5UqmnXcG6zYjTWWD271Ag0iwY-iwXnfJAWcfSGYx3K0hvMcqfrI4FBDpTm5pqfHFPXEUwcXa1dqy2rYvreuGv2JafEZY-s1Zx3zR2n99uXlfxQtytjNkca08oUcPDfuvA0wJy-KrIhlg4NO6Hyuwr2Iwpx97wKe_9L-C7iu95src4YOVnsVRcfXk2HywZiuE3jwIEZ5DWwG7q_peuJH7vG9RWGqQSHReOxMbh7aPuFSNHQgTKTSX2qv3-YCcmkMeLz4-v1Q6aEGDW-TcH_c-36r7dEasQB8mbpy51waIJTYBTR3rJyGWJoR-rcRuexg43ygVQCyQQoOVFlEe60G65UW_ej7Op9LpCpu0OG-_2fe9nHakkJy8vUcQDea-yY2c9rzhIaEGeozE-AzpqlPoI1msC_nd_5zfHlnrQVuBv_b1gBbtxzbYfebC3Tz0E4Zm04tzTRRWt4LdBAWlKgB8h1dgV7Vdx9Vw",
+    "wrapped_dek": "s7eeNRtKPv-Fz-16XPPQ6FNo47tKk71Rk81RgnDriYiYJM20X5zfrx2XhpKXiUNo",
+    "verdict": "decrypt_failed"
+  },
+  {
+    "name": "opened for another secret_version",
+    "recipient_xwing_seed": "f12Jc9YxJQHl3LkC8bTt3gGYSXfKAJAWNMz8YuqNrGc",
+    "seal_fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "key_id": "66399103b05cddaa4c9e0e6b47fcf84dee376151a6a67c768e236b7fe4af1f9e",
+      "recipient_id": "4c2f0e1a-9b8d-4c6e-a7f3-2d1b0c9e8f7a",
+      "recipient_type": "broker",
+      "secret_version": "7"
+    },
+    "open_fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "key_id": "66399103b05cddaa4c9e0e6b47fcf84dee376151a6a67c768e236b7fe4af1f9e",
+      "recipient_id": "4c2f0e1a-9b8d-4c6e-a7f3-2d1b0c9e8f7a",
+      "recipient_type": "broker",
+      "secret_version": "8"
+    },
+    "dek": "xu6WEgxE-RDVCQ8dXi7k4W4kQsu4K02RO2AjxBQc5LY",
+    "enc": "6V6vyz3UmWrKEUt6yHrUzvsssjhgqsk37ZVilwT8sMaFeKpoffBhrbnbRspi4nya5QlJ0FVU68Qb0OqN6ZtakmONMqqsJ1gblAGvgOoYIDvUWoT4ZkKrqjTKVu_bojZBCygTktqWeopqbX8VdIUk8SZAbHO1E6sN2z298oOXEl7R1gR6j1sPT7FkQ1dMAqR811AJvG4SQEPiaqpcENxMxeAWSn3NMskQEZ4cFsog7UPDMM4YMJyx-afnTg0arY3JUDRLPD6kLhUdUknjcnwv6ru-5m7flhrwDtMgbp-A-fa-1L8AB2oAtkQLl4GFSS7J7_v9o3ug_d03E4yFYku6T9kLi0k8tZxMmjL7yiuB5uj0tuaPxoxfkmUJJtrqgWkBuPNo81xXdmRpUM3OHJmv--KxmAh9hTnVFI6vpqchFh5fukRh4KEbbvySqjd9AFhUCvRyCgLalDtU2NhWutW8QkvUl0QisHH3vDycLT6_tRWZpG8-S4p62RmbLjqUNobxj3hFEvohebtvVclfgzEDSEX9_DozF7ehMl6dLz_jXTCC7lM4x0QGgZxOFUeS5HJrn6K3P-sALbnS9LRVexMF3nZdzpF3dl9tM8_1vPTw_D7gjB39kXhVEt6meHVszV65HJVbX44sKb1qi_ypXhAF4thFqgmqRRtPfj_VyIKvHxFAlZ0ET2lIZmx7o8_QuC67AWzQ2DYgdD-v4Wc94wFGYyX9XnAlv6hvUUZAPZ0lObIMZ5ZRU65vbpnp0KTkomioXxplneEyvPKeaaRKn2jaaU6gt-oSGtKWqMg4liQ5HQuXVHjCBGfzpx5ItFDWNxDuCgRqq_Bto-0KNG3u0c6WN0PzknwxNTHjXlXalqOn5-qHkrOJ_Qm8I7DAeTXjXACyPzHuY2v_8lpwkcN9yujI_kqILP7t95NTXHUD6xKcTFj6bcoqUlfVO3JNyj9dwS48fS2ruPGdZYdQcrtzu3c0yZSTCKQSJRIbZq3mda1_R21R32orSye-pi5UqmnXcG6zYjTWWD271Ag0iwY-iwXnfJAWcfSGYx3K0hvMcqfrI4FBDpTm5pqfHFPXEUwcXa1dqy2rYvreuGv2JafEZY-s1Zx3zR2n99uXlfxQtytjNkca08oUcPDfuvA0wJy-KrIhlg4NO6Hyuwr2Iwpx97wKe_9L-C7iu95src4YOVnsVRcfXk2HywZiuE3jwIEZ5DWwG7q_peuJH7vG9RWGqQSHReOxMbh7aPuFSNHQgTKTSX2qv3-YCcmkMeLz4-v1Q6aEGDW-TcH_c-36r7dEasQB8mbpy51waIJTYBTR3rJyGWJoR-rcRuexg43ygVQCyQQoOVFlEe60G65UW_ej7Op9LpCpu0OG-_2fe9nHakkJy8vUcQDea-yY2c9rzhIaEGeozE-AzpqlPoI1msC_nd_5zfHlnrQVuBv_b1gBbtxzbYfebC3Tz0E4Zm04tzTRRWt4LdBAWlKgB8h1dgV7Vdx9Vw",
+    "wrapped_dek": "s7eeNRtKPv-Fz-16XPPQ6FNo47tKk71Rk81RgnDriYiYJM20X5zfrx2XhpKXiUNo",
+    "verdict": "decrypt_failed"
+  },
+  {
+    "name": "opened as vaulted",
+    "recipient_xwing_seed": "f12Jc9YxJQHl3LkC8bTt3gGYSXfKAJAWNMz8YuqNrGc",
+    "seal_fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "key_id": "66399103b05cddaa4c9e0e6b47fcf84dee376151a6a67c768e236b7fe4af1f9e",
+      "recipient_id": "4c2f0e1a-9b8d-4c6e-a7f3-2d1b0c9e8f7a",
+      "recipient_type": "broker",
+      "secret_version": "7"
+    },
+    "open_fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "vaulted",
+      "key_id": "66399103b05cddaa4c9e0e6b47fcf84dee376151a6a67c768e236b7fe4af1f9e",
+      "recipient_id": "4c2f0e1a-9b8d-4c6e-a7f3-2d1b0c9e8f7a",
+      "recipient_type": "broker",
+      "secret_version": "7"
+    },
+    "dek": "xu6WEgxE-RDVCQ8dXi7k4W4kQsu4K02RO2AjxBQc5LY",
+    "enc": "6V6vyz3UmWrKEUt6yHrUzvsssjhgqsk37ZVilwT8sMaFeKpoffBhrbnbRspi4nya5QlJ0FVU68Qb0OqN6ZtakmONMqqsJ1gblAGvgOoYIDvUWoT4ZkKrqjTKVu_bojZBCygTktqWeopqbX8VdIUk8SZAbHO1E6sN2z298oOXEl7R1gR6j1sPT7FkQ1dMAqR811AJvG4SQEPiaqpcENxMxeAWSn3NMskQEZ4cFsog7UPDMM4YMJyx-afnTg0arY3JUDRLPD6kLhUdUknjcnwv6ru-5m7flhrwDtMgbp-A-fa-1L8AB2oAtkQLl4GFSS7J7_v9o3ug_d03E4yFYku6T9kLi0k8tZxMmjL7yiuB5uj0tuaPxoxfkmUJJtrqgWkBuPNo81xXdmRpUM3OHJmv--KxmAh9hTnVFI6vpqchFh5fukRh4KEbbvySqjd9AFhUCvRyCgLalDtU2NhWutW8QkvUl0QisHH3vDycLT6_tRWZpG8-S4p62RmbLjqUNobxj3hFEvohebtvVclfgzEDSEX9_DozF7ehMl6dLz_jXTCC7lM4x0QGgZxOFUeS5HJrn6K3P-sALbnS9LRVexMF3nZdzpF3dl9tM8_1vPTw_D7gjB39kXhVEt6meHVszV65HJVbX44sKb1qi_ypXhAF4thFqgmqRRtPfj_VyIKvHxFAlZ0ET2lIZmx7o8_QuC67AWzQ2DYgdD-v4Wc94wFGYyX9XnAlv6hvUUZAPZ0lObIMZ5ZRU65vbpnp0KTkomioXxplneEyvPKeaaRKn2jaaU6gt-oSGtKWqMg4liQ5HQuXVHjCBGfzpx5ItFDWNxDuCgRqq_Bto-0KNG3u0c6WN0PzknwxNTHjXlXalqOn5-qHkrOJ_Qm8I7DAeTXjXACyPzHuY2v_8lpwkcN9yujI_kqILP7t95NTXHUD6xKcTFj6bcoqUlfVO3JNyj9dwS48fS2ruPGdZYdQcrtzu3c0yZSTCKQSJRIbZq3mda1_R21R32orSye-pi5UqmnXcG6zYjTWWD271Ag0iwY-iwXnfJAWcfSGYx3K0hvMcqfrI4FBDpTm5pqfHFPXEUwcXa1dqy2rYvreuGv2JafEZY-s1Zx3zR2n99uXlfxQtytjNkca08oUcPDfuvA0wJy-KrIhlg4NO6Hyuwr2Iwpx97wKe_9L-C7iu95src4YOVnsVRcfXk2HywZiuE3jwIEZ5DWwG7q_peuJH7vG9RWGqQSHReOxMbh7aPuFSNHQgTKTSX2qv3-YCcmkMeLz4-v1Q6aEGDW-TcH_c-36r7dEasQB8mbpy51waIJTYBTR3rJyGWJoR-rcRuexg43ygVQCyQQoOVFlEe60G65UW_ej7Op9LpCpu0OG-_2fe9nHakkJy8vUcQDea-yY2c9rzhIaEGeozE-AzpqlPoI1msC_nd_5zfHlnrQVuBv_b1gBbtxzbYfebC3Tz0E4Zm04tzTRRWt4LdBAWlKgB8h1dgV7Vdx9Vw",
+    "wrapped_dek": "s7eeNRtKPv-Fz-16XPPQ6FNo47tKk71Rk81RgnDriYiYJM20X5zfrx2XhpKXiUNo",
+    "verdict": "decrypt_failed"
+  },
+  {
+    "name": "tampered wrapped_dek",
+    "recipient_xwing_seed": "f12Jc9YxJQHl3LkC8bTt3gGYSXfKAJAWNMz8YuqNrGc",
+    "seal_fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "key_id": "66399103b05cddaa4c9e0e6b47fcf84dee376151a6a67c768e236b7fe4af1f9e",
+      "recipient_id": "4c2f0e1a-9b8d-4c6e-a7f3-2d1b0c9e8f7a",
+      "recipient_type": "broker",
+      "secret_version": "7"
+    },
+    "open_fields": {
+      "account_id": "0190b2a4-0000-7000-8000-00000000a001",
+      "envelope_id": "0190b2a4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
+      "envelope_kind": "managed",
+      "key_id": "66399103b05cddaa4c9e0e6b47fcf84dee376151a6a67c768e236b7fe4af1f9e",
+      "recipient_id": "4c2f0e1a-9b8d-4c6e-a7f3-2d1b0c9e8f7a",
+      "recipient_type": "broker",
+      "secret_version": "7"
+    },
+    "dek": "xu6WEgxE-RDVCQ8dXi7k4W4kQsu4K02RO2AjxBQc5LY",
+    "enc": "6V6vyz3UmWrKEUt6yHrUzvsssjhgqsk37ZVilwT8sMaFeKpoffBhrbnbRspi4nya5QlJ0FVU68Qb0OqN6ZtakmONMqqsJ1gblAGvgOoYIDvUWoT4ZkKrqjTKVu_bojZBCygTktqWeopqbX8VdIUk8SZAbHO1E6sN2z298oOXEl7R1gR6j1sPT7FkQ1dMAqR811AJvG4SQEPiaqpcENxMxeAWSn3NMskQEZ4cFsog7UPDMM4YMJyx-afnTg0arY3JUDRLPD6kLhUdUknjcnwv6ru-5m7flhrwDtMgbp-A-fa-1L8AB2oAtkQLl4GFSS7J7_v9o3ug_d03E4yFYku6T9kLi0k8tZxMmjL7yiuB5uj0tuaPxoxfkmUJJtrqgWkBuPNo81xXdmRpUM3OHJmv--KxmAh9hTnVFI6vpqchFh5fukRh4KEbbvySqjd9AFhUCvRyCgLalDtU2NhWutW8QkvUl0QisHH3vDycLT6_tRWZpG8-S4p62RmbLjqUNobxj3hFEvohebtvVclfgzEDSEX9_DozF7ehMl6dLz_jXTCC7lM4x0QGgZxOFUeS5HJrn6K3P-sALbnS9LRVexMF3nZdzpF3dl9tM8_1vPTw_D7gjB39kXhVEt6meHVszV65HJVbX44sKb1qi_ypXhAF4thFqgmqRRtPfj_VyIKvHxFAlZ0ET2lIZmx7o8_QuC67AWzQ2DYgdD-v4Wc94wFGYyX9XnAlv6hvUUZAPZ0lObIMZ5ZRU65vbpnp0KTkomioXxplneEyvPKeaaRKn2jaaU6gt-oSGtKWqMg4liQ5HQuXVHjCBGfzpx5ItFDWNxDuCgRqq_Bto-0KNG3u0c6WN0PzknwxNTHjXlXalqOn5-qHkrOJ_Qm8I7DAeTXjXACyPzHuY2v_8lpwkcN9yujI_kqILP7t95NTXHUD6xKcTFj6bcoqUlfVO3JNyj9dwS48fS2ruPGdZYdQcrtzu3c0yZSTCKQSJRIbZq3mda1_R21R32orSye-pi5UqmnXcG6zYjTWWD271Ag0iwY-iwXnfJAWcfSGYx3K0hvMcqfrI4FBDpTm5pqfHFPXEUwcXa1dqy2rYvreuGv2JafEZY-s1Zx3zR2n99uXlfxQtytjNkca08oUcPDfuvA0wJy-KrIhlg4NO6Hyuwr2Iwpx97wKe_9L-C7iu95src4YOVnsVRcfXk2HywZiuE3jwIEZ5DWwG7q_peuJH7vG9RWGqQSHReOxMbh7aPuFSNHQgTKTSX2qv3-YCcmkMeLz4-v1Q6aEGDW-TcH_c-36r7dEasQB8mbpy51waIJTYBTR3rJyGWJoR-rcRuexg43ygVQCyQQoOVFlEe60G65UW_ej7Op9LpCpu0OG-_2fe9nHakkJy8vUcQDea-yY2c9rzhIaEGeozE-AzpqlPoI1msC_nd_5zfHlnrQVuBv_b1gBbtxzbYfebC3Tz0E4Zm04tzTRRWt4LdBAWlKgB8h1dgV7Vdx9Vw",
+    "wrapped_dek": "sreeNRtKPv-Fz-16XPPQ6FNo47tKk71Rk81RgnDriYiYJM20X5zfrx2XhpKXiUNo",
+    "verdict": "decrypt_failed"
+  }
+]

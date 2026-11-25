@@ -27,14 +27,19 @@ type SQLStore struct {
 }
 
 // newSQLStore creates and initializes a SQLStore, running migrations automatically.
-func newSQLStore(ctx context.Context, db *sql.DB, driver string) (*SQLStore, error) {
+func newSQLStore(ctx context.Context, db *sql.DB, driver string, auditKey []byte) (*SQLStore, error) {
 	driver = strings.ToLower(driver)
 	if driver == "postgresql" {
 		driver = "postgres"
 	}
 
-	s := &SQLStore{db: db, driver: driver}
-	apply := func(ctx context.Context) error { return applySchema(ctx, db, driver) }
+	s := &SQLStore{db: db, driver: driver, auditKey: append([]byte(nil), auditKey...)}
+	// The records written before the audit chain are chained inside the migration that adds
+	// it, and nowhere else (adoptLegacyAudit).
+	apply := func(ctx context.Context) error {
+		_, err := applySchema(ctx, db, driver, map[int]func(context.Context, *sql.Tx) error{auditChainMigration: s.adoptLegacyAudit})
+		return err
+	}
 	if driver == "postgres" {
 		// Multiple replicas may start together. Keep schema changes under one owner.
 		for {
@@ -64,18 +69,19 @@ func newSQLStore(ctx context.Context, db *sql.DB, driver string) (*SQLStore, err
 	return s, nil
 }
 
-func applySchema(ctx context.Context, db *sql.DB, driver string) error {
-	if err := migrations.Run(ctx, db, driver); err != nil {
-		return fmt.Errorf("migration failure on driver %s: %w", driver, err)
+func applySchema(ctx context.Context, db *sql.DB, driver string, after map[int]func(context.Context, *sql.Tx) error) ([]int, error) {
+	applied, err := migrations.RunApplied(ctx, db, driver, after)
+	if err != nil {
+		return applied, fmt.Errorf("migration failure on driver %s: %w", driver, err)
 	}
 	clashes, err := migrations.EnsureUsernameIndex(ctx, db)
 	if err != nil {
-		return fmt.Errorf("case-insensitive username index: %w", err)
+		return applied, fmt.Errorf("case-insensitive username index: %w", err)
 	}
 	for _, names := range clashes {
 		log.Printf("[STORE] usernames differ only in letter case: %s. Sign-in picks one of them arbitrarily; rename or remove all but one. New case-variant names are refused.", strings.Join(names, ", "))
 	}
-	return nil
+	return applied, nil
 }
 
 func (s *SQLStore) Users() UserStore                { return s.users }

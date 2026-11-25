@@ -1,0 +1,44 @@
+[
+  {
+    "name": "empty",
+    "input": "",
+    "verdict": "ok"
+  },
+  {
+    "name": "two bytes",
+    "input": "_-8",
+    "bytes_hex": "ffef",
+    "verdict": "ok"
+  },
+  {
+    "name": "three bytes",
+    "input": "AQID",
+    "bytes_hex": "010203",
+    "verdict": "ok"
+  },
+  {
+    "name": "padding",
+    "input": "AQI=",
+    "verdict": "invalid_base64url"
+  },
+  {
+    "name": "standard alphabet",
+    "input": "+/8",
+    "verdict": "invalid_base64url"
+  },
+  {
+    "name": "non-zero trailing bits",
+    "input": "AQJ",
+    "verdict": "invalid_base64url"
+  },
+  {
+    "name": "embedded newline",
+    "input": "AQ\nID",
+    "verdict": "invalid_base64url"
+  },
+  {
+    "name": "embedded carriage return",
+    "input": "AQ\rID",
+    "verdict": "invalid_base64url"
+  }
+]

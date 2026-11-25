@@ -62,9 +62,13 @@ contradicts itself. Each names its section. The most secure reading wins.
 18. §9.3 (key plumbing). The chain key travels as `config.DatabaseConfig.AuditKey`; stores opened
    without it (backup drill scratch copies, migration sources) can read but refuse audit writes.
 18a. §9.3 (upgrade and verification). Records written before migration 15 have no chain fields.
-   Opening a store that has the chain key chains them, oldest first, in their canonical form and
-   after any chained records, so the first append finds one chain. Until then, verification
-   reports them as unchained. Verification rejects any stored field that differs from its
+   Migration 15 chains them inside its own transaction, oldest first, in their canonical form,
+   so the first append finds one chain. An interrupted upgrade leaves both undone and the next
+   start retries them, and without the chain key a database holding such records refuses to
+   migrate. No later open signs anything, so a row a writer without the key
+   inserts unchained stays unchained and verification reports it. Forging the trigger means
+   deleting the migration's record, and then the migration's `ALTER TABLE` fails and the start
+   is refused. Verification rejects any stored field that differs from its
    canonical rendering, because the HMAC covers only that rendering. On PostgreSQL it reads the
    head and the records in one REPEATABLE READ snapshot.
 19. §9.3 (external effects). A KyRecovery pairing claim, a recovery-key pin and a deposit each
@@ -95,3 +99,31 @@ contradicts itself. Each names its section. The most secure reading wins.
    unpair and schedule now fail on a failed audit append. Export sends no capsule bytes without
    the record. Unpair and schedule answer 500, saying that the change landed and its record did
    not.
+
+## Crypto wire format and contracts (§3)
+
+Numbered separately: these came from the parallel crypto stack.
+
+4. §3.1 (JSON numbers). Signed objects allow only integers in [-(2^53-1), 2^53-1], with no
+   fraction, exponent or `-0`; in that range RFC 8785 number serialization is plain decimal
+   in every runtime. Counters stay decimal strings (rule 2).
+5. §3.1 rule 1 (strict typed decoding). A received object must re-encode from its typed form
+   to the same JCS bytes as its input. This rejects unknown fields, case-variant keys (Go's
+   `encoding/json` matches keys case-insensitively), explicit empty values for omitted
+   fields and `null` in place of a value.
+6. §3.1 rule 3 (timestamps). The one accepted form is `YYYY-MM-DDTHH:MM:SSZ`: UTC, whole
+   seconds, no fraction, so the JCS bytes are identical across runtimes.
+7. §3.1 rule 3 (base64url). Padding, the standard alphabet, non-zero trailing bits and
+   embedded CR or LF are rejected. Go's decoder skips CR/LF even in strict mode, so they are
+   refused first.
+8. §3.1 rule 4 (`D(obj)`). Only the top-level `signatures` and `approvals` members are
+   removed; nested objects keep theirs, so `bootstrap_fingerprint` covers the signatures of
+   the bundled manifests. `<type>` must match `^[a-z][a-z0-9_]*$`.
+9. §3.1 (AAD field checks). The AAD builders refuse an `envelope_kind` other than
+   `managed`/`vaulted`, a `recipient_type` other than `broker`/`user`/`recovery`, and a
+   `recipient_id` without that type's form (UUID for broker and user, 64-hex for recovery).
+   `WrapDEK` and `UnwrapDEK` refuse an AAD whose `key_id` is not the `enc_key_id` of the key
+   in use.
+10. §3.4 (`opid`). The first 16 digest bytes are formatted `8-4-4-4-12` lowercase hex with no
+    UUID version or variant bits forced; the spec says only "formatted as a UUID", and
+    forcing bits would discard digest entropy.

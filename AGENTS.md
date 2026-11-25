@@ -138,6 +138,7 @@ overlay merges with synthetic inputs and starts no containers.
 - [internal/config/AGENTS.md](internal/config/AGENTS.md): Configuration management and environment loader.
 - [internal/store/AGENTS.md](internal/store/AGENTS.md): Pluggable database abstraction layer (SQLite & PostgreSQL).
 - [internal/crypto/AGENTS.md](internal/crypto/AGENTS.md): Cryptographic primitives (AES-256-GCM, HMAC, SHA-256, randomness, PKCE).
+- [internal/pqcrypto/AGENTS.md](internal/pqcrypto/AGENTS.md): KyGuard wire format and crypto core (spec §3): JCS, D(obj), hybrid signatures, key IDs, AADs, DEK wrap, golden vectors.
 - [internal/auth/AGENTS.md](internal/auth/AGENTS.md): Authentication, sessions, local TOTP step-up, client addresses and CAPTCHA.
 - [internal/sso/AGENTS.md](internal/sso/AGENTS.md): Single Sign-On federation (KySignOn, generic OIDC).
 - [internal/scim/AGENTS.md](internal/scim/AGENTS.md): SCIM 2.0 user and group provisioning engine.
