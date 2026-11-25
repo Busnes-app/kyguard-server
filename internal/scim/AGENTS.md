@@ -9,7 +9,7 @@ Owns local persistence adapters and bearer authentication; the library owns `/sc
 ## Local Contracts
 - Content-Type for all SCIM endpoints must be `application/scim+json`.
 - Requests must be authenticated with the configured bearer token.
-- SCIM is scoped to `SCIMManaged` accounts (`managedUser`, `ListSCIMUsers`): any other id is 404 and cannot be a group member. `checkRole` refuses granting `admin` unless `KY_SCIM_ALLOW_ADMIN`; an existing admin can still be changed.
+- SCIM is scoped to `SCIMManaged` accounts (`managedUser`, `ListSCIMUsers`): any other id is 404 and cannot be a group member. `checkRole` refuses every `admin` grant (no setting allows one; spec §7.2); an existing admin can still be changed. SCIM-created rows carry `SCIMConfig.Issuer` as `sso_issuer`, and KyIdentity lookups match on `(issuer, subject)`.
 - User PUT/PATCH go through `update`, which retries on `store.ErrConflict` so a write from a stale read never restores a role or status.
 - User de-provisioning via `PATCH` with `active: false` updates user status to `inactive`.
 - A user `eq` filter matches the named attribute exactly: `userName` through `GetUserByUsername`; `emails`/`displayName` through the store's LIKE search as a candidate narrower, capped at `maxFilterCandidates` (`tooMany` beyond it).

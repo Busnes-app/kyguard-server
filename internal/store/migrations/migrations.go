@@ -407,6 +407,50 @@ CREATE TABLE totp_attempts (
 CREATE INDEX idx_totp_attempts_user ON totp_attempts(user_id, created_at);
 CREATE INDEX idx_totp_attempts_session ON totp_attempts(session_hash) WHERE session_hash <> '';`,
 	},
+	{
+		// Identity is (issuer, subject), never subject alone (spec §7.2): two issuers with the
+		// same subject are two people. Sessions record the issuer of their login, and both
+		// back-channel logout fences are keyed by issuer. The fences are short-lived (minutes),
+		// so the old provider-keyed tables are replaced rather than converted.
+		Version: 13,
+		Name:    "kyguard_sso_issuer",
+		SQLite: `ALTER TABLE users ADD COLUMN sso_issuer TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX idx_users_sso_identity ON users(sso_issuer, sso_subject) WHERE sso_subject <> '';
+ALTER TABLE sessions ADD COLUMN sso_issuer TEXT NOT NULL DEFAULT '';
+DROP TABLE sso_logouts;
+CREATE TABLE sso_logouts (
+    issuer TEXT NOT NULL,
+    sid TEXT NOT NULL,
+    expires_at DATETIME NOT NULL,
+    PRIMARY KEY (issuer, sid)
+);
+DROP TABLE sso_subject_logouts;
+CREATE TABLE sso_subject_logouts (
+    issuer TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    cutoff DATETIME NOT NULL,
+    expires_at DATETIME NOT NULL,
+    PRIMARY KEY (issuer, subject)
+);`,
+		Postgres: `ALTER TABLE users ADD COLUMN sso_issuer TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX idx_users_sso_identity ON users(sso_issuer, sso_subject) WHERE sso_subject <> '';
+ALTER TABLE sessions ADD COLUMN sso_issuer TEXT NOT NULL DEFAULT '';
+DROP TABLE sso_logouts;
+CREATE TABLE sso_logouts (
+    issuer TEXT NOT NULL,
+    sid TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (issuer, sid)
+);
+DROP TABLE sso_subject_logouts;
+CREATE TABLE sso_subject_logouts (
+    issuer TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    cutoff TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (issuer, subject)
+);`,
+	},
 }
 
 // EnsureUsernameIndex builds the case-insensitive unique index on usernames when existing

@@ -12,7 +12,7 @@ type GenericOIDCClient struct {
 }
 
 func NewGenericOIDCClient(cfg config.SSOConfig, _ store.Store) *GenericOIDCClient {
-	return &GenericOIDCClient{flow: newOAuthFlow(cfg.GenericOIDCIssuer, cfg.GenericOIDCClientID, cfg.GenericOIDCSecret)}
+	return &GenericOIDCClient{flow: newOAuthFlow(cfg.GenericOIDCIssuer, cfg.GenericOIDCClientID, cfg.GenericOIDCSecret, cfg.GenericOIDCMFAACRs)}
 }
 
 func (g *GenericOIDCClient) BuildAuthURL(ctx context.Context, redirectURI, state, verifier, nonce string) (string, error) {

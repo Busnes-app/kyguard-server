@@ -53,7 +53,8 @@ type UserStore interface {
 	GetUserByID(ctx context.Context, id string) (*User, error)
 	GetUserByUsername(ctx context.Context, username string) (*User, error)
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
-	GetUserBySSO(ctx context.Context, provider, subject string) (*User, error)
+	// GetUserBySSO finds the account whose identity is (issuer, subject), of any provider.
+	GetUserBySSO(ctx context.Context, issuer, subject string) (*User, error)
 	UpdateUser(ctx context.Context, u *User) error
 	// UpdateUserProfile writes only username, email, display name, role and status, so a
 	// directory sync working from a stale read cannot undo a concurrent password reset or SSO
@@ -95,11 +96,11 @@ type SessionStore interface {
 	GetSession(ctx context.Context, tokenHash string) (*Session, error)
 	DeleteSession(ctx context.Context, tokenHash string) error
 	DeleteUserSessions(ctx context.Context, userID string) error
-	// EndSSOSubject ends the provider subject's sessions whose credentials were verified
-	// before cutoff and fences that subject's earlier logins until fenceUntil.
-	EndSSOSubject(ctx context.Context, provider, subject string, cutoff, fenceUntil time.Time) error
-	// EndSSOSession ends every session of an SSO login and fences its sid until fenceUntil.
-	EndSSOSession(ctx context.Context, sid string, fenceUntil time.Time) error
+	// EndSSOSubject fences the issuer's subject's logins verified before cutoff until
+	// fenceUntil, then ends its sessions whose original token iat is before cutoff.
+	EndSSOSubject(ctx context.Context, issuer, subject string, cutoff, fenceUntil time.Time) error
+	// EndSSOSession fences the issuer's login sid until fenceUntil, then ends its sessions.
+	EndSSOSession(ctx context.Context, issuer, sid string, fenceUntil time.Time) error
 	CleanExpiredSessions(ctx context.Context) error
 	// SetBreakGlassReason records the reason once, with its audit record in the same
 	// transaction; ErrConflict when one is already set.

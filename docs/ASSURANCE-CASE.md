@@ -48,7 +48,7 @@ Out of scope: an attacker who runs code on the host or holds both the database a
    back-channel logout tokens are verified like ID tokens plus the logout-token claims
    (`internal/sso/backchannel.go`). SAML is removed (spec §7.2).
 3. **SCIM clients → server.** A bearer token compared in constant time; SCIM sees only the accounts it
-   created or safely adopted from KyIdentity and cannot grant admin unless `KY_SCIM_ALLOW_ADMIN` (`internal/scim/handler.go`).
+   created or safely adopted from KyIdentity and never grants admin (`internal/scim/handler.go`).
    Adoption matches the immutable subject first; a username match with a different
    nonempty `externalId` returns 409 without mutation. Local rows are never adopted.
    Sign-in maps a present per-app `roles` claim independently of the global role;

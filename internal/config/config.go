@@ -78,16 +78,19 @@ type SSOConfig struct {
 	GenericOIDCIssuer   string `json:"generic_oidc_issuer"`
 	GenericOIDCClientID string `json:"generic_oidc_client_id"`
 	GenericOIDCSecret   string `json:"generic_oidc_secret"`
-	AutoProvision       bool   `json:"auto_provision"`
+	// GenericOIDCMFAACRs is the generic profile's MFA acr set (spec §7.2): sent as acr_values,
+	// and an ID token whose acr is in it asserts MFA. Empty means only amr "mfa" counts.
+	GenericOIDCMFAACRs []string `json:"generic_oidc_mfa_acrs"`
+	AutoProvision      bool     `json:"auto_provision"`
 }
 
 // SCIMConfig holds settings for RFC 7643/7644 inbound user provisioning.
 type SCIMConfig struct {
 	Enabled     bool   `json:"enabled"`
 	BearerToken string `json:"bearer_token"`
-	// AllowAdmin lets SCIM grant the admin role. Off by default: the IdP's token must not be
-	// able to mint administrators of this app.
-	AllowAdmin bool `json:"allow_admin"`
+	// Issuer is the SSO issuer SCIM-created accounts belong to (spec §7.2), so a later
+	// sign-in matches them on (issuer, subject). Defaults to KY_KYSIGNON_ISSUER.
+	Issuer string `json:"issuer"`
 }
 
 // BackupConfig holds parameters for KyBackup capsules & recovery drills.
@@ -254,12 +257,13 @@ func LoadFromEnv() (*Config, error) {
 			GenericOIDCIssuer:   getEnv("KY_OIDC_ISSUER", ""),
 			GenericOIDCClientID: getEnv("KY_OIDC_CLIENT_ID", ""),
 			GenericOIDCSecret:   getEnv("KY_OIDC_SECRET", ""),
+			GenericOIDCMFAACRs:  strings.Fields(strings.ReplaceAll(getEnv("KY_OIDC_MFA_ACRS", ""), ",", " ")),
 			AutoProvision:       getEnvBool("KY_SSO_AUTO_PROVISION", true),
 		},
 		SCIM: SCIMConfig{
 			Enabled:     getEnvBool("KY_SCIM_ENABLED", true),
 			BearerToken: getEnv("KY_SCIM_TOKEN", generateRandomHex(24)),
-			AllowAdmin:  getEnvBool("KY_SCIM_ALLOW_ADMIN", false),
+			Issuer:      strings.TrimRight(getEnv("KY_SCIM_ISSUER", getEnv("KY_KYSIGNON_ISSUER", "")), "/"),
 		},
 		Backup: BackupConfig{
 			Dir:                  getEnv("KY_BACKUP_DIR", ""),

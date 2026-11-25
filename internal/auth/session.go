@@ -50,7 +50,7 @@ const BreakGlassTTL = 30 * time.Minute
 // IssueSession creates an active session for credentials verified just now and writes the
 // HttpOnly cookie + CSRF token.
 func (sm *SessionManager) IssueSession(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User) (*store.Session, string, error) {
-	return sm.issue(ctx, w, r, user, time.Now().UTC(), "", 0, nil, "", nil)
+	return sm.issue(ctx, w, r, user, time.Now().UTC(), "", "", 0, nil, "", nil)
 }
 
 // IssueBreakGlassSession issues the session for a break-glass login whose password and TOTP
@@ -59,17 +59,18 @@ func (sm *SessionManager) IssueSession(ctx context.Context, w http.ResponseWrite
 // commits.
 func (sm *SessionManager) IssueBreakGlassSession(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User, factorID string, audit *store.AuditRecord) (*store.Session, string, error) {
 	now := time.Now().UTC()
-	return sm.issue(ctx, w, r, user, now, "", BreakGlassTTL, &now, factorID, audit)
+	return sm.issue(ctx, w, r, user, now, "", "", BreakGlassTTL, &now, factorID, audit)
 }
 
-// IssueSSOSession issues a session for an SSO login the provider names by sid and dates
-// it by the ID token's issuedAt, so a back-channel logout for that sid or subject ends it.
+// IssueSSOSession issues a session for an SSO login the issuer names by sid and dates it by
+// the ID token's issuedAt, so a back-channel logout for that (issuer, sid) or (issuer,
+// subject) ends it.
 // It fails with store.ErrSSOSessionEnded when the provider already ended that login.
-func (sm *SessionManager) IssueSSOSession(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User, sid string, issuedAt time.Time) (*store.Session, string, error) {
-	return sm.issue(ctx, w, r, user, issuedAt.UTC(), sid, 0, nil, "", nil)
+func (sm *SessionManager) IssueSSOSession(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User, issuer, sid string, issuedAt time.Time) (*store.Session, string, error) {
+	return sm.issue(ctx, w, r, user, issuedAt.UTC(), issuer, sid, 0, nil, "", nil)
 }
 
-func (sm *SessionManager) issue(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User, authenticatedAt time.Time, sid string, ttl time.Duration, stepupAt *time.Time, factorID string, audit *store.AuditRecord) (*store.Session, string, error) {
+func (sm *SessionManager) issue(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User, authenticatedAt time.Time, issuer, sid string, ttl time.Duration, stepupAt *time.Time, factorID string, audit *store.AuditRecord) (*store.Session, string, error) {
 	rawToken := crypto.RandomHex(32)
 	tokenHash := crypto.SHA256Hex([]byte(rawToken))
 
@@ -88,6 +89,7 @@ func (sm *SessionManager) issue(ctx context.Context, w http.ResponseWriter, r *h
 		CreatedAt: authenticatedAt,
 		ExpiresAt: time.Now().UTC().Add(ttl),
 		SSOSID:    sid,
+		SSOIssuer: issuer,
 		StepupAt:  stepupAt,
 		FactorID:  factorID,
 		Audit:     audit,

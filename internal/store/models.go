@@ -15,6 +15,9 @@ type User struct {
 	Status       string `json:"status"`       // "active", "suspended", "inactive"
 	SSOProvider  string `json:"sso_provider"` // "local", "kysignon", "oidc", "scim"
 	SSOSubject   string `json:"sso_subject,omitempty"`
+	// SSOIssuer is the identity provider that vouches for SSOSubject; the account's identity
+	// is the pair (spec §7.2). SCIM rows take the configured SCIM issuer.
+	SSOIssuer string `json:"-"`
 	// AccountType is "sso" or "break_glass"; only break-glass accounts sign in with a
 	// password, and only with a TOTP code (spec §7.4). Empty is stored as "sso".
 	AccountType string `json:"account_type"`
@@ -39,6 +42,8 @@ type Session struct {
 	ExpiresAt time.Time `json:"expires_at"`
 	// SSOSID is the identity provider's sid for an SSO login; empty for local sign-in.
 	SSOSID string `json:"-"`
+	// SSOIssuer is the issuer of the SSO login; the logout fences are keyed by it.
+	SSOIssuer string `json:"-"`
 	// Stage is "pending" until TOTP step-up exchanges the session, then "active" (§7.3).
 	// Empty is stored as "active".
 	Stage string `json:"-"`

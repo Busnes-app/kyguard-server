@@ -28,3 +28,14 @@ contradicts itself. Each names its section. The most secure reading wins.
 8. §7.3 rule 5 (counting). Each code attempt is inserted and committed before it is counted, and
    released only on success, so concurrent guesses can only both be refused, never both admitted
    past the limit.
+9. §7.2 (SCIM admin refusal). "`checkRole` refuses `admin` unconditionally" is read as: no
+   setting can let SCIM grant admin. SCIM may still update, deactivate or demote an account
+   that already holds admin from its last sign-in; refusing every write that names admin would
+   block deprovisioning an administrator through the directory.
+10. §7.2 (SCIM issuer). "The configured SCIM issuer" is `KY_SCIM_ISSUER`, defaulting to
+   `KY_KYSIGNON_ISSUER`, because KyIdentity is both the SCIM source and the KySignOn issuer.
+11. §7.2 (auth_time). An `auth_time` more than one minute in the future is refused like a stale
+   one; the spec states only the 120-second age limit.
+12. §7.2 (fence migration). Migration 13 replaces the sid- and provider-keyed fence tables with
+   issuer-keyed ones instead of converting rows: fences live ten minutes and no KyGuard
+   install exists.

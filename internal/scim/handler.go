@@ -28,7 +28,7 @@ type Server struct {
 }
 
 func NewServer(st store.Store, cfg config.SCIMConfig, appURL string) *Server {
-	userHandler := &userResourceHandler{store: st, allowAdmin: cfg.AllowAdmin}
+	userHandler := &userResourceHandler{store: st, issuer: cfg.Issuer}
 	groupHandler := &groupResourceHandler{store: st}
 	server, err := protocol.NewServer(&protocol.ServerArgs{
 		ServiceProviderConfig: &protocol.ServiceProviderConfig{
@@ -86,8 +86,9 @@ func writeAuthError(w http.ResponseWriter, status int, detail string) {
 }
 
 type userResourceHandler struct {
-	store      store.Store
-	allowAdmin bool
+	store store.Store
+	// issuer is the SSO issuer SCIM accounts belong to; with externalId it is their identity.
+	issuer string
 	// mu serializes SCIM user writes, so two PATCHes read from the same row cannot each write
 	// back the other's stale fields (the store compares only role, status and subject).
 	mu sync.Mutex
@@ -95,12 +96,13 @@ type userResourceHandler struct {
 
 // errAdminGrant refuses a SCIM write that would make an account an administrator.
 var errAdminGrant = protocolErrors.ScimError{ScimType: protocolErrors.ScimTypeInvalidValue, Status: http.StatusBadRequest,
-	Detail: "SCIM may not grant the admin role (KY_SCIM_ALLOW_ADMIN is off)"}
+	Detail: "SCIM may not grant the admin role; KyGuard admin comes only from the per-app roles claim at sign-in"}
 
-// checkRole refuses a grant of admin, not an account that already holds it: an existing
-// admin can still be renamed, deactivated or demoted through SCIM.
+// checkRole refuses every admin grant, with no setting to allow one (spec §7.2). An account
+// that already holds admin (from its last sign-in) can still be renamed, deactivated or
+// demoted, so deprovisioning an administrator keeps working.
 func (h *userResourceHandler) checkRole(oldRole, newRole string) error {
-	if newRole == "admin" && oldRole != "admin" && !h.allowAdmin {
+	if newRole == "admin" && oldRole != "admin" {
 		return errAdminGrant
 	}
 	return nil
@@ -121,7 +123,7 @@ func (h *userResourceHandler) managedUser(r *http.Request, id string) (*store.Us
 
 func (h *userResourceHandler) Create(r *http.Request, attrs protocol.ResourceAttributes) (protocol.Resource, error) {
 	username, _ := attrs["userName"].(string)
-	user := &store.User{ID: "usr_" + crypto.RandomHex(12), Username: username, Email: primaryValue(attrs["emails"]), DisplayName: stringValue(attrs, "displayName", username), Role: primaryValue(attrs["roles"]), Status: statusFromActive(attrs), SSOProvider: "scim", SSOSubject: stringValue(attrs, "externalId", ""), SCIMManaged: true}
+	user := &store.User{ID: "usr_" + crypto.RandomHex(12), Username: username, Email: primaryValue(attrs["emails"]), DisplayName: stringValue(attrs, "displayName", username), Role: primaryValue(attrs["roles"]), Status: statusFromActive(attrs), SSOProvider: "scim", SSOSubject: stringValue(attrs, "externalId", ""), SSOIssuer: h.issuer, SCIMManaged: true}
 	if user.Role == "" {
 		user.Role = "user"
 	}
@@ -146,9 +148,9 @@ func (h *userResourceHandler) Create(r *http.Request, attrs protocol.ResourceAtt
 // uniqueness conflict, never a second account.
 func (h *userResourceHandler) kyIdentityAccount(r *http.Request, subject, username string) (*store.User, error) {
 	if subject != "" {
-		existing, err := h.store.Users().GetUserBySSO(r.Context(), "kysignon", subject)
+		existing, err := h.store.Users().GetUserBySSO(r.Context(), h.issuer, subject)
 		if err == nil {
-			if existing.SCIMManaged {
+			if existing.SCIMManaged || existing.SSOProvider != "kysignon" {
 				return nil, protocolErrors.ScimErrorUniqueness
 			}
 			return existing, nil
@@ -164,7 +166,7 @@ func (h *userResourceHandler) kyIdentityAccount(r *http.Request, subject, userna
 	if err != nil {
 		return nil, err
 	}
-	if existing.SSOProvider == "kysignon" && !existing.SCIMManaged {
+	if existing.SSOProvider == "kysignon" && existing.SSOIssuer == h.issuer && !existing.SCIMManaged {
 		if subject != "" && subject != existing.SSOSubject {
 			return nil, protocolErrors.ScimErrorUniqueness
 		}
