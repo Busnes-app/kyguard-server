@@ -64,6 +64,8 @@ func (i *intentStore) Settle(ctx context.Context, operationID, state string, r *
 	if err != nil {
 		return err
 	}
+	// The record names its operation first (details are bounded), so a replay can find it.
+	r.Details = strings.TrimSpace("operation_id=" + operationID + " " + r.Details)
 	record, err := json.Marshal(r)
 	if err != nil {
 		return err
@@ -77,12 +79,12 @@ func (i *intentStore) Settle(ctx context.Context, operationID, state string, r *
 		return err
 	}
 	// Noted in its own commit, so an append that fails below is not lost: Reconcile replays it.
-	if _, err := i.s.db.ExecContext(ctx, i.s.rebind(`UPDATE operation_intents SET outcome = ? WHERE operation_id = ? AND state = ?`),
-		string(noted), operationID, IntentPending); err != nil {
+	// An intent reconciled unknown meanwhile is noted too: its process knows the outcome.
+	if _, err := i.s.db.ExecContext(ctx, i.s.rebind(`UPDATE operation_intents SET outcome = ? WHERE operation_id = ? AND state IN (?, ?)`),
+		string(noted), operationID, IntentPending, IntentUnknown); err != nil {
 		return err
 	}
-	// The process that ran the effect may correct an intent reconciled as unknown meanwhile.
-	return i.settle(ctx, operationID, state, r, nil, IntentPending, IntentUnknown)
+	return i.settle(ctx, operationID, state, r, nil, false, IntentPending, IntentUnknown)
 }
 
 // settle moves the intent from one of the states in from to state and appends r, in one
@@ -90,7 +92,10 @@ func (i *intentStore) Settle(ctx context.Context, operationID, state string, r *
 // appends a record; the other gets ErrNotFound. A completed deposit supersedes the deposits
 // whose outcome was never learned. A non-nil outcome is the note the caller read: the move
 // fails if a note was written since, so a reconciler never ends a just-noted intent unknown.
-func (i *intentStore) settle(ctx context.Context, operationID, state string, r *AuditRecord, outcome *string, from ...string) error {
+// replay marks r as a note being replayed: if the chain already holds a completion record for
+// the operation, the note was consumed (a writer reset the intent) and is rejected instead.
+// Settling clears the note, in the same transaction as its record.
+func (i *intentStore) settle(ctx context.Context, operationID, state string, r *AuditRecord, outcome *string, replay bool, from ...string) error {
 	tx, err := i.s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -107,11 +112,26 @@ func (i *intentStore) settle(ctx context.Context, operationID, state string, r *
 		cond, args = " AND outcome = ?", append(args, *outcome)
 	}
 	var kind string
-	if err := tx.QueryRowContext(ctx, i.s.rebind(`UPDATE operation_intents SET state = ?, updated_at = ? WHERE operation_id = ? AND state IN (`+strings.Join(marks, ", ")+`)`+cond+` RETURNING kind`),
+	if err := tx.QueryRowContext(ctx, i.s.rebind(`UPDATE operation_intents SET state = ?, outcome = '', updated_at = ? WHERE operation_id = ? AND state IN (`+strings.Join(marks, ", ")+`)`+cond+` RETURNING kind`),
 		args...).Scan(&kind); errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	} else if err != nil {
 		return err
+	}
+	if replay {
+		var consumed int
+		// IDs are op_ + hex; _ is escaped for LIKE. Only this server's chained records count.
+		if err := tx.QueryRowContext(ctx, i.s.rebind(`SELECT COUNT(1) FROM audit_records WHERE details LIKE ? ESCAPE '\' AND action NOT IN ('operation.outcome_unknown', 'operation.outcome_rejected')`),
+			`operation\_id=`+strings.ReplaceAll(operationID, "_", `\_`)+"%").Scan(&consumed); err != nil {
+			return err
+		}
+		if consumed > 0 {
+			state = IntentUnknown
+			r = &AuditRecord{UserID: "system", Action: "operation.outcome_rejected", Resource: r.Resource, Details: "severity=critical operation_id=" + operationID + " reason=note_consumed"}
+			if _, err := tx.ExecContext(ctx, i.s.rebind(`UPDATE operation_intents SET state = ? WHERE operation_id = ?`), state, operationID); err != nil {
+				return err
+			}
+		}
 	}
 	if kind == "deposit" && state == IntentComplete {
 		if _, err := tx.ExecContext(ctx, i.s.rebind(`UPDATE operation_intents SET state = ?, updated_at = ? WHERE kind = 'deposit' AND state = ? AND operation_id <> ?`),
@@ -126,16 +146,17 @@ func (i *intentStore) settle(ctx context.Context, operationID, state string, r *
 }
 
 func (i *intentStore) Reconcile(ctx context.Context, kind string, olderThan time.Duration) (int, error) {
-	rows, err := i.s.db.QueryContext(ctx, i.s.rebind(`SELECT operation_id, subject, outcome FROM operation_intents WHERE kind = ? AND state = ? AND created_at <= ? ORDER BY created_at`),
-		kind, IntentPending, time.Now().UTC().Add(-olderThan))
+	// Stale pending intents, and unknown ones their process noted an outcome on later.
+	rows, err := i.s.db.QueryContext(ctx, i.s.rebind(`SELECT operation_id, subject, state, outcome FROM operation_intents WHERE kind = ? AND ((state = ? AND created_at <= ?) OR (state = ? AND outcome <> '')) ORDER BY created_at`),
+		kind, IntentPending, time.Now().UTC().Add(-olderThan), IntentUnknown)
 	if err != nil {
 		return 0, err
 	}
-	type stale struct{ id, subject, outcome string }
+	type stale struct{ id, subject, state, outcome string }
 	var found []stale
 	for rows.Next() {
 		var st stale
-		if err := rows.Scan(&st.id, &st.subject, &st.outcome); err != nil {
+		if err := rows.Scan(&st.id, &st.subject, &st.state, &st.outcome); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -146,10 +167,10 @@ func (i *intentStore) Reconcile(ctx context.Context, kind string, olderThan time
 		return 0, err
 	}
 	for n, st := range found {
-		state, rec := i.replay(kind, st.id, st.subject, st.outcome)
-		// Only from pending and the note read: of concurrent reconcilers one settles it, and a
-		// note written since (or an outcome its own process wrote) is left for the next pass.
-		if err := i.settle(ctx, st.id, state, rec, &st.outcome, IntentPending); errors.Is(err, ErrNotFound) {
+		state, rec, noted := i.replay(kind, st.id, st.subject, st.outcome)
+		// Only from the state and note read: of concurrent reconcilers one settles it, and a note
+		// written since (or an outcome its own process wrote) is left for the next pass.
+		if err := i.settle(ctx, st.id, state, rec, &st.outcome, noted, st.state); errors.Is(err, ErrNotFound) {
 			continue
 		} else if err != nil {
 			return n, err
@@ -161,9 +182,9 @@ func (i *intentStore) Reconcile(ctx context.Context, kind string, olderThan time
 // replay is how reconciliation ends a pending intent: its noted outcome when this server's MAC
 // authenticates it, else outcome_unknown. A note that fails authentication is never appended;
 // its rejection is recorded instead.
-func (i *intentStore) replay(kind, id, subject, outcome string) (string, *AuditRecord) {
-	unknown := func(action, why string) (string, *AuditRecord) {
-		return IntentUnknown, &AuditRecord{UserID: "system", Action: action, Resource: kind + ":" + subject, Details: "severity=critical operation_id=" + id + why}
+func (i *intentStore) replay(kind, id, subject, outcome string) (string, *AuditRecord, bool) {
+	unknown := func(action, why string) (string, *AuditRecord, bool) {
+		return IntentUnknown, &AuditRecord{UserID: "system", Action: action, Resource: kind + ":" + subject, Details: "severity=critical operation_id=" + id + why}, false
 	}
 	if outcome == "" {
 		return unknown("operation.outcome_unknown", "")
@@ -177,7 +198,7 @@ func (i *intentStore) replay(kind, id, subject, outcome string) (string, *AuditR
 	if err != nil || !hmac.Equal([]byte(want), []byte(noted.MAC)) {
 		return unknown("operation.outcome_rejected", " reason=note_not_authenticated")
 	}
-	return noted.State, &rec
+	return noted.State, &rec, true
 }
 
 func (i *intentStore) Get(ctx context.Context, operationID string) (*Intent, error) {
