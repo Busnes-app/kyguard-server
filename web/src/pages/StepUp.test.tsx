@@ -30,11 +30,22 @@ it('enrolls a first factor, then confirms it', async () => {
   expect(fetcher).toHaveBeenLastCalledWith('/api/auth/stepup/enroll/confirm', expect.objectContaining({ body: JSON.stringify({ code: '654321' }) }));
 });
 
-it('explains a blocked enrollment and offers only sign-out', () => {
+it('reports a blocked enrollment to the server before saying admins were notified', async () => {
+  const fetcher = vi.fn(async () => new Response('{"error":"blocked"}', { status: 403 }));
+  vi.stubGlobal('fetch', fetcher);
   render(<StepUp state={{ required: true, enrolled: false, can_enroll: false }} onDone={vi.fn()} onLogout={vi.fn()} />);
-  expect(screen.getByRole('alert').textContent).toContain('did not confirm a multi-factor sign-in');
+  expect((await screen.findByRole('alert')).textContent).toContain('An administrator has been notified');
+  expect(fetcher).toHaveBeenCalledWith('/api/auth/stepup/enroll', expect.objectContaining({ method: 'POST' }));
   expect(screen.queryByLabelText('Authenticator code')).toBeNull();
   expect(screen.getByRole('button', { name: 'Sign out' })).toBeTruthy();
+});
+
+it('does not claim a notification the server did not record', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('offline'); }));
+  render(<StepUp state={{ required: true, enrolled: false, can_enroll: false }} onDone={vi.fn()} onLogout={vi.fn()} />);
+  const alert = await screen.findByRole('alert');
+  expect(alert.textContent).toContain('did not confirm a multi-factor sign-in');
+  expect(alert.textContent).not.toContain('notified');
 });
 
 it('retries only the session load after an accepted code', async () => {
