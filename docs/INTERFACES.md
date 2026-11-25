@@ -77,14 +77,15 @@ Sources: [auth handlers](../internal/api/auth_handlers.go),
 | Method and path | Input and authority | Successful output |
 |---|---|---|
 | GET `/api/auth/pow-challenge` | Anonymous; no body | 200 challenge object described below |
-| POST `/api/auth/login` | Anonymous JSON: `username`, `password`, optional `captcha_token` | 200 authenticated user and session/CSRF cookies |
-| GET `/api/auth/me` | Optional session; no body | 200 `{"authenticated":false}` or `{"authenticated":true,"user":User}` |
-| POST `/api/auth/change-password` | Any local-account session (also a restricted one); JSON: `current_password`, `new_password`; cookie CSRF applies; 409 for a federated account | 200 `{"password_changed":true,"login_required":true}`; replacement flag cleared; all sessions revoked |
+| POST `/api/auth/login` | Anonymous JSON: `username`, `password`, `totp_code` (all required, else 400), optional `captcha_token`. Break-glass accounts only: an SSO account with a correct password gets 403 | 200 authenticated user and session/CSRF cookies; the session is active, stepped up and ends 30 minutes later |
+| GET `/api/auth/me` | Optional session; no body | 200 `{"authenticated":false}` or `{"authenticated":true,"user":User}`; a break-glass session adds `break_glass: {reason, expires_at}` |
+| POST `/api/auth/break-glass/reason` | Break-glass session (403 otherwise); JSON `{"reason":"…"}`, 1–500 characters; cookie CSRF applies | 200 `{"recorded":true}`; 409 when the session already has one; audited `break_glass.reason` |
+| POST `/api/auth/change-password` | Break-glass session (also a restricted one); JSON: `current_password`, `new_password`, `totp_code`; cookie CSRF applies; 409 for an SSO account | 200 `{"password_changed":true,"login_required":true}`; replacement flag cleared; all sessions revoked |
 | POST `/api/auth/logout` | Optional session; no body; cookie CSRF applies | 200 `{"logged_out":true}`; current session revoked and cookies expired |
 
 A completed login returns `{"authenticated":true,"user":User}`. `User`
 contains `id`, `username`, `email`, `display_name`, `role`, `status`, `sso_provider`,
-`must_change_password`, `created_at` and `updated_at`; `sso_subject`,
+`account_type` (`sso` or `break_glass`), `must_change_password`, `created_at` and `updated_at`; `sso_subject`,
 `push_device_id` and `last_login_at` appear when set. User timestamps are RFC 3339
 strings. Roles used by the scaffold are `admin`, `user` and `manager`; only `admin`
 authorizes administrator routes. Password hashes are never included. Usernames are
@@ -93,12 +94,17 @@ account's name is refused (SCIM 409 `uniqueness`, KyIdentity sign-in 409). An
 installation that already holds such duplicates keeps them, logs each clash at
 startup and builds the case-insensitive unique index once they are resolved.
 
-There is no local multi-factor sign-in: MFA is a KyIdentity (SSO) feature, so require it
-there and sign in through KyIdentity. The former `/api/auth/mfa/totp` and
-`/api/auth/mfa/recovery-code` routes and the `totp_enabled` user field are gone. The
-`users.totp_secret_enc`, `totp_enabled`, `totp_last_counter` and `recovery_codes_hash`
-columns and the `mfa_challenges` table are kept with their data but no longer read or
-written; an account that had local TOTP signs in with its password alone.
+Local sign-in is for break-glass accounts only (spec §7.4). They are created on the host
+with `kyguard-server break-glass create` and carry a TOTP factor (`mfa_factors`, sealed under
+the deployment key). The code is checked only after the password verifies, so a wrong
+password never counts against the code limits. A code is accepted once (its counter must be
+above the last accepted one). At most 10 failed codes per user per 15 minutes: past that every
+code fails, even a correct one. Every sign-in attempt writes an `auth.break_glass_login`
+audit record with `severity=critical` and its outcome; a failed audit write fails the sign-in
+with 503. A break-glass session lasts 30 minutes from sign-in without sliding, and every
+administrator route answers 403 `{"code":"break_glass_reason_required"}` until the session has
+given its reason. The retired base columns `users.totp_secret_enc`, `totp_enabled`,
+`totp_last_counter`, `recovery_codes_hash` and the `mfa_challenges` table stay unused.
 
 Login allows 20 attempts per client per minute, and 10 failed attempts per account per
 client per 15 minutes; an IPv6 client counts as its /64. An exhausted account window
@@ -116,13 +122,11 @@ challenge expires after five minutes and each solved challenge is accepted once:
 second login with the same token returns 403. Login verifies it when the configured
 provider is `pow`; no Turnstile/Friendly server-side verification is wired here.
 
-Any local account can change its own password, whether or not it is flagged
-`must_change_password` (a flagged account must do so first); a federated account
-gets 409. The new password is limited to 1024 bytes (the current one is checked at any
-length, since `init-admin` sets no cap); the new value must differ and pass
-the current policy (at least 12 bytes after trimming surrounding whitespace).
-The current password must verify. Limits are ten attempts per IP and five per
-account per minute. Success requires signing in again with the replacement.
+A break-glass account can change its own password; an SSO account gets 409. The new
+password is limited to 1024 bytes; it must differ and pass the policy (at least 16 bytes
+after trimming surrounding whitespace). The current password must verify, then the TOTP code
+(counted like a sign-in code). Limits are ten attempts per IP and five per account per minute.
+Success requires signing in again with the replacement.
 
 ## Settings
 
@@ -399,20 +403,20 @@ normally go to stderr. Setup/operational failures return a nonzero exit status.
 
 | Invocation after `kyguard-server` | Inputs and effect | Output |
 |---|---|---|
-| No subcommand | Load environment, open store, bootstrap if empty, serve HTTP and run configured backup schedule | Startup/operation logs; listener defaults to `:8080` |
+| No subcommand | Load environment, open store, serve HTTP and run configured backup schedule. An empty database stays empty: there is no bootstrap admin | Startup/operation logs; listener defaults to `:8080` |
 | `migrate-postgres [--source PATH] [--check]` | Stopped SQLite source and empty PostgreSQL target from `KY_MIGRATE_POSTGRES_DSN`; the source directory must be writable (lock and private snapshot); verify a private snapshot and copy transactionally; check-only rolls back target rows. A source pin with no `recovery_public_key` record is recorded from the `recovery.pub` beside the source; a pin without that file is refused before anything is copied | JSON row counts and a cutover reminder on stdout; nonzero on failure |
 | `accept-replica-config` | PostgreSQL only (refused on SQLite); under the bootstrap lock, rewrite the shared-configuration fingerprint from this process's environment after a deliberate change; audited as `admin.replica_config_accepted` with the changed field names. A differing `KY_ENCRYPTION_KEY` is refused, never recorded | The changed field names on stdout; never values or fingerprints |
 | `version` | No inputs or data-directory access | Version text on stdout; use the source commit/image digest for exact build identity |
-| `init-admin -username NAME -password VALUE [-promote]` | Username defaults to `admin`; password required, at least 12 bytes; create/reset local administrator, revoke sessions, require password replacement. An existing non-local account is refused; an existing local account that is not an active administrator is refused unless `-promote` is given (exit 1 either way) | Confirmation, and the previous role and status of an existing account, on stderr |
+| `break-glass create -username NAME` | Create a break-glass administrator with a generated 24-character password and a new TOTP secret; refused for a taken name, an invalid name or a sixth account. Audited `break_glass.created` (`severity=critical`) | The password and the `otpauth://` provisioning URI on stdout, once; nothing shows them again |
+| `break-glass reset-totp -username NAME` | Replace a break-glass account's TOTP secret and revoke its sessions; refused for any other account. Audited `break_glass.totp_reset` | The new provisioning URI on stdout, once |
 | `backup-drill` | Collect the payload (SQLite file, or a PostgreSQL snapshot); seal/open with throwaway keys and check restore recipe | Human summary on stdout with PASSED/FAILED and per-check results; exit status 1 when the drill FAILED |
 | `export-capsule [-out PATH]` | Require suite pin; seal payload to custodian public key; default output `<capsule-id>.kycap` | File plus capsule/key/size confirmation on stderr |
 | `deposit` | Seal once and deliver to configured destinations | Audit record; remote success logs capsule/time/digest on stderr; failures on stderr; no JSON stdout contract |
 | `restore -capsule PATH -to DIRECTORY [-service NAME]` | Read custodian shares from stdin, one `ky2-…` line each; target must be empty; expected service defaults to `KY_APP_NAME`, then `KyGuard` | Authenticated manifest/restore result on stdout; optional terminal prompt on stderr. In the restored database, in one transaction: the backup schedule off (`backup_interval_sec` = 0), every `sessions` row deleted and the `replica_config_fingerprint` row deleted; it prints all three. The admin turns the schedule back on |
 
-`init-admin` currently takes its password in argv, so it can be visible in process
-listings or shell history. Custodian shares are accepted only on stdin. `backup-drill`
-exits 1 when the drill FAILED, so cron and monitoring see a failed recovery check. Unknown subcommands currently fall through to
-starting the server; there is no top-level help command. Flag-bearing subcommands
+No command takes a secret in argv. Custodian shares are accepted only on stdin. `backup-drill`
+exits 1 when the drill FAILED, so cron and monitoring see a failed recovery check. An unknown
+subcommand exits 1 without starting the server; there is no top-level help command. Flag-bearing subcommands
 support `-h`/`-help` without operating on data.
 
 ## Environment configuration
@@ -462,7 +466,6 @@ reader in the binary. The shipped `docker-compose.yml` passes its `.env` to the 
 | `KY_BACKUP_KEEP` | `7` | Local retention count; must be at least one |
 | `KY_BACKUP_DEPOSIT_INTERVAL` | `24h` | Go duration; zero disables; minimum nonzero `15m`; malformed/negative values fail startup |
 | `KY_BACKUP_ALLOW_PRIVATE_RECOVERY` | `false` | Permit private/CGNAT HTTPS KyRecovery destinations; loopback/reserved addresses remain refused |
-| `KY_ADMIN_PASSWORD` | Random at first bootstrap | Initial local admin password when the store is empty; replacement is mandatory |
 
 Loading configuration can create the encryption-key file. The fixed read/write
 timeouts are 15 seconds, session lifetime seven days and database connection lifetime

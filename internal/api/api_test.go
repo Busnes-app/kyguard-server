@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Busnes-app/ky-primitives/capsule"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -21,8 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Busnes-app/ky-primitives/capsule"
+
 	"github.com/Busnes-app/ky-primitives/keyfile"
-	"github.com/Busnes-app/ky-primitives/password"
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
 	"github.com/Busnes-app/ky-primitives/recoverykey"
 	"github.com/Busnes-app/kyguard-server/internal/api"
@@ -58,27 +58,10 @@ func setupTestServer(t *testing.T) (*api.Server, store.Store, *config.Config) {
 
 func TestAuthAndSessionEndpoints(t *testing.T) {
 	srv, st, _ := setupTestServer(t)
+	alice := newBreakGlass(t, srv, st, "alice")
 
-	// Create test user
-	passHash, _ := password.Hash("SuperSecretPass123!")
-	user := &store.User{
-		ID:           "usr_alice",
-		Username:     "alice",
-		Email:        "alice@busnes.app",
-		DisplayName:  "Alice Admin",
-		PasswordHash: passHash,
-		Role:         "admin",
-		Status:       "active",
-		SSOProvider:  "local",
-	}
-	_ = st.Users().CreateUser(context.Background(), user)
-
-	// 1. Login with correct password
-	loginBody, _ := json.Marshal(map[string]string{
-		"username": "alice",
-		"password": "SuperSecretPass123!",
-	})
-	req := httptest.NewRequest("POST", "/api/auth/login", bytes.NewReader(loginBody))
+	// 1. Break-glass login: password and TOTP code together
+	req := httptest.NewRequest("POST", "/api/auth/login", bytes.NewReader(alice.loginBody(t)))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
@@ -102,7 +85,7 @@ func TestAuthAndSessionEndpoints(t *testing.T) {
 		t.Fatal("expected session and CSRF cookies in login response")
 	}
 
-	// 2. /api/auth/me
+	// 2. /api/auth/me carries the break-glass banner state
 	meReq := httptest.NewRequest("GET", "/api/auth/me", nil)
 	meReq.AddCookie(sessionCookie)
 	w = httptest.NewRecorder()
@@ -115,10 +98,14 @@ func TestAuthAndSessionEndpoints(t *testing.T) {
 	var meResp struct {
 		Authenticated bool        `json:"authenticated"`
 		User          *store.User `json:"user"`
+		BreakGlass    *struct {
+			Reason    string    `json:"reason"`
+			ExpiresAt time.Time `json:"expires_at"`
+		} `json:"break_glass"`
 	}
 	_ = json.Unmarshal(w.Body.Bytes(), &meResp)
-	if !meResp.Authenticated || meResp.User.Username != "alice" {
-		t.Errorf("unexpected me response: %+v", meResp)
+	if !meResp.Authenticated || meResp.User.Username != "alice" || meResp.BreakGlass == nil || meResp.BreakGlass.Reason != "" {
+		t.Errorf("unexpected me response: %s", w.Body.String())
 	}
 
 	// 3. /api/settings
@@ -129,14 +116,29 @@ func TestAuthAndSessionEndpoints(t *testing.T) {
 		t.Fatalf("settings expected 200 OK, got %d", w.Code)
 	}
 
-	// 4. /api/backup/drill
-	drillReq := httptest.NewRequest("POST", "/api/backup/drill", nil)
-	drillReq.AddCookie(sessionCookie)
-	drillReq.AddCookie(csrfCookie)
-	drillReq.Header.Set(auth.HeaderCSRF, csrfCookie.Value)
+	// 4. /api/backup/drill: refused until the break-glass session states its reason
+	drill := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/api/backup/drill", nil)
+		req.AddCookie(sessionCookie)
+		req.AddCookie(csrfCookie)
+		req.Header.Set(auth.HeaderCSRF, csrfCookie.Value)
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		return w
+	}
+	if w := drill(); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "break_glass_reason_required") {
+		t.Fatalf("privileged action without a reason: %d %s", w.Code, w.Body)
+	}
+	reason := httptest.NewRequest("POST", "/api/auth/break-glass/reason", strings.NewReader(`{"reason":"restore drill"}`))
+	reason.AddCookie(sessionCookie)
+	reason.AddCookie(csrfCookie)
+	reason.Header.Set(auth.HeaderCSRF, csrfCookie.Value)
 	w = httptest.NewRecorder()
-	srv.ServeHTTP(w, drillReq)
+	srv.ServeHTTP(w, reason)
 	if w.Code != http.StatusOK {
+		t.Fatalf("reason: %d %s", w.Code, w.Body)
+	}
+	if w := drill(); w.Code != http.StatusOK {
 		t.Fatalf("backup drill expected 200 OK, got %d", w.Code)
 	}
 }
@@ -145,9 +147,9 @@ func TestLoginRejectsUnparseableStoredHash(t *testing.T) {
 	srv, st, _ := setupTestServer(t)
 	_ = st.Users().CreateUser(context.Background(), &store.User{
 		ID: "usr_bad", Username: "bad", PasswordHash: "not-a-phc-string",
-		Role: "user", Status: "active", SSOProvider: "local",
+		Role: "user", Status: "active", SSOProvider: "local", AccountType: store.AccountBreakGlass,
 	})
-	body, _ := json.Marshal(map[string]string{"username": "bad", "password": "whatever-long-enough"})
+	body, _ := json.Marshal(map[string]string{"username": "bad", "password": "whatever-long-enough", "totp_code": "000000"})
 	req := httptest.NewRequest("POST", "/api/auth/login", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -159,19 +161,10 @@ func TestLoginRejectsUnparseableStoredHash(t *testing.T) {
 
 func TestInactiveAccountInvalidatesSession(t *testing.T) {
 	srv, st, _ := setupTestServer(t)
-	hash, _ := password.Hash("SuperSecretPass123!")
-	user := &store.User{ID: "usr_inactive", Username: "inactive", PasswordHash: hash, Role: "admin", Status: "active", SSOProvider: "local"}
-	if err := st.Users().CreateUser(context.Background(), user); err != nil {
+	session := newBreakGlass(t, srv, st, "inactive").Login(t, srv)
+	user, err := st.Users().GetUserByUsername(context.Background(), "inactive")
+	if err != nil {
 		t.Fatal(err)
-	}
-	body, _ := json.Marshal(map[string]string{"username": user.Username, "password": "SuperSecretPass123!"})
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(body)))
-	var session *http.Cookie
-	for _, cookie := range w.Result().Cookies() {
-		if cookie.Name == auth.SessionCookieName {
-			session = cookie
-		}
 	}
 	user.Status = "inactive"
 	if err := st.Users().UpdateUser(context.Background(), user); err != nil {
@@ -179,7 +172,7 @@ func TestInactiveAccountInvalidatesSession(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodGet, "/api/auth/me", nil)
 	req.AddCookie(session)
-	w = httptest.NewRecorder()
+	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 	if !bytes.Contains(w.Body.Bytes(), []byte(`"authenticated":false`)) {
 		t.Fatalf("inactive account retained session: %s", w.Body.String())
@@ -198,36 +191,16 @@ func TestCookieAuthenticatedWriteRequiresCSRF(t *testing.T) {
 	}
 }
 
-// Local MFA was removed (MFA is a KyIdentity feature). An account enrolled before the removal
-// keeps its stored factor but signs in with its password alone: nobody is locked out.
-func TestFormerlyMFAEnrolledAccountSignsInWithPassword(t *testing.T) {
-	srv, st, cfg := setupTestServer(t)
-	ctx := context.Background()
-	hash, _ := password.Hash("SuperSecretPass123!")
-	if err := st.Users().CreateUser(ctx, &store.User{ID: "usr_mfa", Username: "mfa", PasswordHash: hash, Role: "user", Status: "active", SSOProvider: "local"}); err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open(map[string]string{"sqlite": "sqlite", "postgres": "pgx"}[cfg.Database.Driver], cfg.Database.DSN)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	q := "UPDATE users SET totp_enabled = ?, totp_secret_enc = 'sealed' WHERE id = 'usr_mfa'"
-	if cfg.Database.Driver == "postgres" {
-		q = strings.Replace(q, "?", "$1", 1)
-	}
-	if _, err := db.Exec(q, true); err != nil {
-		t.Fatal(err)
-	}
-	if w := loginStatusFor(t, srv, "mfa", "SuperSecretPass123!", "203.0.113.5:41000"); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"authenticated":true`) {
-		t.Fatalf("enrolled account: %d %s", w.Code, w.Body.String())
-	}
-}
-
-// loginStatusFor posts one sign-in from peer.
+// loginStatusFor posts one sign-in from peer with a code that never verifies.
 func loginStatusFor(t *testing.T, srv *api.Server, username, pass, peer string) *httptest.ResponseRecorder {
 	t.Helper()
-	body, _ := json.Marshal(map[string]string{"username": username, "password": pass})
+	return loginWithCode(t, srv, username, pass, "000000", peer)
+}
+
+// loginWithCode posts one sign-in with a TOTP code from peer.
+func loginWithCode(t *testing.T, srv *api.Server, username, pass, code, peer string) *httptest.ResponseRecorder {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"username": username, "password": pass, "totp_code": code})
 	req := httptest.NewRequest("POST", "/api/auth/login", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = peer
@@ -516,15 +489,7 @@ func TestFullLimiterStillThrottlesLogin(t *testing.T) {
 // guesser cannot lock its owner out.
 func TestLoginPerAccountWindow(t *testing.T) {
 	srv, st, _ := setupTestServer(t)
-	ctx := context.Background()
-
-	passHash, _ := password.Hash("SuperSecretPass123!")
-	if err := st.Users().CreateUser(ctx, &store.User{
-		ID: "usr_carol", Username: "carol", Email: "carol@busnes.app",
-		PasswordHash: passHash, Role: "user", Status: "active", SSOProvider: "local",
-	}); err != nil {
-		t.Fatal(err)
-	}
+	carol := newBreakGlass(t, srv, st, "carol")
 
 	// Rotating inside one /64 buys nothing.
 	for i := 1; i <= 10; i++ {
@@ -533,11 +498,11 @@ func TestLoginPerAccountWindow(t *testing.T) {
 			t.Fatalf("wrong password %d: %d", i, w.Code)
 		}
 	}
-	w := loginStatusFor(t, srv, "carol", "SuperSecretPass123!", "[2001:db8:1:2::99]:40000")
+	w := loginStatusFor(t, srv, "carol", carol.Password, "[2001:db8:1:2::99]:40000")
 	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), "Invalid credentials") {
 		t.Fatalf("exhausted window: %d %s, want the wrong-password 401", w.Code, w.Body.String())
 	}
-	if w := loginStatusFor(t, srv, "carol", "SuperSecretPass123!", "[2001:db8:1:3::1]:40000"); w.Code != http.StatusOK {
+	if w := loginWithCode(t, srv, "carol", carol.Password, carol.Code(t), "[2001:db8:1:3::1]:40000"); w.Code != http.StatusOK {
 		t.Fatalf("the owner elsewhere was locked out: %d %s", w.Code, w.Body.String())
 	}
 	// An unknown name gets the same answer and the same window.
@@ -551,14 +516,17 @@ func TestLoginPerAccountWindow(t *testing.T) {
 // A disabled account answers exactly like a wrong password, right password or not.
 func TestDisabledAccountLooksLikeAWrongPassword(t *testing.T) {
 	srv, st, _ := setupTestServer(t)
-	passHash, _ := password.Hash("SuperSecretPass123!")
-	if err := st.Users().CreateUser(context.Background(), &store.User{
-		ID: "usr_off", Username: "off", PasswordHash: passHash, Role: "user", Status: "inactive", SSOProvider: "local",
-	}); err != nil {
+	off := newBreakGlass(t, srv, st, "off")
+	u, err := st.Users().GetUserByID(context.Background(), off.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	disabled := loginStatusFor(t, srv, "off", "SuperSecretPass123!", "203.0.113.5:40000")
-	unknown := loginStatusFor(t, srv, "nobody", "SuperSecretPass123!", "203.0.113.5:40000")
+	u.Status = "inactive"
+	if err := st.Users().UpdateUser(context.Background(), u); err != nil {
+		t.Fatal(err)
+	}
+	disabled := loginWithCode(t, srv, "off", off.Password, off.Code(t), "203.0.113.5:40000")
+	unknown := loginStatusFor(t, srv, "nobody", off.Password, "203.0.113.5:40000")
 	if disabled.Code != http.StatusUnauthorized || disabled.Body.String() != unknown.Body.String() {
 		t.Fatalf("disabled %d %q vs unknown %d %q", disabled.Code, disabled.Body.String(), unknown.Code, unknown.Body.String())
 	}
@@ -567,7 +535,7 @@ func TestDisabledAccountLooksLikeAWrongPassword(t *testing.T) {
 // loginStatus fires one failed sign-in from peer, optionally claiming to be forwarded for xff.
 func loginStatus(t *testing.T, srv *api.Server, peer, xff string) int {
 	t.Helper()
-	body, _ := json.Marshal(map[string]string{"username": "nobody", "password": "WrongPass123!"})
+	body, _ := json.Marshal(map[string]string{"username": "nobody", "password": "WrongPass123!", "totp_code": "000000"})
 	req := httptest.NewRequest("POST", "/api/auth/login", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = peer
@@ -647,15 +615,7 @@ func TestLimiterFallsBackWhenTheChainIsAllTrusted(t *testing.T) {
 func TestSessionIPIgnoresForgedForwardedFor(t *testing.T) {
 	srv, st, _ := setupTestServer(t)
 
-	hash, _ := password.Hash("SuperSecretPass123!")
-	if err := st.Users().CreateUser(context.Background(), &store.User{
-		ID: "usr_dave", Username: "dave", PasswordHash: hash,
-		Role: "user", Status: "active", SSOProvider: "local",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	body, _ := json.Marshal(map[string]string{"username": "dave", "password": "SuperSecretPass123!"})
+	body := newBreakGlass(t, srv, st, "dave").loginBody(t)
 	req := httptest.NewRequest("POST", "/api/auth/login", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Forwarded-For", "10.66.66.66")
@@ -938,7 +898,7 @@ func TestLoginPoWTokenIsSingleUse(t *testing.T) {
 		}
 	}
 	post := func() int {
-		body, _ := json.Marshal(map[string]string{"username": "nobody", "password": "WrongPass123!", "captcha_token": token})
+		body, _ := json.Marshal(map[string]string{"username": "nobody", "password": "WrongPass123!", "totp_code": "000000", "captcha_token": token})
 		req := httptest.NewRequest("POST", "/api/auth/login", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()

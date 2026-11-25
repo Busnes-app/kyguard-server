@@ -44,24 +44,36 @@ func NewSessionManager(st store.Store, cfg config.SecurityConfig) *SessionManage
 	}
 }
 
+// BreakGlassTTL is a break-glass session's fixed lifetime; it never slides (spec §7.4).
+const BreakGlassTTL = 30 * time.Minute
+
 // IssueSession creates an active session for credentials verified just now and writes the
 // HttpOnly cookie + CSRF token.
 func (sm *SessionManager) IssueSession(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User) (*store.Session, string, error) {
-	return sm.issue(ctx, w, r, user, time.Now().UTC(), "")
+	return sm.issue(ctx, w, r, user, time.Now().UTC(), "", 0, nil)
+}
+
+// IssueBreakGlassSession issues the session for a break-glass login whose password and TOTP
+// code were both verified just now: active, stepped up now, and ending after BreakGlassTTL.
+func (sm *SessionManager) IssueBreakGlassSession(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User) (*store.Session, string, error) {
+	now := time.Now().UTC()
+	return sm.issue(ctx, w, r, user, now, "", BreakGlassTTL, &now)
 }
 
 // IssueSSOSession issues a session for an SSO login the provider names by sid and dates
 // it by the ID token's issuedAt, so a back-channel logout for that sid or subject ends it.
 // It fails with store.ErrSSOSessionEnded when the provider already ended that login.
 func (sm *SessionManager) IssueSSOSession(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User, sid string, issuedAt time.Time) (*store.Session, string, error) {
-	return sm.issue(ctx, w, r, user, issuedAt.UTC(), sid)
+	return sm.issue(ctx, w, r, user, issuedAt.UTC(), sid, 0, nil)
 }
 
-func (sm *SessionManager) issue(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User, authenticatedAt time.Time, sid string) (*store.Session, string, error) {
+func (sm *SessionManager) issue(ctx context.Context, w http.ResponseWriter, r *http.Request, user *store.User, authenticatedAt time.Time, sid string, ttl time.Duration, stepupAt *time.Time) (*store.Session, string, error) {
 	rawToken := crypto.RandomHex(32)
 	tokenHash := crypto.SHA256Hex([]byte(rawToken))
 
-	ttl := sm.config.SessionTTL
+	if ttl <= 0 {
+		ttl = sm.config.SessionTTL
+	}
 	if ttl <= 0 {
 		ttl = 7 * 24 * time.Hour
 	}
@@ -74,6 +86,7 @@ func (sm *SessionManager) issue(ctx context.Context, w http.ResponseWriter, r *h
 		CreatedAt: authenticatedAt,
 		ExpiresAt: time.Now().UTC().Add(ttl),
 		SSOSID:    sid,
+		StepupAt:  stepupAt,
 	}
 
 	if err := sm.store.Sessions().CreateSession(ctx, sess, user.PasswordHash); err != nil {

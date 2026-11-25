@@ -12,7 +12,7 @@ import (
 func TestPasswordReplacementIsAtomicAndSingleUse(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
-	u := &store.User{ID: "reset", Username: "reset", PasswordHash: "old", Role: "admin", Status: "active", SSOProvider: "local", MustChangePassword: true}
+	u := &store.User{ID: "reset", Username: "reset", PasswordHash: "old", Role: "admin", Status: "active", SSOProvider: "local", AccountType: store.AccountBreakGlass}
 	if err := st.Users().CreateUser(ctx, u); err != nil {
 		t.Fatal(err)
 	}
@@ -54,50 +54,12 @@ func TestPasswordReplacementIsAtomicAndSingleUse(t *testing.T) {
 	}
 }
 
-func TestAdminPasswordResetRevokesGrants(t *testing.T) {
-	ctx := context.Background()
-	st := newTestStore(t)
-	u := &store.User{ID: "reset", Username: "reset", PasswordHash: "old", Role: "admin", Status: "active", SSOProvider: "local", MustChangePassword: false}
-	if err := st.Users().CreateUser(ctx, u); err != nil {
-		t.Fatal(err)
-	}
-	sess := &store.Session{TokenHash: "session", UserID: u.ID, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}
-	if err := st.Sessions().CreateSession(ctx, sess, "old"); err != nil {
-		t.Fatal(err)
-	}
-	u.Status = "disabled"
-	if err := st.Users().UpdateUser(ctx, u); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Users().ResetAdminPassword(ctx, u.ID, "reset-hash"); err != nil {
-		t.Fatal(err)
-	}
-	updated, err := st.Users().GetUserByID(ctx, u.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !updated.MustChangePassword || updated.PasswordHash != "reset-hash" || updated.Status != "active" || updated.Role != "admin" {
-		t.Fatalf("unexpected reset state: %+v", updated)
-	}
-
-	if _, err := st.Sessions().GetSession(ctx, sess.TokenHash); !errors.Is(err, store.ErrNotFound) {
-		t.Fatal("session survived", err)
-	}
-	if err := st.Sessions().CreateSession(ctx, sess, "old"); !errors.Is(err, store.ErrNotFound) {
-		t.Fatal("stale session creation", err)
-	}
-	audits, n, err := st.Audit().ListAuditRecords(ctx, 0, 10)
-	if err != nil || n != 1 || audits[0].Action != "auth.password_changed" {
-		t.Fatal("audit", n, err)
-	}
-}
-
 // A directory sync works from a read taken before a concurrent reset; its write must not put
 // the old password hash back.
 func TestUpdateUserProfileLeavesCredentialsAlone(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
-	u := &store.User{ID: "sync", Username: "sync", PasswordHash: "old", Role: "admin", Status: "active", SSOProvider: "local"}
+	u := &store.User{ID: "sync", Username: "sync", PasswordHash: "old", Role: "admin", Status: "active", SSOProvider: "local", AccountType: store.AccountBreakGlass}
 	if err := st.Users().CreateUser(ctx, u); err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +67,7 @@ func TestUpdateUserProfileLeavesCredentialsAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Users().ResetAdminPassword(ctx, u.ID, "reset-hash"); err != nil {
+	if err := st.Users().CompletePasswordChange(ctx, u.ID, "old", "reset-hash", ""); err != nil {
 		t.Fatal(err)
 	}
 	stale.DisplayName = "Synced Name"
@@ -119,8 +81,8 @@ func TestUpdateUserProfileLeavesCredentialsAlone(t *testing.T) {
 	if got.DisplayName != "Synced Name" {
 		t.Fatalf("profile not written: %+v", got)
 	}
-	if got.PasswordHash != "reset-hash" || !got.MustChangePassword {
-		t.Fatalf("stale profile write restored credentials: hash=%q must_change=%v", got.PasswordHash, got.MustChangePassword)
+	if got.PasswordHash != "reset-hash" {
+		t.Fatalf("stale profile write restored credentials: hash=%q", got.PasswordHash)
 	}
 	if err := st.Users().UpdateUserProfile(ctx, &store.User{ID: "missing"}, "", ""); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("missing user: %v", err)

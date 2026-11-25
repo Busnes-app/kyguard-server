@@ -139,9 +139,12 @@ func (u *userStore) CreateUser(ctx context.Context, user *User) error {
 INSERT INTO users (
     id, username, email, display_name, password_hash, role, status,
     sso_provider, sso_subject, scim_managed, push_device_id, must_change_password,
-    created_at, updated_at, last_login_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    created_at, updated_at, last_login_at, account_type
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `)
+	if user.AccountType == "" {
+		user.AccountType = AccountSSO
+	}
 
 	var lastLogin sql.NullTime
 	if user.LastLoginAt != nil {
@@ -152,7 +155,7 @@ INSERT INTO users (
 		user.ID, user.Username, user.Email, user.DisplayName, user.PasswordHash,
 		user.Role, user.Status, user.SSOProvider, user.SSOSubject, user.SCIMManaged,
 		user.PushDeviceID, user.MustChangePassword,
-		user.CreatedAt, user.UpdatedAt, lastLogin,
+		user.CreatedAt, user.UpdatedAt, lastLogin, user.AccountType,
 	); err != nil {
 		return uniqueErr(err)
 	}
@@ -171,7 +174,7 @@ func uniqueErr(err error) error {
 // recovery_codes_hash) stay in the schema with their data but are no longer read or written.
 const userColumns = `id, username, email, display_name, password_hash, role, status,
        sso_provider, sso_subject, scim_managed, push_device_id, must_change_password,
-       created_at, updated_at, last_login_at`
+       created_at, updated_at, last_login_at, account_type`
 
 // checkUsernameFree refuses, inside the write's transaction, a name another account already
 // holds in any letter case. The LOWER(username) unique index enforces this once existing data
@@ -211,7 +214,7 @@ func (u *userStore) scanUser(row interface{ Scan(...any) error }) (*User, error)
 		&user.ID, &user.Username, &user.Email, &user.DisplayName, &user.PasswordHash,
 		&user.Role, &user.Status, &user.SSOProvider, &user.SSOSubject, &user.SCIMManaged,
 		&user.PushDeviceID, &user.MustChangePassword,
-		&user.CreatedAt, &user.UpdatedAt, &lastLogin,
+		&user.CreatedAt, &user.UpdatedAt, &lastLogin, &user.AccountType,
 	)
 	if err != nil {
 		if errorsIs(err, sql.ErrNoRows) {
@@ -488,7 +491,10 @@ func (s *SQLStore) withPassword(ctx context.Context, userID, expectedHash string
 
 func (s *sessionStore) CreateSession(ctx context.Context, sess *Session, expectedPasswordHash string) error {
 	err := s.store.withPassword(ctx, sess.UserID, expectedPasswordHash, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, s.store.rebind(`INSERT INTO sessions (token_hash, user_id, user_agent, ip_address, created_at, expires_at, sso_sid) VALUES (?, ?, ?, ?, ?, ?, ?)`), sess.TokenHash, sess.UserID, sess.UserAgent, sess.IPAddress, sess.CreatedAt, sess.ExpiresAt, sess.SSOSID)
+		if sess.Stage == "" {
+			sess.Stage = StageActive
+		}
+		_, err := tx.ExecContext(ctx, s.store.rebind(`INSERT INTO sessions (token_hash, user_id, user_agent, ip_address, created_at, expires_at, sso_sid, stage, stepup_at, break_glass_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), sess.TokenHash, sess.UserID, sess.UserAgent, sess.IPAddress, sess.CreatedAt, sess.ExpiresAt, sess.SSOSID, sess.Stage, nullTime(sess.StepupAt), sess.BreakGlassReason)
 		return err
 	})
 	if err != nil {
@@ -540,7 +546,7 @@ ON CONFLICT (provider, subject) DO UPDATE SET cutoff = excluded.cutoff, expires_
 func (u *userStore) CompletePasswordChange(ctx context.Context, userID, oldHash, newHash, ip string) error {
 	return u.store.withPassword(ctx, userID, oldHash, func(tx *sql.Tx) error {
 		now := time.Now().UTC()
-		result, err := tx.ExecContext(ctx, u.store.rebind(`UPDATE users SET password_hash = ?, must_change_password = ?, updated_at = ? WHERE id = ? AND sso_provider = 'local'`), newHash, false, now, userID)
+		result, err := tx.ExecContext(ctx, u.store.rebind(`UPDATE users SET password_hash = ?, must_change_password = ?, updated_at = ? WHERE id = ? AND account_type = ?`), newHash, false, now, userID, AccountBreakGlass)
 		if err != nil {
 			return err
 		}
@@ -555,31 +561,6 @@ func (u *userStore) CompletePasswordChange(ctx context.Context, userID, oldHash,
 	})
 }
 
-// ResetAdminPassword is the operator recovery path, including disabled local accounts.
-func (u *userStore) ResetAdminPassword(ctx context.Context, userID, newHash string) error {
-	tx, err := u.store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	now := time.Now().UTC()
-	result, err := tx.ExecContext(ctx, u.store.rebind(`UPDATE users SET password_hash = ?, must_change_password = ?, status = 'active', role = 'admin', updated_at = ? WHERE id = ? AND sso_provider = 'local'`), newHash, true, now, userID)
-	if err != nil {
-		return err
-	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n != 1 {
-		return ErrNotFound
-	}
-	if err := u.revokePasswordGrants(ctx, tx, userID, "operator reset; sessions revoked", "", now); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
 func (u *userStore) revokePasswordGrants(ctx context.Context, tx *sql.Tx, userID, details, ip string, now time.Time) error {
 	if _, err := tx.ExecContext(ctx, u.store.rebind("DELETE FROM sessions WHERE user_id = ?"), userID); err != nil {
 		return err
@@ -590,14 +571,18 @@ func (u *userStore) revokePasswordGrants(ctx context.Context, tx *sql.Tx, userID
 
 func (s *sessionStore) GetSession(ctx context.Context, tokenHash string) (*Session, error) {
 	q := s.store.rebind(`
-SELECT token_hash, user_id, user_agent, ip_address, created_at, expires_at, sso_sid
+SELECT token_hash, user_id, user_agent, ip_address, created_at, expires_at, sso_sid, stage, stepup_at, break_glass_reason
 FROM sessions WHERE token_hash = ?
 `)
 	var sess Session
+	var stepup sql.NullTime
 	err := s.store.db.QueryRowContext(ctx, q, tokenHash).Scan(
 		&sess.TokenHash, &sess.UserID, &sess.UserAgent, &sess.IPAddress,
-		&sess.CreatedAt, &sess.ExpiresAt, &sess.SSOSID,
+		&sess.CreatedAt, &sess.ExpiresAt, &sess.SSOSID, &sess.Stage, &stepup, &sess.BreakGlassReason,
 	)
+	if stepup.Valid {
+		sess.StepupAt = &stepup.Time
+	}
 	if err != nil {
 		if errorsIs(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -621,6 +606,17 @@ func (s *sessionStore) DeleteUserSessions(ctx context.Context, userID string) er
 	q := s.store.rebind("DELETE FROM sessions WHERE user_id = ?")
 	_, err := s.store.db.ExecContext(ctx, q, userID)
 	return err
+}
+
+func (s *sessionStore) SetBreakGlassReason(ctx context.Context, tokenHash, reason string) error {
+	res, err := s.store.db.ExecContext(ctx, s.store.rebind(`UPDATE sessions SET break_glass_reason = ? WHERE token_hash = ? AND break_glass_reason = ''`), reason, tokenHash)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return ErrConflict
+	}
+	return nil
 }
 
 func (s *sessionStore) CleanExpiredSessions(ctx context.Context) error {

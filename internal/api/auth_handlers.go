@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,9 +15,12 @@ import (
 	"github.com/Busnes-app/kyguard-server/internal/store"
 )
 
+// LoginRequest is the only local sign-in: a break-glass account's password and TOTP code
+// together (spec §7.4).
 type LoginRequest struct {
 	Username     string `json:"username"`
 	Password     string `json:"password"`
+	TOTPCode     string `json:"totp_code"`
 	CaptchaToken string `json:"captcha_token,omitempty"`
 }
 
@@ -59,8 +64,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Username = strings.TrimSpace(req.Username)
-	if req.Username == "" || req.Password == "" {
-		s.writeError(w, http.StatusBadRequest, "Username and password are required")
+	if req.Username == "" || req.Password == "" || req.TOTPCode == "" {
+		s.writeError(w, http.StatusBadRequest, "Username, password and authenticator code are required")
 		return
 	}
 
@@ -112,30 +117,98 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	} else {
 		ok, _ = password.Verify(req.Password, user.PasswordHash)
 	}
+	// Every attempt is a critical audit record (spec §7.4); a failed write fails the sign-in.
+	audit := func(userID, outcome string) bool {
+		if err := s.store.Audit().LogAudit(context.WithoutCancel(r.Context()), &store.AuditRecord{
+			UserID: userID, Action: "auth.break_glass_login", Resource: "session",
+			Details: "severity=critical outcome=" + outcome, IPAddress: s.requestIP(r),
+		}); err != nil {
+			s.writeError(w, http.StatusServiceUnavailable, "Authentication temporarily unavailable")
+			return false
+		}
+		return true
+	}
 	// A disabled account answers like a wrong password, so the status cannot enumerate it.
+	// The TOTP counter is never touched before the password verifies.
 	if !ok || user.Status != "active" {
-		s.writeError(w, http.StatusUnauthorized, "Invalid credentials")
+		userID := ""
+		if user != nil {
+			userID = user.ID
+		}
+		if audit(userID, "bad_password") {
+			s.writeError(w, http.StatusUnauthorized, "Invalid credentials")
+		}
+		return
+	}
+	if user.AccountType != store.AccountBreakGlass {
+		if audit(user.ID, "not_break_glass") {
+			s.writeError(w, http.StatusForbidden, "Sign in through your identity provider; local sign-in is for break-glass accounts only")
+		}
+		return
+	}
+	if err := s.factors.Check(r.Context(), user.ID, "", req.TOTPCode); err != nil {
+		outcome, status, msg := "bad_code", http.StatusUnauthorized, "Invalid credentials"
+		if !errors.Is(err, auth.ErrCodeRejected) {
+			outcome, status, msg = "error", http.StatusServiceUnavailable, "Authentication temporarily unavailable"
+		}
+		if audit(user.ID, outcome) {
+			s.writeError(w, status, msg)
+		}
 		return
 	}
 	refund() // only failures stay counted
 
-	// Issue active session
-	_, _, err = s.sessions.IssueSession(r.Context(), w, r, user)
-	if err != nil {
+	if _, _, err := s.sessions.IssueBreakGlassSession(r.Context(), w, r, user); err != nil {
 		s.writeError(w, http.StatusInternalServerError, "Failed to issue session")
 		return
 	}
-
-	_ = s.store.Audit().LogAudit(r.Context(), &store.AuditRecord{
-		UserID:   user.ID,
-		Action:   "auth.login",
-		Resource: "session",
-	})
-
+	if !audit(user.ID, "success") {
+		return
+	}
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"authenticated": true,
 		"user":          user,
 	})
+}
+
+// handleBreakGlassReason records why a break-glass session exists. It is set once and is
+// required before the session's first privileged action (spec §7.4).
+func (s *Server) handleBreakGlassReason(w http.ResponseWriter, r *http.Request) {
+	user, sess, err := s.sessions.AuthenticateRequest(r)
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "Authentication required")
+		return
+	}
+	if user.AccountType != store.AccountBreakGlass {
+		s.writeError(w, http.StatusForbidden, "Only a break-glass session gives a reason")
+		return
+	}
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	req.Reason = strings.TrimSpace(req.Reason)
+	if req.Reason == "" || len(req.Reason) > 500 {
+		s.writeError(w, http.StatusBadRequest, "Give a reason of 1 to 500 characters")
+		return
+	}
+	ctx := context.WithoutCancel(r.Context())
+	if err := s.store.Sessions().SetBreakGlassReason(ctx, sess.TokenHash, req.Reason); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			s.writeError(w, http.StatusConflict, "This session already has a reason")
+			return
+		}
+		s.writeError(w, http.StatusInternalServerError, "Failed to record the reason")
+		return
+	}
+	if err := s.store.Audit().LogAudit(ctx, &store.AuditRecord{UserID: user.ID, Action: "break_glass.reason", Resource: "session", Details: "severity=critical reason=" + strconv.Quote(req.Reason), IPAddress: s.requestIP(r)}); err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, "Audit unavailable")
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]bool{"recorded": true})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -148,14 +221,14 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
-	user, _, err := s.sessions.AuthenticateRequest(r)
+	user, sess, err := s.sessions.AuthenticateRequest(r)
 	if err != nil {
 		s.writeJSON(w, http.StatusOK, map[string]bool{"authenticated": false})
 		return
 	}
-
-	s.writeJSON(w, http.StatusOK, map[string]any{
-		"authenticated": true,
-		"user":          user,
-	})
+	me := map[string]any{"authenticated": true, "user": user}
+	if user.AccountType == store.AccountBreakGlass { // drives the persistent banner
+		me["break_glass"] = map[string]any{"reason": sess.BreakGlassReason, "expires_at": sess.ExpiresAt}
+	}
+	s.writeJSON(w, http.StatusOK, me)
 }

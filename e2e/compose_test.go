@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,18 +24,65 @@ import (
 
 	"github.com/Busnes-app/ky-primitives/capsule"
 	"github.com/Busnes-app/ky-primitives/recoverykey"
+	"github.com/Busnes-app/ky-primitives/totp"
 	"github.com/Busnes-app/kyguard-server/internal/auth"
 )
 
 type project struct {
-	t        *testing.T
-	dir      string
-	name     string
-	env      []string
-	url      string
-	image    string
-	vars     map[string]string
-	adminPwd string
+	t     *testing.T
+	dir   string
+	name  string
+	env   []string
+	url   string
+	image string
+	vars  map[string]string
+	admin *account
+}
+
+// account is a break-glass account made on the host. last is the newest TOTP step it has
+// used: a code is single-use, so the next sign-in waits for a later step.
+type account struct {
+	name, pass, secret string
+	last               int64
+}
+
+// newAccount runs `break-glass create` in an app container and reads back what it printed.
+func (p *project) newAccount(app, name string) *account {
+	p.t.Helper()
+	out := p.must(nil, "docker", "exec", app, "/app/kyguard-server", "break-glass", "create", "-username", name)
+	a := &account{name: name, last: -1}
+	for _, line := range strings.Split(out, "\n") {
+		if v, ok := strings.CutPrefix(line, "Password: "); ok {
+			a.pass = v
+		}
+		if _, uri, ok := strings.Cut(line, "TOTP: "); ok {
+			u, err := url.Parse(uri)
+			if err != nil {
+				p.t.Fatal(err)
+			}
+			a.secret = u.Query().Get("secret")
+		}
+	}
+	if a.pass == "" || a.secret == "" {
+		p.t.Fatalf("break-glass create printed %q", out)
+	}
+	return a
+}
+
+// code returns a code for a step this account has not used, waiting for the next step if needed.
+func (a *account) code(t *testing.T) string {
+	t.Helper()
+	step := time.Now().Unix() / totp.Period
+	if step <= a.last {
+		time.Sleep(time.Until(time.Unix((a.last+1)*totp.Period, 0)))
+		step = a.last + 1
+	}
+	a.last = step
+	c, err := totp.Code(a.secret, time.Unix(step*totp.Period, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
 }
 
 func secret(n int) string {
@@ -113,7 +161,7 @@ func startProject(t *testing.T) *project {
 	subnet := fmt.Sprintf("172.31.%d.0/24", octet)
 	port := freePort(t)
 	pgPass := secret(16)
-	p := &project{t: t, dir: dir, name: "kye2e" + secret(4), image: image, adminPwd: secret(12)}
+	p := &project{t: t, dir: dir, name: "kye2e" + secret(4), image: image}
 	p.url = fmt.Sprintf("http://127.0.0.1:%d", port)
 	p.vars = map[string]string{
 		"COMPOSE_FILE":         "docker-compose.yml:docker-compose.replicas.yml",
@@ -138,7 +186,6 @@ func startProject(t *testing.T) *project {
 	// Read into every app container through the base file's env_file. Throwaway values only;
 	// the office-network exemption keeps this one test client under the per-address limit.
 	dotenv := strings.Join([]string{
-		"KY_ADMIN_PASSWORD=" + p.adminPwd,
 		"KY_CAPTCHA_PROVIDER=none",
 		"KY_RATE_LIMIT_EXEMPT_NETWORKS=" + subnet,
 		"PUSH_RELAY_URL=",
@@ -166,6 +213,8 @@ func startProject(t *testing.T) *project {
 	p.compose("exec", "-T", "postgres", "createdb", "-U", "ky_server", "replica_readiness_probe")
 	p.compose("exec", "-T", "postgres", "dropdb", "-U", "ky_server", "replica_readiness_probe")
 	p.compose("up", "-d", "--wait", "--wait-timeout", "180")
+	// There is no bootstrap admin; the operator creates a break-glass account on a host.
+	p.admin = p.newAccount(p.appContainers()[0], "admin")
 	return p
 }
 
@@ -242,21 +291,27 @@ func (p *project) get(path string, s session) (int, []byte) {
 	return code, body
 }
 
-func (p *project) login(user, pass string) (int, session) {
+// login signs in with password and code and, on success, gives the break-glass reason that
+// privileged routes require.
+func (p *project) login(user, pass, totpCode string) (int, session) {
 	p.t.Helper()
-	code, _, h := p.do("POST", "/api/auth/login", nil, map[string]string{"username": user, "password": pass})
+	code, _, h := p.do("POST", "/api/auth/login", nil, map[string]string{"username": user, "password": pass, "totp_code": totpCode})
 	if code != http.StatusOK {
 		return code, nil
 	}
 	resp := http.Response{Header: h}
-	return code, resp.Cookies()
+	s := session(resp.Cookies())
+	if code, body, _ := p.do("POST", "/api/auth/break-glass/reason", s, map[string]string{"reason": "replica e2e"}); code != http.StatusOK {
+		p.t.Fatalf("break-glass reason: %d %s", code, body)
+	}
+	return http.StatusOK, s
 }
 
-func (p *project) mustLogin(user, pass string) session {
+func (p *project) mustLogin(a *account) session {
 	p.t.Helper()
-	code, s := p.login(user, pass)
+	code, s := p.login(a.name, a.pass, a.code(p.t))
 	if code != http.StatusOK {
-		p.t.Fatalf("login %s: %d", user, code)
+		p.t.Fatalf("login %s: %d", a.name, code)
 	}
 	return s
 }
@@ -478,13 +533,7 @@ func TestReplicaFailover(t *testing.T) {
 		t.Fatalf("%d app replicas, want 2", n)
 	}
 
-	// The bootstrap admin replaces its password first; every later step signs in with it.
-	first := p.mustLogin("admin", p.adminPwd)
-	newPwd := "replica-" + secret(12)
-	if code, body, _ := p.do("POST", "/api/auth/change-password", first, map[string]string{"current_password": p.adminPwd, "new_password": newPwd}); code != http.StatusOK {
-		t.Fatalf("change password: %d %s", code, body)
-	}
-	admin := p.mustLogin("admin", newPwd)
+	admin := p.mustLogin(p.admin)
 
 	// A throwaway 2-of-3 kit, pinned by hand on whichever replica the proxy picks.
 	priv, err := recoverykey.Generate()
@@ -516,7 +565,7 @@ func TestReplicaFailover(t *testing.T) {
 		time.Sleep(2 * time.Second)
 		victim := p.appContainers()[0]
 		p.must(nil, "docker", "kill", "-s", "KILL", victim)
-		if code, _ := p.login("admin", newPwd); code != http.StatusOK {
+		if code, _ := p.login(p.admin.name, p.admin.pass, p.admin.code(t)); code != http.StatusOK {
 			t.Errorf("login straight after the kill: %d", code)
 		}
 		time.Sleep(6 * time.Second)
@@ -562,14 +611,14 @@ func TestReplicaFailover(t *testing.T) {
 
 	step("AC21 security state is shared", func(t *testing.T) {
 		app := p.appContainers()[0]
-		lockPwd := "lockme-" + secret(8)
-		p.must(nil, "docker", "exec", app, "/app/kyguard-server", "init-admin", "-username", "lockme", "-password", lockPwd)
+		lockme := p.newAccount(app, "lockme")
 		for i := range 10 {
-			if code, _ := p.login("lockme", "wrong-"+fmt.Sprint(i)); code != http.StatusUnauthorized {
+			if code, _ := p.login("lockme", "wrong-"+fmt.Sprint(i), "000000"); code != http.StatusUnauthorized {
 				t.Fatalf("failed login %d: %d", i, code)
 			}
 		}
-		if code, _ := p.login("lockme", lockPwd); code != http.StatusUnauthorized {
+		// A real code: the closed window refuses before the password, so 401 means locked.
+		if code, _ := p.login("lockme", lockme.pass, lockme.code(t)); code != http.StatusUnauthorized {
 			t.Fatalf("the right password after 10 failures across replicas: %d, want 401 (locked)", code)
 		}
 		// Whichever replica recorded the last failure, every one dies here.
@@ -577,11 +626,11 @@ func TestReplicaFailover(t *testing.T) {
 			p.must(nil, "docker", "kill", "-s", "KILL", id)
 		}
 		p.restoreReplicas()
-		if code, _ := p.login("lockme", lockPwd); code != http.StatusUnauthorized {
+		if code, _ := p.login("lockme", lockme.pass, lockme.code(t)); code != http.StatusUnauthorized {
 			t.Fatalf("the lockout did not survive the replicas: %d", code)
 		}
 
-		s := p.mustLogin("admin", newPwd)
+		s := p.mustLogin(p.admin)
 		for i := range 20 {
 			if code, _ := p.get("/api/admin/users", s); code != http.StatusOK {
 				t.Fatalf("request %d before logout: %d", i, code)
@@ -771,7 +820,7 @@ func TestReplicaFailover(t *testing.T) {
 			code, _ := other.get("/readyz", nil)
 			return code == http.StatusOK
 		})
-		s := other.mustLogin("admin", newPwd)
+		s := other.mustLogin(p.admin) // restored with its factor and spent counter
 		code, body := other.get("/api/backup/status", s)
 		var status struct {
 			IntervalSec int64 `json:"interval_sec"`

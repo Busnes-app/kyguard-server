@@ -356,6 +356,57 @@ CREATE TABLE spent_challenges (
 );
 CREATE INDEX idx_spent_challenges_expiry ON spent_challenges(expires_at);`,
 	},
+	{
+		// KyGuard local factors (spec §7.3, §7.4). account_type separates break-glass accounts,
+		// the only ones with a local password sign-in, from SSO users. Sessions carry their
+		// stage (pending until TOTP step-up), the last step-up time and a break-glass reason.
+		// mfa_factors holds one sealed TOTP secret per user and kind; last_counter refuses a
+		// replayed code. totp_attempts counts failed codes per user and per session.
+		Version: 12,
+		Name:    "kyguard_local_factors",
+		SQLite: `ALTER TABLE users ADD COLUMN account_type TEXT NOT NULL DEFAULT 'sso' CHECK (account_type IN ('sso', 'break_glass'));
+ALTER TABLE sessions ADD COLUMN stage TEXT NOT NULL DEFAULT 'active' CHECK (stage IN ('pending', 'active'));
+ALTER TABLE sessions ADD COLUMN stepup_at DATETIME;
+ALTER TABLE sessions ADD COLUMN break_glass_reason TEXT NOT NULL DEFAULT '';
+CREATE TABLE mfa_factors (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind = 'totp'),
+    secret_enc TEXT NOT NULL,
+    last_counter INTEGER NOT NULL DEFAULT -1,
+    created_at DATETIME NOT NULL,
+    UNIQUE (user_id, kind)
+);
+CREATE TABLE totp_attempts (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_hash TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL
+);
+CREATE INDEX idx_totp_attempts_user ON totp_attempts(user_id, created_at);
+CREATE INDEX idx_totp_attempts_session ON totp_attempts(session_hash) WHERE session_hash <> '';`,
+		Postgres: `ALTER TABLE users ADD COLUMN account_type TEXT NOT NULL DEFAULT 'sso' CHECK (account_type IN ('sso', 'break_glass'));
+ALTER TABLE sessions ADD COLUMN stage TEXT NOT NULL DEFAULT 'active' CHECK (stage IN ('pending', 'active'));
+ALTER TABLE sessions ADD COLUMN stepup_at TIMESTAMPTZ;
+ALTER TABLE sessions ADD COLUMN break_glass_reason TEXT NOT NULL DEFAULT '';
+CREATE TABLE mfa_factors (
+    id VARCHAR(64) PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind = 'totp'),
+    secret_enc TEXT NOT NULL,
+    last_counter BIGINT NOT NULL DEFAULT -1,
+    created_at TIMESTAMPTZ NOT NULL,
+    UNIQUE (user_id, kind)
+);
+CREATE TABLE totp_attempts (
+    id VARCHAR(64) PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_hash TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX idx_totp_attempts_user ON totp_attempts(user_id, created_at);
+CREATE INDEX idx_totp_attempts_session ON totp_attempts(session_hash) WHERE session_hash <> '';`,
+	},
 }
 
 // EnsureUsernameIndex builds the case-insensitive unique index on usernames when existing
