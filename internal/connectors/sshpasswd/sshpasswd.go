@@ -27,6 +27,8 @@ import (
 // ErrHostKey reports a host key other than the descriptor's.
 var ErrHostKey = errors.New("sshpasswd: host key does not match the descriptor")
 
+var errOneSubmission = errors.New("sshpasswd: the credential was already submitted once")
+
 // Connector dials only the descriptor's host and port and accepts only the host key whose
 // SHA-256 the descriptor pins, checked before any authentication.
 type Connector struct {
@@ -63,17 +65,40 @@ func (c *Connector) dial(ctx context.Context, d *pqcrypto.TargetDescriptor, pass
 		return nil, broker.ErrAuthFailed
 	}
 	pw := string(password)
+	// One credential submission per login, across both methods and every interactive round:
+	// a rejected password is never offered again (§4.6).
+	submitted := false
+	once := func() error {
+		if submitted {
+			return errOneSubmission
+		}
+		submitted = true
+		return nil
+	}
 	cfg := &ssh.ClientConfig{
 		User:            d.AuthenticatedTargetIdentity,
 		HostKeyCallback: hostKey(d.Endpoint.SSHHostKeySHA256),
 		Auth: []ssh.AuthMethod{
-			ssh.Password(pw),
+			ssh.PasswordCallback(func() (string, error) {
+				if err := once(); err != nil {
+					return "", err
+				}
+				return pw, nil
+			}),
 			ssh.KeyboardInteractive(func(_, _ string, questions []string, _ []bool) ([]string, error) {
-				answers := make([]string, len(questions))
-				for i, q := range questions {
+				if len(questions) == 0 {
+					return nil, nil // an informational round carries no credential
+				}
+				for _, q := range questions {
 					if !strings.Contains(strings.ToLower(q), "password") {
 						return nil, errors.New("sshpasswd: unexpected keyboard-interactive question")
 					}
+				}
+				if err := once(); err != nil {
+					return nil, err
+				}
+				answers := make([]string, len(questions))
+				for i := range answers {
 					answers[i] = pw
 				}
 				return answers, nil
@@ -97,7 +122,7 @@ func (c *Connector) dial(ctx context.Context, d *pqcrypto.TargetDescriptor, pass
 		if errors.Is(err, ErrHostKey) {
 			return nil, ErrHostKey
 		}
-		if strings.Contains(err.Error(), "unable to authenticate") {
+		if strings.Contains(err.Error(), "unable to authenticate") || errors.Is(err, errOneSubmission) {
 			return nil, broker.ErrAuthFailed
 		}
 		return nil, err
@@ -131,12 +156,28 @@ type session struct {
 	timeout time.Duration
 }
 
+// bound closes the connection if ctx ends or the timeout passes before the returned stop
+// is called, so no remote command can stall the broker.
+func (s *session) bound(ctx context.Context) (stop func()) {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			s.c.Close()
+		case <-time.After(s.timeout):
+			s.c.Close()
+		}
+	}()
+	return func() { close(done) }
+}
+
 func (s *session) Close() error { return s.c.Close() }
 
 // Baseline is the last-change date from chage -l when the account can read it, otherwise
 // empty; SSH verification is the fresh login alone.
-func (s *session) Baseline(context.Context) (string, error) {
-	last, _, err := s.chage()
+func (s *session) Baseline(ctx context.Context) (string, error) {
+	last, _, err := s.chage(ctx)
 	if err != nil {
 		return "", nil
 	}
@@ -144,12 +185,13 @@ func (s *session) Baseline(context.Context) (string, error) {
 }
 
 // PasswordAge reads the last change and the minimum days from chage -l (§4.4).
-func (s *session) PasswordAge(context.Context) (time.Time, time.Duration, error) {
-	last, minDays, err := s.chage()
+func (s *session) PasswordAge(ctx context.Context) (time.Time, time.Duration, error) {
+	last, minDays, err := s.chage(ctx)
 	return last, time.Duration(minDays) * 24 * time.Hour, err
 }
 
-func (s *session) chage() (time.Time, int, error) {
+func (s *session) chage(ctx context.Context) (time.Time, int, error) {
+	defer s.bound(ctx)()
 	ss, err := s.c.NewSession()
 	if err != nil {
 		return time.Time{}, 0, err
@@ -198,12 +240,16 @@ var (
 // answers the new and retype prompts. Any prompt outside the set before the new password
 // leaves is a deterministic refusal (§4.4).
 func (s *session) Change(ctx context.Context, oldPassword, newPassword []byte, commit func() error) error {
+	stop := s.bound(ctx) // channel setup; the prompts below carry their own deadlines
 	ss, err := s.c.NewSession()
 	if err != nil {
+		stop()
 		return err
 	}
 	defer ss.Close()
-	if err := ss.RequestPty("dumb", 24, 80, ssh.TerminalModes{ssh.ECHO: 0}); err != nil {
+	err = ss.RequestPty("dumb", 24, 80, ssh.TerminalModes{ssh.ECHO: 0})
+	stop()
+	if err != nil {
 		return err
 	}
 	in, err := ss.StdinPipe()
