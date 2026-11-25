@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto/canonical"
 )
@@ -92,4 +93,18 @@ func contains(l []pqcrypto.UUID, id pqcrypto.UUID) bool {
 		}
 	}
 	return false
+}
+
+// SignReservation signs the request to reserve an enrollment as an enroller's active key.
+func SignReservation(tr *pqcrypto.Trust, account, requestID, principal pqcrypto.UUID, key *pqcrypto.SigningKey, now time.Time) (*brokerproto.EnrollReservation, error) {
+	r := &brokerproto.EnrollReservation{DeploymentID: tr.DeploymentID(), AccountID: account, RequestID: requestID, PrincipalID: principal, IssuedAt: pqcrypto.NewTime(now)}
+	d, err := r.Digest()
+	if err != nil {
+		return nil, err
+	}
+	if r.Sig, err = key.Sign(d); err != nil {
+		return nil, err
+	}
+	r.SigKeyID, err = key.Public().SigKeyID()
+	return r, err
 }

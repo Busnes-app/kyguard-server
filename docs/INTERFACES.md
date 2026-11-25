@@ -520,7 +520,7 @@ Source: [enrollment handlers](../internal/api/enroll_handlers.go).
 
 | Route | Authentication and input | Success |
 |---|---|---|
-| POST `/api/accounts/{id}/enrollments` | Session (step-up classification pending); JSON `{"request_id": UUIDv7}` from `kyguard-cli` | 201 `{operation_id, secret_version, broker_id}`; 409 while a rotation is open on a healthy account or another enrollment holds the lock. Audited as `vault.enrollment_reserved`. The reservation expires after 15 minutes unless the broker accepts it |
+| POST `/api/accounts/{id}/enrollments` | Session (step-up classification pending); JSON `EnrollReservation` from `kyguard-cli`: `request_id` (UUIDv7), `principal_id`, `issued_at` (within 5 minutes), `sig_key_id` and a hybrid signature by that principal's active key; 403 unless the principal is in the current policy's `enroller_principal_ids` | 201 `{operation_id, secret_version, broker_id}`; 409 while a rotation is open on a healthy account or another enrollment holds the lock. Audited as `vault.enrollment_reserved`. The reservation expires after 15 minutes unless the broker accepts it |
 | POST `/api/accounts/{id}/enrollments/{request_id}` | Session; JSON `{"tx", "envelope"}` (base64url canonical bytes) | 202 relayed; 422 `{"code"}` when the transaction or candidate fails verification; 409 without a matching reservation; 503 when the broker is not connected (the candidate is stored; submit again) |
 | GET `/api/accounts/{id}/enrollments/{request_id}` | Session | 200 `{"state"}`: `reserved`, `accepted`, `committed`, `failed` or `expired` |
 
