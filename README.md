@@ -1,6 +1,6 @@
 # KyGuard
 
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15937/badge)](https://www.bestpractices.dev/projects/15937)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/17119/badge)](https://www.bestpractices.dev/projects/17119)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Busnes-app/kyguard-server/badge)](https://scorecard.dev/viewer/?uri=github.com/Busnes-app/kyguard-server)
 
 KyGuard is a self-hosted privileged access management (PAM) and just-in-time access platform
@@ -16,7 +16,7 @@ Published image (Docker Compose 2.24.0 or later):
 
 ```bash
 make ci        # gofmt, vet, race tests, smoke test
-make run       # build and start on :8080; first start prints the bootstrap admin password
+make run       # build and start on :8080 (no account exists; see First sign-in)
 docker compose up -d
 ```
 
@@ -28,7 +28,7 @@ this block once and confirm with `docker compose config --images`, which must pr
 
 ```bash
 make ci        # gofmt, vet, race tests, smoke test
-make run       # build and start on :8080; first start prints the bootstrap admin password
+make run       # build and start on :8080 (no account exists; see First sign-in)
 (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env \
   && cf=$({ grep '^COMPOSE_FILE=' .env || [ $? -eq 1 ]; } | tail -n1 | cut -d= -f2-) && cf=${cf:-docker-compose.yml} \
   && case ":$cf:" in *:docker-compose.build.yml:*) ;; *) cf="$cf:docker-compose.build.yml";; esac \
@@ -72,13 +72,18 @@ do not make PostgreSQL highly available.
 
 ## First sign-in
 
-Every bootstrap or `init-admin` password must be replaced, including when
-`KY_ADMIN_PASSWORD` supplies it. Operator resets revoke existing sessions
-immediately, reactivate local admins and require replacement at the next login. Sign in, enter the current password and a different password
-of at least 12 characters, then sign in again. Until replacement, the session can only check
-its identity, change the password or sign out; privileged APIs remain blocked. Replacement
-revokes existing sessions atomically. Existing accounts
-are not retroactively flagged, since the server cannot infer whether they still use a bootstrap password.
+KyGuard has no bootstrap admin. Users sign in through SSO; local sign-in exists only for up to
+five break-glass administrators, created on the host:
+
+```bash
+kyguard-server break-glass create -username <name>   # Compose: docker compose exec app /app/kyguard-server break-glass create -username <name>
+```
+
+It prints a generated password and a TOTP provisioning URI once; store both offline. A
+break-glass sign-in needs the password and a current code together, lasts 30 minutes, asks
+for a reason before its first privileged action and is audited as critical. Replace a lost
+authenticator with `kyguard-server break-glass reset-totp -username <name>`, which also ends
+the account's sessions.
 
 ## License
 
