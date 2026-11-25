@@ -449,7 +449,7 @@ func (p *parser) hex4() (rune, error) {
 	if p.i+4 > len(p.b) {
 		return 0, ErrSyntax
 	}
-	n, err := strconv.ParseUint(string(p.b[p.i:p.i+4]), 16, 32)
+	n, err := strconv.ParseUint(string(p.b[p.i:p.i+4]), 16, 16)
 	if err != nil {
 		return 0, ErrSyntax
 	}
