@@ -126,6 +126,9 @@ func (h *userResourceHandler) Create(r *http.Request, attrs protocol.ResourceAtt
 	if user.Role == "" {
 		user.Role = "user"
 	}
+	if err := prepare(r.Context(), h.store, fromResource(attrs)); err != nil {
+		return protocol.Resource{}, err
+	}
 	if existing, err := h.kyIdentityAccount(r, user.SSOSubject, username); err != nil {
 		return protocol.Resource{}, err
 	} else if existing != nil {
@@ -288,6 +291,9 @@ func userPage(users []*store.User, total int) protocol.Page {
 }
 
 func (h *userResourceHandler) Replace(r *http.Request, id string, attrs protocol.ResourceAttributes) (protocol.Resource, error) {
+	if err := prepare(r.Context(), h.store, fromResource(attrs)); err != nil {
+		return protocol.Resource{}, err
+	}
 	res, err := h.update(r, id, func(user *store.User) error {
 		replaceUser(user, attrs)
 		return nil
@@ -322,6 +328,9 @@ func (h *userResourceHandler) Delete(r *http.Request, id string) error {
 }
 
 func (h *userResourceHandler) Patch(r *http.Request, id string, operations []protocol.PatchOperation) (protocol.Resource, error) {
+	if err := prepare(r.Context(), h.store, fromPatch(operations)); err != nil {
+		return protocol.Resource{}, err
+	}
 	res, err := h.update(r, id, func(user *store.User) error {
 		return applyUserPatch(user, operations)
 	})

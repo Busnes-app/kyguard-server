@@ -48,6 +48,10 @@ func TestEnterpriseUserAttributes(t *testing.T) {
 	}
 
 	// A create whose attributes cannot be written leaves no user behind, so a retry works.
+	g := &store.User{ID: "usr_gil", Username: "gil", Role: "user", Status: "active", SSOProvider: "scim", SCIMManaged: true}
+	if err := st.Users().CreateUser(ctx, g); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := st.Inventory().EnsureDefinition(ctx, &store.AttributeDefinition{ID: "blocker", Entity: store.EntityUser, Key: "title", Label: "T", Type: store.AttrString, Source: store.SourceAdmin}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -56,6 +60,16 @@ func TestEnterpriseUserAttributes(t *testing.T) {
 	}
 	if _, err := st.Users().GetUserByUsername(ctx, "fay"); err == nil {
 		t.Fatal("half-created user left behind")
+	}
+	// The same holds for a PATCH: its profile change is not written either.
+	{
+		ops := map[string]any{"schemas": []string{scim.SchemaPatchOp}, "Operations": []map[string]any{{"op": "replace", "value": map[string]any{"userName": "gil2", "title": "CTO"}}}}
+		if w := do("PATCH", "/scim/v2/Users/"+g.ID, ops); w.Code < 400 {
+			t.Fatalf("patch with a failing attribute write: %d", w.Code)
+		}
+		if u, err := st.Users().GetUserByID(ctx, g.ID); err != nil || u.Username != "gil" {
+			t.Fatalf("patch half-applied: %+v %v", u, err)
+		}
 	}
 	if err := st.Inventory().DeleteDefinition(ctx, "blocker", nil); err != nil {
 		t.Fatal(err)

@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	protocol "github.com/elimity-com/scim"
+	protocolErrors "github.com/elimity-com/scim/errors"
 	"github.com/google/uuid"
 
 	"github.com/Busnes-app/kyguard-server/internal/store"
@@ -143,6 +144,31 @@ func clean(s string) string {
 		s = string([]rune(s)[:256])
 	}
 	return s
+}
+
+// errNotSynced refuses a request whose attributes could not be written: an attribute of
+// that key exists and is not SCIM's.
+var errNotSynced = protocolErrors.ScimErrorMutability
+
+// prepare makes sure every attribute the changes touch has its SCIM definition, before the
+// request writes anything else, so a request that cannot sync its attributes changes
+// nothing at all (a PATCH, a PUT, a create or an adoption).
+func prepare(ctx context.Context, st store.Store, ch attrChanges) error {
+	for _, key := range []string{"department", "manager", "title"} {
+		if _, touched := ch[key]; !touched {
+			continue
+		}
+		d, err := st.Inventory().EnsureDefinition(ctx, &store.AttributeDefinition{ID: uuid.Must(uuid.NewV7()).String(), Entity: store.EntityUser, Key: key,
+			Label: syncedKeys[key], Type: store.AttrString, Source: store.SourceSCIM},
+			&store.AuditRecord{Action: "attribute.definition_created", Resource: "attribute:user." + key, Details: "source=scim"})
+		if err != nil {
+			return err
+		}
+		if d.Source != store.SourceSCIM {
+			return errNotSynced
+		}
+	}
+	return nil
 }
 
 // syncAttributes writes the changes as SCIM-sourced user attributes. Each value is its own
