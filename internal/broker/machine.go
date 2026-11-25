@@ -300,6 +300,11 @@ func (m *Machine) mutate(ctx context.Context, a *Account, rc *rotationContext, p
 		s.Close()
 		return m.abort(ctx, a, pqcrypto.ReasonRestartBeforeSend)
 	}
+	if ar, ok := s.(AgeReporter); ok {
+		if last, minAge, err := ar.PasswordAge(ctx); err == nil {
+			a.MinAgeSeconds, a.MinAgeDeadline = int64(minAge/time.Second), last.Add(minAge)
+		}
+	}
 	committed := false
 	commit := func() error {
 		if err := m.commitIntent(ctx, a, rc, baseline); err != nil {

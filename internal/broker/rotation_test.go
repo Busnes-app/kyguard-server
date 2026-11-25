@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Busnes-app/kyguard-server/internal/broker"
+	"github.com/Busnes-app/kyguard-server/internal/broker/brokerrig"
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto/pqtest"
@@ -158,8 +159,8 @@ func TestRecordedProbeIsNotResent(t *testing.T) {
 func TestWithheldAckAborts(t *testing.T) {
 	r := newRig(t)
 	late := make(chan error, 1)
-	inner := r.cpw
-	r.cpw = &wrapCP{ControlPlane: inner, intent: func(ctx context.Context, raw []byte) error {
+	inner := r.CPW
+	r.CPW = &brokerrig.WrapCP{ControlPlane: inner, OnIntent: func(ctx context.Context, raw []byte) error {
 		<-ctx.Done()
 		late <- inner.Intent(context.Background(), raw) // the Control Plane records it after all
 		return ctx.Err()
@@ -242,7 +243,7 @@ func TestAuthFailureStopsAfterOneAttempt(t *testing.T) {
 // refused before anything is sealed.
 func TestReservedVersionMustBeAboveTheHighestSeen(t *testing.T) {
 	r := newRig(t)
-	r.cpw = &wrapCP{ControlPlane: r.cpw, reserve: func(_ context.Context, _, _ pqcrypto.UUID, reported pqcrypto.Counter) (pqcrypto.Counter, error) {
+	r.CPW = &brokerrig.WrapCP{ControlPlane: r.CPW, OnReserve: func(_ context.Context, _, _ pqcrypto.UUID, reported pqcrypto.Counter) (pqcrypto.Counter, error) {
 		return reported, nil
 	}}
 	m := r.machine()
@@ -305,7 +306,7 @@ func TestSyncRefusesRollbackForksAndStaleChains(t *testing.T) {
 
 	real := &brokerproto.SyncReply{}
 	for req := (brokerproto.SyncRequest{}); ; {
-		page, err := r.cpw.Sync(ctx, req)
+		page, err := r.CPW.Sync(ctx, req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -316,7 +317,7 @@ func TestSyncRefusesRollbackForksAndStaleChains(t *testing.T) {
 		}
 		req.ManifestsAfter += len(page.Manifests)
 	}
-	realAcct, err := r.cpw.SyncAccount(ctx, r.pol.AccountID, 0, false)
+	realAcct, err := r.CPW.SyncAccount(ctx, r.pol.AccountID, 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,23 +332,23 @@ func TestSyncRefusesRollbackForksAndStaleChains(t *testing.T) {
 	last := st.Chains[len(st.Chains)-1]
 	last.Receipts = last.Receipts[:1] // the latest release is missing
 	st.Chains[len(st.Chains)-1] = last
-	m.CP = &wrapCP{ControlPlane: r.cpw,
-		sync: func(context.Context, brokerproto.SyncRequest) (*brokerproto.SyncReply, error) { return &stale, nil },
-		account: func(context.Context, pqcrypto.UUID, pqcrypto.Counter, bool) (*brokerproto.AccountState, error) {
+	m.CP = &brokerrig.WrapCP{ControlPlane: r.CPW,
+		OnSync: func(context.Context, brokerproto.SyncRequest) (*brokerproto.SyncReply, error) { return &stale, nil },
+		OnAccount: func(context.Context, pqcrypto.UUID, pqcrypto.Counter, bool) (*brokerproto.AccountState, error) {
 			return &st, nil
 		}}
-	r.alerts = nil
+	r.Alerts = nil
 	if err := m.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{string(pqcrypto.ErrRollback), string(pqcrypto.ErrEquivocation), string(pqcrypto.ErrChain)}
 	for _, w := range want {
 		found := false
-		for _, a := range r.alerts {
+		for _, a := range r.Alerts {
 			found = found || strings.Contains(a, w)
 		}
 		if !found {
-			t.Fatalf("no alert for %s in %q", w, r.alerts)
+			t.Fatalf("no alert for %s in %q", w, r.Alerts)
 		}
 	}
 	if p, _ := m.Trust.Policy(r.pol.AccountID); p.MaxCheckoutTTLSeconds != 600 {
@@ -364,14 +365,14 @@ func TestSyncRefusesRollbackForksAndStaleChains(t *testing.T) {
 func TestAuthFailureQuarantineSurvivesAFailedDelivery(t *testing.T) {
 	r := newRig(t)
 	r.target.password = "changed-out-of-band"
-	w := &wrapCP{ControlPlane: r.cpw, receiptsErr: errors.New("control plane unreachable")}
-	r.cpw = w
+	w := &brokerrig.WrapCP{ControlPlane: r.CPW, ReceiptsErr: errors.New("control plane unreachable")}
+	r.CPW = w
 	m := r.machine()
 	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); err == nil {
 		t.Fatal("delivery did not fail")
 	}
 	m.J.Close()
-	w.receiptsErr = nil
+	w.ReceiptsErr = nil
 	m2 := r.machine()
 	defer m2.J.Close()
 	if err := m2.Recover(context.Background()); err != nil {

@@ -158,6 +158,14 @@ func (c *CP) Dial(b *Broker) error {
 // at epoch 1, and returns the policy (mutated by edit before signing, if given).
 func (c *CP) Account(edit func(*pqcrypto.PolicyManifest)) *pqcrypto.PolicyManifest {
 	c.T.Helper()
+	return c.AccountWith(func(acct, asset pqcrypto.UUID) ([]byte, pqcrypto.HexID) {
+		return c.Dep.SSHTarget(c.T, acct, asset, "db1.example.test", 22, "svc", pqcrypto.HexID(strings.Repeat("ab", 32)))
+	}, edit)
+}
+
+// AccountWith is Account with the descriptor target builds.
+func (c *CP) AccountWith(target func(acct, asset pqcrypto.UUID) ([]byte, pqcrypto.HexID), edit func(*pqcrypto.PolicyManifest)) *pqcrypto.PolicyManifest {
+	c.T.Helper()
 	ctx := context.Background()
 	acct, asset := pqtest.UUID(), pqtest.UUID()
 	v := c.Store.Vault()
@@ -167,7 +175,7 @@ func (c *CP) Account(edit func(*pqcrypto.PolicyManifest)) *pqcrypto.PolicyManife
 	if err := v.CreateAccount(ctx, &store.Account{ID: string(acct), AssetID: string(asset), Name: "svc", AccountKind: pqcrypto.KindManaged, PoolID: string(c.Pool)}); err != nil {
 		c.T.Fatal(err)
 	}
-	raw, dg := c.Dep.SSHTarget(c.T, acct, asset, "db1.example.test", 22, "svc", pqcrypto.HexID(strings.Repeat("ab", 32)))
+	raw, dg := target(acct, asset)
 	if err := v.PutTargetDescriptor(ctx, string(dg), string(acct), raw); err != nil {
 		c.T.Fatal(err)
 	}
