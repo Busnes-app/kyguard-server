@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -26,8 +27,9 @@ func (m *Machine) Sync(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var accounts []pqcrypto.UUID
-	for after := 0; ; {
-		s, err := m.CP.Sync(ctx, after)
+	var req brokerproto.SyncRequest
+	for {
+		s, err := m.CP.Sync(ctx, req)
 		if err != nil {
 			return err
 		}
@@ -36,33 +38,62 @@ func (m *Machine) Sync(ctx context.Context) error {
 				return err
 			}
 		}
-		after += len(s.Manifests)
+		accounts = append(accounts, s.Accounts...)
 		if s.Done {
-			accounts = s.Accounts
 			break
 		}
-		if len(s.Manifests) == 0 {
+		if len(s.Manifests) == 0 && len(s.Accounts) == 0 {
 			return errors.New("broker: sync page with no progress")
+		}
+		req.ManifestsAfter += len(s.Manifests)
+		if len(s.Accounts) > 0 {
+			req.AccountsAfter = s.Accounts[len(s.Accounts)-1]
 		}
 	}
 	var errs []error
 	for _, id := range accounts {
-		a, err := m.J.Account(id)
-		if err != nil {
-			return err
-		}
-		st, err := m.CP.SyncAccount(ctx, id, a.HighestCopied())
-		if err == nil && st.AccountID != id {
-			err = errors.New("broker: sync returned another account")
-		}
-		if err == nil {
-			err = m.syncAccount(ctx, *st)
-		}
-		if err != nil {
+		if err := m.syncOne(ctx, id); err != nil {
 			errs = append(errs, fmt.Errorf("account %s: %w", id, err))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// syncOne pulls one account's state page by page until the Control Plane has no more.
+func (m *Machine) syncOne(ctx context.Context, id pqcrypto.UUID) error {
+	a, err := m.J.Account(id)
+	if err != nil {
+		return err
+	}
+	after := a.HighestCopied()
+	for {
+		st, err := m.CP.SyncAccount(ctx, id, after)
+		if err != nil {
+			return err
+		}
+		if st.AccountID != id {
+			return errors.New("broker: sync returned another account")
+		}
+		if err := m.syncAccount(ctx, *st); err != nil {
+			return err
+		}
+		if !st.More {
+			return nil
+		}
+		next := after
+		for _, c := range st.Chains {
+			var v struct {
+				V pqcrypto.Counter `json:"secret_version"`
+			}
+			if json.Unmarshal(c.Envelope, &v) == nil && v.V > next {
+				next = v.V
+			}
+		}
+		if next == after {
+			return errors.New("broker: sync page with no progress")
+		}
+		after = next
+	}
 }
 
 func (m *Machine) acceptManifest(raw []byte) error {

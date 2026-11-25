@@ -10,7 +10,7 @@ import (
 // ControlPlane is what the broker asks of the Control Plane. It authorizes nothing; the
 // broker checks everything it receives.
 type ControlPlane interface {
-	Sync(ctx context.Context, manifestsAfter int) (*brokerproto.SyncReply, error)
+	Sync(ctx context.Context, req brokerproto.SyncRequest) (*brokerproto.SyncReply, error)
 	SyncAccount(ctx context.Context, account pqcrypto.UUID, afterVersion pqcrypto.Counter) (*brokerproto.AccountState, error)
 	Reserve(ctx context.Context, account, op pqcrypto.UUID, reported pqcrypto.Counter) (pqcrypto.Counter, error)
 	StoreEnvelope(ctx context.Context, op pqcrypto.UUID, envelope []byte) error
@@ -25,9 +25,9 @@ type channelCP struct{ c *brokerproto.Conn }
 // NewChannelCP wraps an open channel.
 func NewChannelCP(c *brokerproto.Conn) ControlPlane { return channelCP{c} }
 
-func (c channelCP) Sync(ctx context.Context, manifestsAfter int) (*brokerproto.SyncReply, error) {
+func (c channelCP) Sync(ctx context.Context, req brokerproto.SyncRequest) (*brokerproto.SyncReply, error) {
 	var r brokerproto.SyncReply
-	return &r, c.c.Call(ctx, brokerproto.MsgSync, brokerproto.SyncRequest{ManifestsAfter: manifestsAfter}, &r)
+	return &r, c.c.Call(ctx, brokerproto.MsgSync, req, &r)
 }
 
 func (c channelCP) SyncAccount(ctx context.Context, account pqcrypto.UUID, afterVersion pqcrypto.Counter) (*brokerproto.AccountState, error) {
