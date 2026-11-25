@@ -8,7 +8,8 @@ import (
 
 // reportingSessionRoutes are the reporting routes open to any session (method and path).
 var reportingSessionRoutes = [][2]string{{"GET", "/api/attributes"},
-	{"GET", "/api/reports/scorecard"}, {"GET", "/api/reports/scorecard?format=json"}, {"GET", "/api/reports/scorecard?format=csv"}}
+	{"GET", "/api/reports/scorecard"}, {"GET", "/api/reports/scorecard?format=json"}, {"GET", "/api/reports/scorecard?format=csv"},
+	{"GET", "/api/policy-drafts"}, {"GET", "/api/policy-drafts/x"}, {"POST", "/api/policy-drafts/x/signatures"}, {"GET", "/api/trust"}}
 
 // Spec §7.4: a break-glass session reads no reporting data until it states its reason.
 func TestReportingRoutesWaitForBreakGlassReason(t *testing.T) {

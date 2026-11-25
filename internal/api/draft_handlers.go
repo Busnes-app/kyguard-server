@@ -19,12 +19,12 @@ func (s *Server) draftRoutes() {
 	// TODO(hawthorn §7.5): classify + fresh(StepupWindow).
 	s.mux.HandleFunc("DELETE /api/policy-drafts/{id}", s.requireAdmin(s.handleDeleteDraft))
 	// TODO(hawthorn §7.5): classify (session). Custodians fetch and sign from kyguard-cli.
-	s.mux.HandleFunc("GET /api/policy-drafts", s.requireAuthenticated(s.handleListDrafts))
-	s.mux.HandleFunc("GET /api/policy-drafts/{id}", s.requireAuthenticated(s.handleGetDraft))
+	s.mux.HandleFunc("GET /api/policy-drafts", s.requireSession(s.handleListDrafts))
+	s.mux.HandleFunc("GET /api/policy-drafts/{id}", s.requireSession(s.handleGetDraft))
 	// Signatures carry their own authority; the session only identifies the submitter.
-	s.mux.HandleFunc("POST /api/policy-drafts/{id}/signatures", s.requireAuthenticated(s.handleSignDraft))
+	s.mux.HandleFunc("POST /api/policy-drafts/{id}/signatures", s.requireSession(s.handleSignDraft))
 	s.mux.HandleFunc("GET /api/principals", s.requireAdmin(s.handleListPrincipals))
-	s.mux.HandleFunc("GET /api/trust", s.requireAuthenticated(s.handleTrustSummary))
+	s.mux.HandleFunc("GET /api/trust", s.requireSession(s.handleTrustSummary))
 }
 
 type draftRequest struct {
