@@ -240,3 +240,17 @@ contradicts itself. Each names its section. The most secure reading wins.
     strictly, is in the 1A slice and names the bundle's deployment and the account's own
     account and asset. It stores the canonical bytes, so the digest a Custodian sees is the
     digest of the stored row.
+205. §8.1 (overdue). An account is `overdue` when the newest occurrence due at least one
+    `interval_seconds` ago came after its last `release` receipt (Control Plane time).
+206. §8.1 (one health value). Health is a single value: a non-`healthy` broker report wins,
+    then `checkout_open`, `pending_first_rotation`, `overdue`, else `healthy`. It never
+    changes the class.
+207. §8.3 (listed on in the policy). A non-admin is listed when a principal in any of the
+    current policy's principal lists has a verified `KeyEnrollmentManifest` whose issuer
+    and subject are the caller's own; a subject alone never matches. This build knows the
+    issuer only for KySignOn sign-ins (`KY_KYSIGNON_ISSUER`); every other caller sees only
+    accounts they own until `users.sso_issuer` (§7.2) is joined in.
+208. §8.3 (what is audited). The dashboard view is not an export and is not audited; every
+    `format=json` or `format=csv` download is, before its body is sent. CSV cells that a
+    spreadsheet would run as a formula are prefixed with `'`.
+

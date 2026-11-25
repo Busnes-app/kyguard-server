@@ -351,6 +351,7 @@ func (s *Server) routes() {
 	s.enrollRoutes()
 	s.txRoutes()
 	s.inventoryRoutes()
+	s.reportRoutes()
 
 	s.mux.Handle("/saml/", http.NotFoundHandler())
 

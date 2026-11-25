@@ -81,6 +81,7 @@ Owns data models, store interfaces (`UserStore`, `SessionStore`, `GroupStore`, `
   source differs from the definition's (`ErrInvalid`), an enum value outside the list and
   an unknown entity; `UpdateDefinition` refuses removing an enum value in use
   (`ErrConflict`). Both tables are in `migrationTables`; the migration seeds nothing.
+  `ReportFacts`, `RecentRuns` and `RecentLeases` are the reporting reads.
 
 ## Verification
 - `go test -v ./internal/store/...`
