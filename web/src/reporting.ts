@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { secureFetch } from './api';
 
 // Shapes of the reporting API (docs/INTERFACES.md, spec §8). The browser never handles a
@@ -71,10 +71,13 @@ export function useJSON<T>(url: string | null): { data: T | null; error: string;
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState('');
   const [tick, setTick] = useState(0);
+  const shown = useRef<string | null>(null);
   const reload = useCallback(() => setTick((t) => t + 1), []);
   useEffect(() => {
-    // Never show the previous query's rows as the current ones (exports follow the URL).
-    setData(null);
+    // Never show another query's rows as the current ones (exports follow the URL); a reload
+    // of the same URL keeps them until the answer arrives.
+    if (shown.current !== url) setData(null);
+    shown.current = url;
     if (!url) return;
     let live = true;
     fetch(url)
@@ -100,12 +103,16 @@ export async function errorText(r: Response): Promise<string> {
 
 // send writes JSON with the CSRF header and returns the server's refusal text, or ''.
 export async function send(method: string, url: string, body?: unknown): Promise<string> {
-  const r = await secureFetch(url, {
-    method,
-    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  return r.ok ? '' : errorText(r);
+  try {
+    const r = await secureFetch(url, {
+      method,
+      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    return r.ok ? '' : errorText(r);
+  } catch {
+    return 'Could not reach the server; nothing was saved.';
+  }
 }
 
 // The filter is a query string; dashboard, table and exports share it (spec §8.3).

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Download, Plus, X } from 'lucide-react';
 import { ClassBadge, HealthBadge, TrafficLight } from '../components/TrafficLight';
 import { secureFetch } from '../api';
@@ -169,7 +169,12 @@ const AddAccount: React.FC<{ onDone: () => void }> = ({ onDone }) => {
 };
 
 async function fetchJSON(method: string, url: string, body: unknown): Promise<any | string> {
-  const r = await secureFetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  let r: Response;
+  try {
+    r = await secureFetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  } catch {
+    return 'Could not reach the server; nothing was saved.';
+  }
   const j = await r.json().catch(() => ({}));
   return r.ok ? j : j.error || `HTTP ${r.status}`;
 }
@@ -189,10 +194,16 @@ const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onCl
   const [err, setErr] = useState('');
   const act = async (fail: Promise<string>) => { const f = await fail; setErr(f); if (!f) detail.reload(); };
   const d = detail.data;
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dlg = ref.current;
+    if (dlg && !dlg.open) dlg.showModal?.();
+    return () => dlg?.close?.();
+  }, []);
 
   return (
-    <div className="modal-backdrop" role="presentation" onClick={onClose}>
-      <div className="modal-window kg-detail" role="dialog" aria-modal="true" aria-label="Account details" onClick={(e) => e.stopPropagation()}>
+    // A native modal dialog: focus moves in and stays in, Escape closes it, focus returns.
+    <dialog ref={ref} className="modal-window kg-detail" aria-label="Account details" onClose={onClose}>
         <div className="panel-header">
           <h3>{d ? `${d.account.asset_name} / ${d.account.Name}` : 'Account'}</h3>
           <button type="button" className="btn-secondary" onClick={onClose} aria-label="Close"><X size={16} /></button>
@@ -245,7 +256,6 @@ const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onCl
             </div>
           </div>
         )}
-      </div>
-    </div>
+    </dialog>
   );
 };

@@ -74,3 +74,9 @@ it('defaults the first rotation to local time', async () => {
   const d = new Date(2026, 10, 25, 9, 5);
   expect(localInput(d)).toBe('2026-11-25T09:05');
 });
+
+it('reports a write that never reached the server', async () => {
+  const { send } = await import('../reporting');
+  vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch'); }));
+  expect(await send('PATCH', '/api/accounts/x', { status: 'active' })).toMatch(/Could not reach the server/);
+});
