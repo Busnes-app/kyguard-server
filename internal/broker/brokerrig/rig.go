@@ -37,6 +37,7 @@ type Options struct {
 	ConnectorType string                                                                      // default ssh_passwd
 	Target        func(cp *brokertest.CP, acct, asset pqcrypto.UUID) ([]byte, pqcrypto.HexID) // default: an SSH descriptor
 	Password      string                                                                      // the v1 password
+	NoSeed        bool                                                                        // no v1: the account awaits its first enrollment
 	Edit          []func(*pqcrypto.PolicyManifest)
 }
 
@@ -72,7 +73,9 @@ func New(t *testing.T, o Options) *Rig {
 	}
 	j.Close()
 	r.CPW = broker.NewChannelCP(b.Conn)
-	r.seed()
+	if !o.NoSeed {
+		r.seed()
+	}
 	m := r.Machine()
 	defer m.J.Close()
 	if err := m.Sync(context.Background()); err != nil {
@@ -115,7 +118,7 @@ func (r *Rig) seed() {
 		rs = append(rs, &store.StoredReceipt{EnvelopeID: string(e.EnvelopeID), ReceiptSeq: uint64(i + 1), ReceiptType: typ, OperationID: string(op), Digest: string(dg.Hex()), PrevReceiptHash: string(prev), Receipt: pqtest.Canon(t, rc)})
 		prev = dg.Hex()
 	}
-	if err := v.Complete(ctx, string(op), string(r.Pol.AccountID), rs, string(e.EnvelopeID), "", true); err != nil {
+	if err := v.Complete(ctx, string(op), string(r.Pol.AccountID), rs, string(e.EnvelopeID), "", store.LockDelete); err != nil {
 		t.Fatal(err)
 	}
 }

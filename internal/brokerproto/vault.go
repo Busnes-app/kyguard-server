@@ -45,6 +45,8 @@ func (l *Listener) handle(ctx context.Context, b *store.Broker, m Message) (any,
 			err = l.receipts(ctx, tr, b, m.Body)
 		case MsgStatus:
 			err = l.status(ctx, tr, b, m.Body)
+		case MsgAccept:
+			err = l.accept(ctx, tr, b, m.Body)
 		default:
 			err = errUnsupported
 		}
@@ -260,7 +262,7 @@ func (l *Listener) receipts(ctx context.Context, tr *pqcrypto.Trust, b *store.Br
 	}
 	chains := map[pqcrypto.UUID]*pqcrypto.Chain{}
 	var out []*store.StoredReceipt
-	current, runState, release := "", "", false
+	current, runState, lock := "", "", store.LockKeep
 	for _, raw := range req.Receipts {
 		var peek struct {
 			EnvelopeID pqcrypto.UUID    `json:"envelope_id"`
@@ -303,16 +305,22 @@ func (l *Listener) receipts(ctx context.Context, tr *pqcrypto.Trust, b *store.Br
 		}
 		out = append(out, &store.StoredReceipt{EnvelopeID: string(r.EnvelopeID), ReceiptSeq: uint64(r.ReceiptSeq), ReceiptType: r.ReceiptType,
 			OperationID: string(r.OperationID), Digest: string(ch.Head), PrevReceiptHash: string(prev), Receipt: canon})
-		switch r.ReceiptType {
-		case pqcrypto.ReceiptCommitTarget:
+		switch {
+		case r.ReceiptType == pqcrypto.ReceiptCommitTarget:
 			runState = "target_verified"
-		case pqcrypto.ReceiptRelease:
-			current, runState, release = string(r.EnvelopeID), "release_authorized", true
-		case pqcrypto.ReceiptAbort:
-			runState, release = "aborted", true
+		case r.ReceiptType == pqcrypto.ReceiptRelease:
+			current, runState, lock = string(r.EnvelopeID), "release_authorized", store.LockDelete
+		case r.ReceiptType == pqcrypto.ReceiptVaultCommit: // a verified enrollment (§4.5 step 3)
+			current, lock = string(r.EnvelopeID), store.LockDelete
+		case r.Reason == pqcrypto.ReasonEnrollmentFailed: // §4.5 step 4: give the lock back
+			lock = store.LockRestore
+		case r.Reason == pqcrypto.ReasonSuperseded:
+			// Part of an enrollment commit; its vault_commit decides the lock.
+		case r.ReceiptType == pqcrypto.ReceiptAbort:
+			runState, lock = "aborted", store.LockDelete
 		}
 	}
-	return l.Store.Vault().Complete(ctx, string(req.OperationID), string(req.AccountID), out, current, runState, release)
+	return l.Store.Vault().Complete(ctx, string(req.OperationID), string(req.AccountID), out, current, runState, lock)
 }
 
 func (l *Listener) status(ctx context.Context, tr *pqcrypto.Trust, b *store.Broker, body json.RawMessage) error {
@@ -327,7 +335,7 @@ func (l *Listener) status(ctx context.Context, tr *pqcrypto.Trust, b *store.Brok
 		return err
 	}
 	if req.RunState == "write_outcome_unknown" && req.OperationID.Valid() {
-		return l.Store.Vault().Complete(ctx, string(req.OperationID), string(req.AccountID), nil, "", req.RunState, false)
+		return l.Store.Vault().Complete(ctx, string(req.OperationID), string(req.AccountID), nil, "", req.RunState, store.LockKeep)
 	}
 	return nil
 }
@@ -346,4 +354,15 @@ func digestOf(raw []byte) string {
 		return ""
 	}
 	return string(d.Hex())
+}
+
+func (l *Listener) accept(ctx context.Context, tr *pqcrypto.Trust, b *store.Broker, body json.RawMessage) error {
+	var req AcceptRequest
+	if err := decode(body, &req); err != nil {
+		return err
+	}
+	if _, _, err := l.account(ctx, tr, b, req.AccountID); err != nil {
+		return err
+	}
+	return l.Store.Vault().AcceptEnrollment(ctx, string(req.AccountID), string(req.OperationID), l.now())
 }

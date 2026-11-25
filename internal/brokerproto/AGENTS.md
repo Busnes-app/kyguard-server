@@ -37,6 +37,9 @@ Owns `/broker/v1/*`. It is never mounted on the main mux. Signed-object rules ar
   time and lists the pool's accounts on the last page; `sync_account` returns one account's
   chains above the broker's version plus its current and unterminated ones. Never return a
   whole history in one frame.
+- Enrollment: `accept` is the §4.5 acceptance CAS; `enroll` is a push of the relayed
+  transaction and candidate. A receipts request ending an enrollment releases its lock by
+  `vault_commit` (delete) or `enrollment_failed` (restore the displaced holder).
 - `CreateCA` never replaces existing files; `LoadCA` refuses a key that is not the
   certificate's.
 

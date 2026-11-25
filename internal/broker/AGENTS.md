@@ -44,6 +44,15 @@ the wire and TLS are `internal/brokerproto`'s.
   until a new policy epoch. A minimum age above the interval runs nothing
   (`schedule_below_min_age`). Nudges only call `Tick` early; `Schedule` also ticks every
   minute without them.
+- Enrollment (`enroll.go`, §4.5): `Enroll` refuses before journaling or touching a target
+  anything `VerifyTx` (enrollers, replay, versions, candidate digest) or `VerifyEnvelope`
+  (`New`, with the transaction) refuses, and an open rotation on a healthy account. Then:
+  journal candidate and transaction → Control Plane `accept` (without it, fail and never
+  bind) → journal `accept_ack` and burn `request_id` together → journal verify-start → one
+  login → commit (abort `superseded_by_reenrollment` on every unterminated envelope, the
+  stuck run's included, plus `vault_commit`) or fail (abort `enrollment_failed` on the
+  candidate only). A restart never binds twice. An open enrollment blocks rotation.
+  Lease reset evidence (§4.5 step 3) arrives with checkout leases.
 - `Machine.Hook` is a test-only crash point; it must never be set in production.
 - Connectors implement `Connector`/`Session` (`connector.go`); `ErrAuthFailed` and
   `ErrRefused` are the only deterministic outcomes, any other error is ambiguous.

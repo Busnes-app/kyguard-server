@@ -64,6 +64,11 @@ Owns data models, store interfaces (`UserStore`, `SessionStore`, `GroupStore`, `
   compare-and-swap on `(seq = head + 1, prev = head hash)`; a byte-identical re-append is a
   no-op. `Complete` appends, moves the current envelope and deletes the lock by
   `operation_id` in one transaction.
+- Enrollment (migration 102): `ReserveEnrollment` moves the lock to the enrollment
+  operation (allowed with no lock or a quarantined account) and keeps the holder it
+  displaced; a reservation still `reserved` after 15 minutes is restored by
+  `ExpireEnrollments` (and lazily, in its own transaction, before any reserve or accept);
+  `accepted` never expires; `Complete(..., LockRestore)` reinstates the displaced holder.
 
 ## Verification
 - `go test -v ./internal/store/...`

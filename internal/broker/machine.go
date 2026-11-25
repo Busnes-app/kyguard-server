@@ -188,7 +188,7 @@ func (m *Machine) Rotate(ctx context.Context, account pqcrypto.UUID, occurrence 
 	if a.Quarantined {
 		return ErrQuarantined
 	}
-	if a.Run.Open() {
+	if a.Run.Open() || a.Enrollment.Open() {
 		return ErrBlocked
 	}
 	rc, err := m.rotationContext(a)
@@ -551,6 +551,9 @@ func (m *Machine) Recover(ctx context.Context) error {
 	for _, a := range accts {
 		if err := m.recover(ctx, a); err != nil {
 			errs = append(errs, fmt.Errorf("account %s: %w", a.ID, err))
+		}
+		if err := m.recoverEnrollment(ctx, a); err != nil {
+			errs = append(errs, fmt.Errorf("account %s enrollment: %w", a.ID, err))
 		}
 	}
 	return errors.Join(errs...)
