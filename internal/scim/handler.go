@@ -94,6 +94,11 @@ type userResourceHandler struct {
 	mu sync.Mutex
 }
 
+// errNoIssuer refuses an externalId while no issuer is configured: identity is (issuer,
+// subject), and a subject without an issuer would stop the next start (spec §7.2).
+var errNoIssuer = protocolErrors.ScimError{ScimType: protocolErrors.ScimTypeInvalidValue, Status: http.StatusBadRequest,
+	Detail: "externalId needs KY_SCIM_ISSUER or KY_KYSIGNON_ISSUER to be set"}
+
 // errAdminGrant refuses a SCIM write that would make an account an administrator.
 var errAdminGrant = protocolErrors.ScimError{ScimType: protocolErrors.ScimTypeInvalidValue, Status: http.StatusBadRequest,
 	Detail: "SCIM may not grant the admin role; KyGuard admin comes only from the per-app roles claim at sign-in"}
@@ -126,6 +131,9 @@ func (h *userResourceHandler) Create(r *http.Request, attrs protocol.ResourceAtt
 	user := &store.User{ID: "usr_" + crypto.RandomHex(12), Username: username, Email: primaryValue(attrs["emails"]), DisplayName: stringValue(attrs, "displayName", username), Role: primaryValue(attrs["roles"]), Status: statusFromActive(attrs), SSOProvider: "scim", SSOSubject: stringValue(attrs, "externalId", ""), SSOIssuer: h.issuer, SCIMManaged: true}
 	if user.Role == "" {
 		user.Role = "user"
+	}
+	if user.SSOSubject != "" && h.issuer == "" {
+		return protocol.Resource{}, errNoIssuer
 	}
 	if existing, err := h.kyIdentityAccount(r, user.SSOSubject, username); err != nil {
 		return protocol.Resource{}, err
@@ -424,6 +432,12 @@ func (h *userResourceHandler) update(r *http.Request, id string, change func(*st
 		// keeps its sign-in subject.
 		if user.SSOProvider != "scim" {
 			user.SSOSubject = oldSubject
+		} else if user.SSOSubject != "" && user.SSOIssuer == "" {
+			// A row created before an issuer was set takes it with its first subject.
+			if h.issuer == "" {
+				return protocol.Resource{}, errNoIssuer
+			}
+			user.SSOIssuer = h.issuer
 		}
 		err = h.store.Users().UpdateSCIMProfile(r.Context(), user, oldRole, oldStatus, oldSubject)
 		if errors.Is(err, store.ErrConflict) && attempt < 3 {

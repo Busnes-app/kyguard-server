@@ -139,7 +139,7 @@ func prepareStart(ctx context.Context, cfg *config.Config, st store.Store) error
 	if n, err := st.Users().CountUnissuedIdentities(ctx); err != nil {
 		return err
 	} else if n > 0 {
-		return fmt.Errorf("%d accounts have an SSO subject but no issuer (created before migration 13); set users.sso_issuer for each to its identity provider's issuer, then start again", n)
+		return fmt.Errorf("%d accounts have an SSO subject but no issuer (created before migration 13); set users.sso_issuer for each to its identity provider's issuer (delete or merge any two rows for the same person first: one issuer and subject may name one account), then start again", n)
 	}
 	if n, err := backup.RemoveStaleSnapshots(cfg.Database.DataDir); err != nil {
 		log.Printf("[BACKUP] leftover snapshot scratch under %s not removed: %v", cfg.Database.DataDir, err)

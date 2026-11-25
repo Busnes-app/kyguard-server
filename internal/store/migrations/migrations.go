@@ -411,11 +411,13 @@ CREATE INDEX idx_totp_attempts_session ON totp_attempts(session_hash) WHERE sess
 		// Identity is (issuer, subject), never subject alone (spec §7.2): two issuers with the
 		// same subject are two people. Sessions record the issuer of their login, and both
 		// back-channel logout fences are keyed by issuer. The fences are short-lived (minutes),
-		// so the old provider-keyed tables are replaced rather than converted.
+		// so the old provider-keyed tables are replaced rather than converted. Older rows get
+		// an empty issuer and may share a subject across providers, so the unique index skips
+		// them; the start refuses them until an operator sets each issuer.
 		Version: 13,
 		Name:    "kyguard_sso_issuer",
 		SQLite: `ALTER TABLE users ADD COLUMN sso_issuer TEXT NOT NULL DEFAULT '';
-CREATE UNIQUE INDEX idx_users_sso_identity ON users(sso_issuer, sso_subject) WHERE sso_subject <> '';
+CREATE UNIQUE INDEX idx_users_sso_identity ON users(sso_issuer, sso_subject) WHERE sso_subject <> '' AND sso_issuer <> '';
 ALTER TABLE sessions ADD COLUMN sso_issuer TEXT NOT NULL DEFAULT '';
 DROP TABLE sso_logouts;
 CREATE TABLE sso_logouts (
@@ -433,7 +435,7 @@ CREATE TABLE sso_subject_logouts (
     PRIMARY KEY (issuer, subject)
 );`,
 		Postgres: `ALTER TABLE users ADD COLUMN sso_issuer TEXT NOT NULL DEFAULT '';
-CREATE UNIQUE INDEX idx_users_sso_identity ON users(sso_issuer, sso_subject) WHERE sso_subject <> '';
+CREATE UNIQUE INDEX idx_users_sso_identity ON users(sso_issuer, sso_subject) WHERE sso_subject <> '' AND sso_issuer <> '';
 ALTER TABLE sessions ADD COLUMN sso_issuer TEXT NOT NULL DEFAULT '';
 DROP TABLE sso_logouts;
 CREATE TABLE sso_logouts (

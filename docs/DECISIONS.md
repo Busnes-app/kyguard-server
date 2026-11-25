@@ -38,7 +38,10 @@ contradicts itself. Each names its section. The most secure reading wins.
    one; the spec states only the 120-second age limit.
 12. §7.2 (legacy identities). A database with SSO subjects but no issuer (rows from before
    migration 13) is refused at startup with instructions to set `users.sso_issuer`, rather than
-   guessing an issuer. No KyGuard install predates the migration.
+   guessing an issuer. No KyGuard install predates the migration. Those rows may share a subject
+   across providers, so the unique `(sso_issuer, sso_subject)` index skips rows with no issuer:
+   the migration applies, and the index refuses a duplicate once issuers are set. SCIM refuses
+   an `externalId` while no issuer is configured, so it never writes such a row.
 12a. §7.2 (fence migration). Migration 13 replaces the sid- and provider-keyed fence tables with
    issuer-keyed ones instead of converting rows: fences live ten minutes and no KyGuard
    install exists.

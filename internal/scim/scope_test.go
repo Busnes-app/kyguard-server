@@ -22,11 +22,16 @@ func scopedSCIM(t *testing.T) (store.Store, func(method, path string, body any) 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	srv := scim.NewServer(st, config.SCIMConfig{Enabled: true, BearerToken: "tok", Issuer: testIssuer}, "http://localhost:8080")
+	return st, scimFor(st, testIssuer)
+}
+
+// scimFor serves SCIM over st with issuer as the configured SSO issuer.
+func scimFor(st store.Store, issuer string) func(method, path string, body any) *httptest.ResponseRecorder {
+	srv := scim.NewServer(st, config.SCIMConfig{Enabled: true, BearerToken: "tok", Issuer: issuer}, "http://localhost:8080")
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 	h := srv.AuthMiddleware(mux)
-	return st, func(method, path string, body any) *httptest.ResponseRecorder {
+	return func(method, path string, body any) *httptest.ResponseRecorder {
 		var raw []byte
 		if body != nil {
 			raw, _ = json.Marshal(body)

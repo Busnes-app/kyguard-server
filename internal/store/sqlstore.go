@@ -313,13 +313,15 @@ WHERE id = ? AND role = ? AND status = ?`,
 }
 
 // UpdateSCIMProfile is UpdateUserProfile that also compares the subject read and, while the row is
-// still "scim", writes user.SSOSubject, all in the one statement.
+// still "scim", writes user.SSOSubject (and user.SSOIssuer over an empty one), all in the one
+// statement.
 func (u *userStore) UpdateSCIMProfile(ctx context.Context, user *User, prevRole, prevStatus, prevSubject string) error {
 	user.UpdatedAt = time.Now().UTC()
 	return u.updateProfile(ctx, user, prevRole, prevStatus, true, profileSet+`,
-    sso_subject = CASE WHEN sso_provider = 'scim' THEN ? ELSE sso_subject END
+    sso_subject = CASE WHEN sso_provider = 'scim' THEN ? ELSE sso_subject END,
+    sso_issuer = CASE WHEN sso_provider = 'scim' AND sso_issuer = '' THEN ? ELSE sso_issuer END
 WHERE id = ? AND role = ? AND status = ? AND sso_subject = ?`,
-		user.Username, user.Email, user.DisplayName, user.Role, user.Status, user.UpdatedAt, user.SSOSubject, user.ID, prevRole, prevStatus, prevSubject)
+		user.Username, user.Email, user.DisplayName, user.Role, user.Status, user.UpdatedAt, user.SSOSubject, user.SSOIssuer, user.ID, prevRole, prevStatus, prevSubject)
 }
 
 func (u *userStore) TakeOverForSCIM(ctx context.Context, user *User, prevRole, prevStatus string) error {
