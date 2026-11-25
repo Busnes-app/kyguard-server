@@ -287,7 +287,10 @@ func (s *Server) handleSignDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	audit := s.audit(r, "policy.draft_signed", "account:"+d.AccountID, map[string]any{"digest": d.Digest, "signatures": len(pm.Signatures), "complete": complete})
 	if !complete {
-		if err := s.store.Drafts().SetDraftObject(ctx, d.ID, d.Digest, canon, audit); err != nil {
+		if err := s.store.Drafts().SetDraftObject(ctx, d.ID, d.Object, canon, audit); errors.Is(err, store.ErrConflict) {
+			s.writeError(w, http.StatusConflict, "the draft changed meanwhile; fetch it again and re-sign")
+			return
+		} else if err != nil {
 			s.inventoryError(w, err, "policy draft")
 			return
 		}

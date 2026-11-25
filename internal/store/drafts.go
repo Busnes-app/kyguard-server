@@ -14,9 +14,10 @@ type DraftStore interface {
 	GetDraft(ctx context.Context, id string) (*PolicyDraft, error)
 	// PutDraft replaces the account's draft (signatures and all) or creates it.
 	PutDraft(ctx context.Context, d *PolicyDraft, audit *AuditRecord) error
-	// SetDraftObject stores a re-signed object for the same digest; ErrConflict when the
-	// draft is gone or now has another digest.
-	SetDraftObject(ctx context.Context, id, digest string, object []byte, audit *AuditRecord) error
+	// SetDraftObject replaces the stored object only while it is still prev, the object the
+	// caller checked; ErrConflict when the draft is gone or changed meanwhile. The digest
+	// leaves signatures out, so it cannot detect a concurrent signature change.
+	SetDraftObject(ctx context.Context, id string, prev, object []byte, audit *AuditRecord) error
 	DeleteDraft(ctx context.Context, id string, audit *AuditRecord) error
 }
 
@@ -86,9 +87,9 @@ func (v draftStore) PutDraft(ctx context.Context, d *PolicyDraft, audit *AuditRe
 	})
 }
 
-func (v draftStore) SetDraftObject(ctx context.Context, id, digest string, object []byte, audit *AuditRecord) error {
+func (v draftStore) SetDraftObject(ctx context.Context, id string, prev, object []byte, audit *AuditRecord) error {
 	return v.s.inTx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, v.s.rebind(`UPDATE policy_drafts SET object = ?, updated_at = ? WHERE id = ? AND digest = ?`), string(object), time.Now().UTC(), id, digest)
+		res, err := tx.ExecContext(ctx, v.s.rebind(`UPDATE policy_drafts SET object = ?, updated_at = ? WHERE id = ? AND object = ?`), string(object), time.Now().UTC(), id, string(prev))
 		if err != nil {
 			return err
 		}

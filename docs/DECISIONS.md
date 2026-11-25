@@ -268,5 +268,6 @@ contradicts itself. Each names its section. The most secure reading wins.
 211. §3.2 rule 1 (collecting signatures). A returned draft must have the stored digest and
     keep every signature already collected; at quorum the Control Plane submits it as a
     manifest through the normal admission path and deletes the draft. The Control Plane
-    never adds a signature itself.
-
+    never adds a signature itself. Storing a below-quorum copy is a compare-and-swap on the
+    exact object that was checked, so two submissions from one snapshot cannot overwrite
+    each other's signatures; the loser gets 409 and re-fetches.

@@ -87,7 +87,8 @@ Owns data models, store interfaces (`UserStore`, `SessionStore`, `GroupStore`, `
   transaction; each key needs an existing `scim` definition, otherwise the whole write rolls
   back (`ErrInvalid`).
 - `Drafts()` (`drafts.go`, migration 201): one `policy_drafts` row per account (canonical
-  object, digest, epoch). `SetDraftObject` is a compare-and-swap on the digest.
+  object, digest, epoch). `SetDraftObject` is a compare-and-swap on the whole stored
+  object (the digest leaves signatures out).
 
 ## Verification
 - `go test -v ./internal/store/...`
