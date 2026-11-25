@@ -27,7 +27,8 @@ Owns local persistence adapters and bearer authentication; the library owns `/sc
   omitted one is cleared), PATCH changes only what its operations touch (paths with or
   without the extension URI, `manager.value`, and path-less value maps). Values are trimmed,
   stripped of control characters and cut to 256 characters. A failed attribute write fails
-  the request so the IdP retries. Delete first runs `Inventory().ForgetUser` (accounts
+  the request so the IdP retries; on create it also removes the new user first, so the
+  retry starts clean. Manager sub-attributes other than `value` are ignored. Delete first runs `Inventory().ForgetUser` (accounts
   become unowned, values go), because `accounts.owner_user_id` references the user.
 - SCIM protocol models and parsing must come from `github.com/elimity-com/scim`; do not add parallel local request/response implementations.
 

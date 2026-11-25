@@ -45,8 +45,11 @@ func (ch attrChanges) extension(ext map[string]interface{}) {
 		case "department":
 			ch.set("department", v)
 		case "manager":
+			// Only value is stored; a manager object without it (displayName, $ref) changes nothing.
 			if m, ok := v.(map[string]interface{}); ok {
-				ch.set("manager", m["value"])
+				if val, has := m["value"]; has {
+					ch.set("manager", val)
+				}
 			} else {
 				ch["manager"] = nil
 			}
@@ -103,12 +106,17 @@ func fromPatch(ops []protocol.PatchOperation) attrChanges {
 		default:
 			continue
 		}
+		if p.SubAttribute != nil && !strings.EqualFold(*p.SubAttribute, "value") {
+			continue // manager.displayName or manager.$ref: not stored
+		}
 		switch {
 		case remove:
 			ch[key] = nil
 		case key == "manager" && p.SubAttribute == nil:
 			if m, ok := op.Value.(map[string]interface{}); ok {
-				ch.set(key, m["value"])
+				if val, has := m["value"]; has {
+					ch.set(key, val)
+				}
 			} else {
 				ch.set(key, op.Value)
 			}

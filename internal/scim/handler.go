@@ -139,6 +139,10 @@ func (h *userResourceHandler) Create(r *http.Request, attrs protocol.ResourceAtt
 	}
 	_ = h.store.Audit().LogAudit(r.Context(), &store.AuditRecord{UserID: user.ID, Action: "scim.user.create", Resource: user.Username})
 	if err := syncAttributes(r.Context(), h.store, user.ID, fromResource(attrs)); err != nil {
+		// All or nothing, so the IdP's retry of the create starts clean.
+		if ferr := h.store.Inventory().ForgetUser(r.Context(), user.ID, &store.AuditRecord{UserID: user.ID, Action: "scim.user.forget", Resource: "user:" + user.ID}); ferr == nil {
+			_ = h.store.Users().DeleteUser(r.Context(), user.ID)
+		}
 		return protocol.Resource{}, err
 	}
 	return userResource(user), nil

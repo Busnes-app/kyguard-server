@@ -47,6 +47,19 @@ func TestEnterpriseUserAttributes(t *testing.T) {
 		return vals[id]
 	}
 
+	// A create whose attributes cannot be written leaves no user behind, so a retry works.
+	if _, err := st.Inventory().EnsureDefinition(ctx, &store.AttributeDefinition{ID: "blocker", Entity: store.EntityUser, Key: "title", Label: "T", Type: store.AttrString, Source: store.SourceAdmin}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if w := do("POST", "/scim/v2/Users", map[string]any{"schemas": []string{scim.SchemaUser}, "userName": "fay", "active": true, "title": "CTO"}); w.Code < 400 {
+		t.Fatalf("create with a failing attribute write: %d", w.Code)
+	}
+	if _, err := st.Users().GetUserByUsername(ctx, "fay"); err == nil {
+		t.Fatal("half-created user left behind")
+	}
+	if err := st.Inventory().DeleteDefinition(ctx, "blocker", nil); err != nil {
+		t.Fatal(err)
+	}
 	w := do("POST", "/scim/v2/Users", map[string]any{
 		"schemas":  []string{scim.SchemaUser, scim.SchemaEnterpriseUser},
 		"userName": "erin", "active": true, "title": "DBA", "externalId": "erin-1",
@@ -83,6 +96,13 @@ func TestEnterpriseUserAttributes(t *testing.T) {
 	if a := attrs(res.ID); a["manager"] != "mgr-9" {
 		t.Fatalf("manager.value %v", a)
 	}
+	// manager.displayName and $ref are not stored: changing them leaves the manager alone.
+	patch(map[string]any{"op": "replace", "path": scim.SchemaEnterpriseUser + ":manager.displayName", "value": "Mona"},
+		map[string]any{"op": "remove", "path": scim.SchemaEnterpriseUser + ":manager.$ref"},
+		map[string]any{"op": "replace", "value": map[string]any{scim.SchemaEnterpriseUser: map[string]any{"manager": map[string]any{"displayName": "Mona"}}}})
+	if a := attrs(res.ID); a["manager"] != "mgr-9" {
+		t.Fatalf("manager sub-attribute changed the manager: %v", a)
+	}
 
 	// A PUT is the whole resource: what it omits is cleared.
 	if w := do("PUT", "/scim/v2/Users/"+res.ID, map[string]any{"schemas": []string{scim.SchemaUser}, "userName": "erin", "active": true, "externalId": "erin-1",
@@ -109,4 +129,5 @@ func TestEnterpriseUserAttributes(t *testing.T) {
 	if a := attrs(res.ID); len(a) != 0 {
 		t.Fatalf("attributes outlived the user: %v", a)
 	}
+
 }
