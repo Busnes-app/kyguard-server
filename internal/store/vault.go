@@ -1,14 +1,40 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
+	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ErrLocked means another operation holds the account's rotation lock.
 var ErrLocked = errors.New("account rotation lock is held by another operation")
+
+// ErrTooLarge refuses a chain or descriptor over its size cap.
+var ErrTooLarge = errors.New("record over its size limit")
+
+// MaxChain bounds an envelope with all its receipts, and MaxDescriptor a target descriptor,
+// in canonical bytes, so one chain and its descriptor always fit one sync reply.
+// MaxEnvelope leaves room in the chain for a terminal receipt (abort, release or
+// vault_commit carry no extra recipients), so a stored envelope can always be finished
+// (security review of #15).
+const (
+	MaxChain      = 256 << 10
+	MaxDescriptor = 64 << 10
+	MaxEnvelope   = MaxChain - 32<<10
+)
+
+// ErrLeaseOpen refuses a policy that changes the target descriptor of an account with an
+// open checkout lease (§3.3); submit it again once the lease's cleanup has closed it.
+var ErrLeaseOpen = errors.New("a checkout lease is open for this account under another target descriptor")
+
+// ErrPolicyChanged refuses a new lease opened under a policy that is no longer current.
+var ErrPolicyChanged = errors.New("the lease's policy is not the account's current policy")
 
 // LockAction is what Complete does with the lock op holds.
 type LockAction int
@@ -26,7 +52,7 @@ type VaultStore interface {
 	CreateAsset(ctx context.Context, a *Asset) error
 	CreateAccount(ctx context.Context, a *Account) error
 	GetAccount(ctx context.Context, id string) (*Account, error)
-	PoolAccounts(ctx context.Context, poolID string) ([]*Account, error)
+	PoolAccounts(ctx context.Context, poolID, after string, limit int) ([]*Account, error)
 	// PutTargetDescriptor stores a descriptor by digest; storing it again is a no-op.
 	PutTargetDescriptor(ctx context.Context, digest, accountID string, raw []byte) error
 	TargetDescriptor(ctx context.Context, digest string) ([]byte, error)
@@ -45,10 +71,21 @@ type VaultStore interface {
 	EnvelopeByDigest(ctx context.Context, digest string) ([]byte, error)
 	// Chains returns every envelope of the account with its receipts in order.
 	Chains(ctx context.Context, accountID string) ([]*StoredChain, error)
+	// ChainsAfter returns at most limit envelopes of the account above version after, in
+	// version order, with their receipts.
+	ChainsAfter(ctx context.Context, accountID string, after uint64, limit int) ([]*StoredChain, error)
+	// OpenChains returns at most limit envelopes above version after and at or below upTo
+	// that are the account's current envelope or have no abort, release or vault_commit
+	// receipt, in version order, with their receipts.
+	OpenChains(ctx context.Context, accountID string, after, upTo uint64, limit int) ([]*StoredChain, error)
+	// Chain returns one envelope of the account with its receipts, or ErrNotFound.
+	Chain(ctx context.Context, accountID, envelopeID string) (*StoredChain, error)
 	// Complete appends receipts by compare-and-swap (a byte-identical re-append is a no-op),
-	// marks the run of every envelope an abort receipt names aborted, sets
-	// current_envelope_id when current is non-empty, moves op's run to runState when
-	// non-empty, and applies lock to the lock held by op. One transaction (§4.3 rule 7, §4.5).
+	// marks the run of every envelope a new abort receipt names aborted, sets
+	// current_envelope_id when current is non-empty and above the current version, moves
+	// op's run to runState when non-empty, and applies lock to the lock held by op. One
+	// transaction (§4.3 rule 7, §4.5). Receipts that are all already stored change nothing
+	// else: a delayed duplicate never rewinds derived state.
 	Complete(ctx context.Context, op, accountID string, rs []*StoredReceipt, current, runState string, lock LockAction) error
 	// ReserveEnrollment moves the account's lock to op as a reserved enrollment with a new
 	// version, keeping the holder it displaces (a stuck rotation) to restore later. It is
@@ -76,6 +113,11 @@ type VaultStore interface {
 	TxAccount(ctx context.Context, requestID string) (string, error)
 	// PutTx stores a relayed transaction once.
 	PutTx(ctx context.Context, requestID, accountID, actionType, digest string, raw []byte) error
+	// QueuePush stores a Control Plane push for a broker until expires, for whichever
+	// replica holds the broker's channel; TakePushes removes and returns, oldest first, at
+	// most limit unexpired pushes for the broker. A push is taken once.
+	QueuePush(ctx context.Context, p *Push) error
+	TakePushes(ctx context.Context, brokerID string, limit int, now time.Time) ([]*Push, error)
 	SetHealth(ctx context.Context, accountID, health, reason string) error
 	// Lock returns the operation holding the account's lock, or "".
 	Lock(ctx context.Context, accountID string) (op string, version uint64, err error)
@@ -113,8 +155,11 @@ type Lease struct {
 	SecretVersion uint64
 	State         string
 	CloseReason   string
-	OpenedAt      time.Time
-	ExpiresAt     time.Time
+	// PolicyDigest and TargetDescriptorDigest are those the lease opened under (§3.3).
+	PolicyDigest           string
+	TargetDescriptorDigest string
+	OpenedAt               time.Time
+	ExpiresAt              time.Time
 }
 
 // TxMail is the Control Plane's relay mailbox for one transaction.
@@ -201,8 +246,9 @@ func (v vaultStore) GetAccount(ctx context.Context, id string) (*Account, error)
 	return scanAccount(v.s.db.QueryRowContext(ctx, v.s.rebind(`SELECT `+accountCols+` FROM accounts WHERE id = ?`), id))
 }
 
-func (v vaultStore) PoolAccounts(ctx context.Context, poolID string) ([]*Account, error) {
-	rows, err := v.s.db.QueryContext(ctx, v.s.rebind(`SELECT `+accountCols+` FROM accounts WHERE pool_id = ? ORDER BY id`), poolID)
+// PoolAccounts returns at most limit of the pool's accounts with IDs above after, by ID.
+func (v vaultStore) PoolAccounts(ctx context.Context, poolID, after string, limit int) ([]*Account, error) {
+	rows, err := v.s.db.QueryContext(ctx, v.s.rebind(`SELECT `+accountCols+` FROM accounts WHERE pool_id = ? AND id > ? ORDER BY id LIMIT ?`), poolID, after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -219,6 +265,9 @@ func (v vaultStore) PoolAccounts(ctx context.Context, poolID string) ([]*Account
 }
 
 func (v vaultStore) PutTargetDescriptor(ctx context.Context, digest, accountID string, raw []byte) error {
+	if len(raw) > MaxDescriptor {
+		return ErrTooLarge
+	}
 	return v.s.inTx(ctx, func(tx *sql.Tx) error {
 		var n int
 		if err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT COUNT(1) FROM target_descriptors WHERE digest = ?`), digest).Scan(&n); err != nil || n > 0 {
@@ -281,6 +330,16 @@ func (v vaultStore) Reserve(ctx context.Context, accountID, op string, reported 
 		if holder != "" {
 			return ErrLocked
 		}
+		// An operation that already ended never reserves again: a late retry would take a new
+		// version and a lock nothing releases (PR Reviewer Guide on #10).
+		var ended int
+		if err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT COUNT(1) FROM envelope_receipts r JOIN secret_envelopes e ON e.envelope_id = r.envelope_id
+ WHERE r.operation_id = ? AND e.account_id = ?`), op, accountID).Scan(&ended); err != nil {
+			return err
+		}
+		if ended > 0 {
+			return ErrConflict
+		}
 		version = max(highest, reported) + 1
 		if version > 1<<63-1 {
 			return errors.New("secret_version exhausted")
@@ -310,7 +369,15 @@ func (v vaultStore) requireLock(ctx context.Context, tx *sql.Tx, accountID, op s
 }
 
 func (v vaultStore) PutEnvelope(ctx context.Context, op string, e *StoredEnvelope) error {
+	if len(e.Envelope) > MaxEnvelope {
+		return ErrTooLarge
+	}
 	return v.s.inTx(ctx, func(tx *sql.Tx) error {
+		// The account lock comes first, so a concurrent identical retry sees the first
+		// one's row and succeeds (PR Reviewer Guide on #10).
+		if _, err := v.lockAccount(ctx, tx, e.AccountID); err != nil {
+			return err
+		}
 		var have string
 		err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT envelope FROM secret_envelopes WHERE envelope_id = ?`), e.EnvelopeID).Scan(&have)
 		if err == nil {
@@ -333,6 +400,11 @@ func (v vaultStore) PutEnvelope(ctx context.Context, op string, e *StoredEnvelop
 
 func (v vaultStore) RecordIntent(ctx context.Context, r *RotationRun) error {
 	return v.s.inTx(ctx, func(tx *sql.Tx) error {
+		// The account lock comes first, so a concurrent identical retry sees the first
+		// one's row and succeeds (PR Reviewer Guide on #10).
+		if _, err := v.lockAccount(ctx, tx, r.AccountID); err != nil {
+			return err
+		}
 		var have string
 		err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT intent FROM rotation_runs WHERE account_id = ? AND operation_id = ?`), r.AccountID, r.OperationID).Scan(&have)
 		if err == nil {
@@ -355,7 +427,34 @@ func (v vaultStore) RecordIntent(ctx context.Context, r *RotationRun) error {
 }
 
 func (v vaultStore) Chains(ctx context.Context, accountID string) ([]*StoredChain, error) {
-	rows, err := v.s.db.QueryContext(ctx, v.s.rebind(`SELECT envelope_id, account_id, secret_version, envelope_kind, digest, envelope FROM secret_envelopes WHERE account_id = ? ORDER BY secret_version`), accountID)
+	return v.chainsWhere(ctx, `e.account_id = ? ORDER BY e.secret_version`, accountID)
+}
+
+func (v vaultStore) ChainsAfter(ctx context.Context, accountID string, after uint64, limit int) ([]*StoredChain, error) {
+	return v.chainsWhere(ctx, `e.account_id = ? AND e.secret_version > ? ORDER BY e.secret_version LIMIT ?`, accountID, int64(min(after, 1<<63-1)), limit)
+}
+
+func (v vaultStore) OpenChains(ctx context.Context, accountID string, after, upTo uint64, limit int) ([]*StoredChain, error) {
+	return v.chainsWhere(ctx, `e.account_id = ? AND e.secret_version > ? AND e.secret_version <= ? AND (e.envelope_id = (SELECT current_envelope_id FROM accounts WHERE id = e.account_id)
+ OR NOT EXISTS (SELECT 1 FROM envelope_receipts t WHERE t.envelope_id = e.envelope_id AND t.receipt_type IN ('abort', 'release', 'vault_commit'))) ORDER BY e.secret_version LIMIT ?`,
+		accountID, int64(min(after, 1<<63-1)), int64(min(upTo, 1<<63-1)), limit)
+}
+
+func (v vaultStore) Chain(ctx context.Context, accountID, envelopeID string) (*StoredChain, error) {
+	cs, err := v.chainsWhere(ctx, `e.account_id = ? AND e.envelope_id = ?`, accountID, envelopeID)
+	if err == nil && len(cs) == 0 {
+		err = ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return cs[0], nil
+}
+
+// chainsWhere loads the envelopes `FROM secret_envelopes e WHERE <where>` (which may end in
+// ORDER BY and LIMIT), then the receipts of exactly those envelopes.
+func (v vaultStore) chainsWhere(ctx context.Context, where string, args ...any) ([]*StoredChain, error) {
+	rows, err := v.s.db.QueryContext(ctx, v.s.rebind(`SELECT e.envelope_id, e.account_id, e.secret_version, e.envelope_kind, e.digest, e.envelope FROM secret_envelopes e WHERE `+where), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -378,10 +477,26 @@ func (v vaultStore) Chains(ctx context.Context, accountID string) ([]*StoredChai
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	rows, err = v.s.db.QueryContext(ctx, v.s.rebind(`SELECT r.envelope_id, r.receipt_seq, r.receipt_type, r.operation_id, r.digest, r.prev_receipt_hash, r.receipt
-FROM envelope_receipts r JOIN secret_envelopes e ON e.envelope_id = r.envelope_id WHERE e.account_id = ? ORDER BY r.envelope_id, r.receipt_seq`), accountID)
+	// Receipts by envelope ID, not by re-running where: an envelope stored between the two
+	// reads must not shift a LIMIT window. Chunks stay under every driver's parameter limit.
+	for chunk := range slices.Chunk(out, 500) {
+		ids := make([]any, len(chunk))
+		for i, c := range chunk {
+			ids[i] = c.Envelope.EnvelopeID
+		}
+		q := `SELECT envelope_id, receipt_seq, receipt_type, operation_id, digest, prev_receipt_hash, receipt FROM envelope_receipts WHERE envelope_id IN (?` +
+			strings.Repeat(", ?", len(ids)-1) + `) ORDER BY envelope_id, receipt_seq`
+		if err := v.receiptsInto(ctx, byID, q, ids); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func (v vaultStore) receiptsInto(ctx context.Context, byID map[string]*StoredChain, q string, args []any) error {
+	rows, err := v.s.db.QueryContext(ctx, v.s.rebind(q), args...)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -389,46 +504,49 @@ FROM envelope_receipts r JOIN secret_envelopes e ON e.envelope_id = r.envelope_i
 		var seq int64
 		var raw string
 		if err := rows.Scan(&r.EnvelopeID, &seq, &r.ReceiptType, &r.OperationID, &r.Digest, &r.PrevReceiptHash, &raw); err != nil {
-			return nil, err
+			return err
 		}
 		r.ReceiptSeq, r.Receipt = uint64(seq), []byte(raw)
-		// An envelope committed between the two reads is left for the next call.
-		if c := byID[r.EnvelopeID]; c != nil {
-			c.Receipts = append(c.Receipts, &r)
-		}
+		c := byID[r.EnvelopeID]
+		c.Receipts = append(c.Receipts, &r)
 	}
-	return out, rows.Err()
+	return rows.Err()
 }
 
-// appendReceipt is the §3.5 compare-and-swap: seq must be head+1 and prev the head hash.
-func (v vaultStore) appendReceipt(ctx context.Context, tx *sql.Tx, r *StoredReceipt) error {
+// appendReceipt is the §3.5 compare-and-swap: seq must be head+1 and prev the head hash. It
+// reports whether the receipt is new.
+func (v vaultStore) appendReceipt(ctx context.Context, tx *sql.Tx, r *StoredReceipt) (bool, error) {
 	var have string
 	err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT receipt FROM envelope_receipts WHERE envelope_id = ? AND receipt_seq = ?`), r.EnvelopeID, int64(r.ReceiptSeq)).Scan(&have)
 	if err == nil {
 		if have == string(r.Receipt) {
-			return nil // a retry after restart
+			return false, nil // a retry after restart
 		}
-		return ErrConflict
+		return false, ErrConflict
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return err
+		return false, err
 	}
-	var headSeq int64
+	var headSeq, size int64
 	var headHash sql.NullString
-	if err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT COALESCE(MAX(receipt_seq), 0), (SELECT digest FROM envelope_receipts WHERE envelope_id = ? ORDER BY receipt_seq DESC LIMIT 1) FROM envelope_receipts WHERE envelope_id = ?`),
-		r.EnvelopeID, r.EnvelopeID).Scan(&headSeq, &headHash); err != nil {
-		return err
+	if err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT COALESCE(MAX(receipt_seq), 0), (SELECT digest FROM envelope_receipts WHERE envelope_id = ? ORDER BY receipt_seq DESC LIMIT 1),
+ COALESCE(SUM(LENGTH(receipt)), 0) + (SELECT LENGTH(envelope) FROM secret_envelopes WHERE envelope_id = ?) FROM envelope_receipts WHERE envelope_id = ?`),
+		r.EnvelopeID, r.EnvelopeID, r.EnvelopeID).Scan(&headSeq, &headHash, &size); err != nil {
+		return false, err
 	}
 	prev := zeroHash
 	if headHash.Valid {
 		prev = headHash.String
 	}
 	if r.ReceiptSeq != uint64(headSeq)+1 || r.PrevReceiptHash != prev {
-		return ErrConflict
+		return false, ErrConflict
+	}
+	if size+int64(len(r.Receipt)) > MaxChain {
+		return false, ErrTooLarge
 	}
 	_, err = tx.ExecContext(ctx, v.s.rebind(`INSERT INTO envelope_receipts (envelope_id, receipt_seq, receipt_type, operation_id, digest, prev_receipt_hash, receipt, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
 		r.EnvelopeID, int64(r.ReceiptSeq), r.ReceiptType, r.OperationID, r.Digest, r.PrevReceiptHash, string(r.Receipt), time.Now().UTC())
-	return err
+	return err == nil, err
 }
 
 const zeroHash = "0000000000000000000000000000000000000000000000000000000000000000"
@@ -438,6 +556,7 @@ func (v vaultStore) Complete(ctx context.Context, op, accountID string, rs []*St
 		if _, err := v.lockAccount(ctx, tx, accountID); err != nil {
 			return err
 		}
+		fresh := len(rs) == 0
 		for _, r := range rs {
 			var owner string
 			if err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT account_id FROM secret_envelopes WHERE envelope_id = ?`), r.EnvelopeID).Scan(&owner); err != nil || owner != accountID {
@@ -446,24 +565,33 @@ func (v vaultStore) Complete(ctx context.Context, op, accountID string, rs []*St
 				}
 				return err
 			}
-			if err := v.appendReceipt(ctx, tx, r); err != nil {
+			added, err := v.appendReceipt(ctx, tx, r)
+			if err != nil {
 				return err
 			}
-			if r.ReceiptType == "abort" {
+			if added && r.ReceiptType == "abort" {
 				if _, err := tx.ExecContext(ctx, v.s.rebind(`UPDATE rotation_runs SET state = 'aborted', updated_at = ?
 WHERE account_id = ? AND state <> 'release_authorized' AND secret_version = (SELECT secret_version FROM secret_envelopes WHERE envelope_id = ?)`),
 					time.Now().UTC(), accountID, r.EnvelopeID); err != nil {
 					return err
 				}
 			}
+			fresh = fresh || added
+		}
+		if !fresh {
+			return nil
 		}
 		if current != "" {
-			if _, err := tx.ExecContext(ctx, v.s.rebind(`UPDATE accounts SET current_envelope_id = ? WHERE id = ?`), current, accountID); err != nil {
+			// The current envelope is the highest released version (§3.5), never a lower one.
+			if _, err := tx.ExecContext(ctx, v.s.rebind(`UPDATE accounts SET current_envelope_id = ? WHERE id = ? AND COALESCE((SELECT secret_version FROM secret_envelopes
+ WHERE envelope_id = accounts.current_envelope_id), 0) < (SELECT secret_version FROM secret_envelopes WHERE envelope_id = ?)`), current, accountID, current); err != nil {
 				return err
 			}
 		}
 		if runState != "" {
-			if _, err := tx.ExecContext(ctx, v.s.rebind(`UPDATE rotation_runs SET state = ?, updated_at = ? WHERE operation_id = ? AND account_id = ?`), runState, time.Now().UTC(), op, accountID); err != nil {
+			// Only a mutating run becomes unknown (§4.2): a late status never undoes an outcome.
+			if _, err := tx.ExecContext(ctx, v.s.rebind(`UPDATE rotation_runs SET state = ?, updated_at = ? WHERE operation_id = ? AND account_id = ?
+ AND (state = 'mutating' OR ? <> 'write_outcome_unknown')`), runState, time.Now().UTC(), op, accountID, runState); err != nil {
 				return err
 			}
 		}
@@ -495,10 +623,15 @@ func (v vaultStore) restore(ctx context.Context, tx *sql.Tx, accountID, op strin
 	if _, err := tx.ExecContext(ctx, v.s.rebind(`DELETE FROM rotation_locks WHERE account_id = ? AND operation_id = ?`), accountID, op); err != nil {
 		return err
 	}
+	return v.reinstate(ctx, tx, accountID, prev, prevVer)
+}
+
+// reinstate gives the lock back to the holder an enrollment displaced, if there was one.
+func (v vaultStore) reinstate(ctx context.Context, tx *sql.Tx, accountID string, prev sql.NullString, prevVer sql.NullInt64) error {
 	if !prev.Valid {
 		return nil
 	}
-	_, err = tx.ExecContext(ctx, v.s.rebind(`INSERT INTO rotation_locks (account_id, operation_id, secret_version, created_at) VALUES (?, ?, ?, ?)`),
+	_, err := tx.ExecContext(ctx, v.s.rebind(`INSERT INTO rotation_locks (account_id, operation_id, secret_version, created_at) VALUES (?, ?, ?, ?)`),
 		accountID, prev.String, prevVer.Int64, time.Now().UTC())
 	return err
 }
@@ -557,17 +690,21 @@ func nullVersion(holder string, v uint64) any {
 	return int64(v)
 }
 
-// expire restores the displaced holder of an account's expired reservation.
+// expire restores the displaced holder of an account's expired reservation. The state and
+// deadline check is the delete itself, so an acceptance that commits first keeps its lock
+// (PostgreSQL rechecks the WHERE after waiting on the accepting row).
 func (v vaultStore) expire(ctx context.Context, tx *sql.Tx, accountID string, now time.Time) error {
-	var op string
-	err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT operation_id FROM rotation_locks WHERE account_id = ? AND kind = 'enrollment' AND state = 'reserved' AND expires_at <= ?`), accountID, now).Scan(&op)
+	var prev sql.NullString
+	var prevVer sql.NullInt64
+	err := tx.QueryRowContext(ctx, v.s.rebind(`DELETE FROM rotation_locks WHERE account_id = ? AND kind = 'enrollment' AND state = 'reserved' AND expires_at <= ?
+RETURNING previous_operation_id, previous_secret_version`), accountID, now).Scan(&prev, &prevVer)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	return v.restore(ctx, tx, accountID, op)
+	return v.reinstate(ctx, tx, accountID, prev, prevVer)
 }
 
 func (v vaultStore) AcceptEnrollment(ctx context.Context, accountID, op string, now time.Time) error {
@@ -614,6 +751,55 @@ func (v vaultStore) ExpireEnrollments(ctx context.Context, now time.Time) (int, 
 		}
 	}
 	return len(accts), nil
+}
+
+// Push is one queued Control Plane push.
+type Push struct {
+	BrokerID  string
+	Type      string
+	Body      []byte
+	ExpiresAt time.Time
+}
+
+func (v vaultStore) QueuePush(ctx context.Context, p *Push) error {
+	id, err := uuid.NewV7() // time-ordered, so pushes go out oldest first
+	if err != nil {
+		return err
+	}
+	_, err = v.s.db.ExecContext(ctx, v.s.rebind(`INSERT INTO broker_outbox (id, broker_id, type, body, expires_at) VALUES (?, ?, ?, ?, ?)`),
+		id.String(), p.BrokerID, p.Type, string(p.Body), p.ExpiresAt.UTC())
+	return err
+}
+
+func (v vaultStore) TakePushes(ctx context.Context, brokerID string, limit int, now time.Time) ([]*Push, error) {
+	var out []*Push
+	err := v.s.inTx(ctx, func(tx *sql.Tx) error {
+		out = nil
+		if _, err := tx.ExecContext(ctx, v.s.rebind(`DELETE FROM broker_outbox WHERE expires_at <= ?`), now.UTC()); err != nil {
+			return err
+		}
+		// One DELETE ... RETURNING: concurrent takers never both get a row.
+		rows, err := tx.QueryContext(ctx, v.s.rebind(`DELETE FROM broker_outbox WHERE id IN (SELECT id FROM broker_outbox WHERE broker_id = ? ORDER BY id LIMIT ?)
+ RETURNING id, type, body, expires_at`), brokerID, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		ids := map[*Push]string{}
+		for rows.Next() {
+			var p Push
+			var id, body string
+			if err := rows.Scan(&id, &p.Type, &body, &p.ExpiresAt); err != nil {
+				return err
+			}
+			p.BrokerID, p.Body = brokerID, []byte(body)
+			ids[&p] = id
+			out = append(out, &p)
+		}
+		slices.SortFunc(out, func(a, b *Push) int { return cmp.Compare(ids[a], ids[b]) })
+		return rows.Err()
+	})
+	return out, err
 }
 
 func (v vaultStore) PutTx(ctx context.Context, requestID, accountID, actionType, digest string, raw []byte) error {
@@ -719,8 +905,23 @@ func (v vaultStore) MirrorLease(ctx context.Context, l *Lease) error {
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, v.s.rebind(`INSERT INTO checkout_leases (request_id, account_id, broker_id, secret_version, state, close_reason, opened_at, expires_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-			l.RequestID, l.AccountID, l.BrokerID, int64(l.SecretVersion), l.State, l.CloseReason, l.OpenedAt.UTC(), l.ExpiresAt.UTC(), now)
+		// A new open lease must be under the current policy, checked under the lock policy
+		// acceptance takes, so a descriptor change and a lease never both succeed (§3.3).
+		if l.State != "closed" {
+			if err := v.s.lockManifests(ctx, tx); err != nil {
+				return err
+			}
+			var cur string
+			err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT digest FROM trust_manifests WHERE type = 'policy' AND scope_id = ? ORDER BY seq DESC LIMIT 1`), l.AccountID).Scan(&cur)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if cur == "" || cur != l.PolicyDigest {
+				return ErrPolicyChanged
+			}
+		}
+		_, err = tx.ExecContext(ctx, v.s.rebind(`INSERT INTO checkout_leases (request_id, account_id, broker_id, secret_version, state, close_reason, policy_digest, target_descriptor_digest, opened_at, expires_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			l.RequestID, l.AccountID, l.BrokerID, int64(l.SecretVersion), l.State, l.CloseReason, l.PolicyDigest, l.TargetDescriptorDigest, l.OpenedAt.UTC(), l.ExpiresAt.UTC(), now)
 		if err != nil {
 			return ErrConflict // the one-open-lease index, or a race on the same request
 		}
@@ -731,8 +932,8 @@ func (v vaultStore) MirrorLease(ctx context.Context, l *Lease) error {
 func (v vaultStore) GetLease(ctx context.Context, requestID string) (*Lease, error) {
 	var l Lease
 	var ver int64
-	err := v.s.db.QueryRowContext(ctx, v.s.rebind(`SELECT request_id, account_id, broker_id, secret_version, state, close_reason, opened_at, expires_at FROM checkout_leases WHERE request_id = ?`), requestID).
-		Scan(&l.RequestID, &l.AccountID, &l.BrokerID, &ver, &l.State, &l.CloseReason, &l.OpenedAt, &l.ExpiresAt)
+	err := v.s.db.QueryRowContext(ctx, v.s.rebind(`SELECT request_id, account_id, broker_id, secret_version, state, close_reason, policy_digest, target_descriptor_digest, opened_at, expires_at FROM checkout_leases WHERE request_id = ?`), requestID).
+		Scan(&l.RequestID, &l.AccountID, &l.BrokerID, &ver, &l.State, &l.CloseReason, &l.PolicyDigest, &l.TargetDescriptorDigest, &l.OpenedAt, &l.ExpiresAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

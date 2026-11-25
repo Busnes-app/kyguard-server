@@ -59,6 +59,32 @@ func (m *Machine) Tick(ctx context.Context) error {
 	now := m.now()
 	var cleanups []pqcrypto.UUID
 	for _, a := range accts {
+		m.flush(ctx, a)
+		// An open enrollment blocks rotation. Enroll holds m.mu, so one seen here stopped
+		// early: it resumes as after a restart, re-sending receipts and never binding twice
+		// (PR Reviewer Guide on #15).
+		if a.Enrollment.Open() {
+			if err := m.recoverEnrollment(ctx, a); err != nil {
+				errs = append(errs, err)
+			}
+			continue
+		}
+		// A run left reserving by a lost reply is settled first, so its lock never blocks
+		// the schedule until the next reconnect (decision 72).
+		if a.Run != nil && a.Run.State == StateReserving {
+			if err := m.settle(ctx, a); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+		}
+		// A run whose receipts are journaled but not acknowledged is finished and re-sent,
+		// as after a restart, so it never stays open until a reconnect (PR Reviewer Guide on #16).
+		if r := a.Run; r != nil && !r.Sent && len(r.Receipts) > 0 {
+			if err := m.recover(ctx, a); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+		}
 		if l := a.Lease; l.Open() {
 			// Expiry moves the lease to rotation_pending; then its cleanup is the only
 			// rotation path and scheduled occurrences wait (§3.6 step 5).
@@ -67,7 +93,7 @@ func (m *Machine) Tick(ctx context.Context) error {
 				if err := m.J.Save(a); err != nil {
 					errs = append(errs, err)
 				}
-				m.mirror(ctx, a)
+				_ = m.mirror(ctx, a)
 			}
 			if l.State == LeaseRotationPending && !a.Run.Open() && !now.Before(l.NextAttemptAt) {
 				cleanups = append(cleanups, a.ID)
@@ -81,7 +107,7 @@ func (m *Machine) Tick(ctx context.Context) error {
 		}
 		if a.MinAgeSeconds > p.RotationSchedule.IntervalSeconds {
 			if a.HealthReason != ReasonBelowMinAge {
-				a.Health, a.HealthReason = HealthRotationFailed, ReasonBelowMinAge
+				setHealth(a, HealthRotationFailed, ReasonBelowMinAge)
 				if err := m.J.Save(a); err != nil {
 					errs = append(errs, err)
 				}

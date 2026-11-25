@@ -1,12 +1,14 @@
 package sshpasswd_test
 
 import (
+	"bufio"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -31,6 +33,11 @@ func newInproc(t *testing.T, accept bool, hang bool, stallExec ...bool) *inproc 
 }
 
 func newInprocFlood(t *testing.T, accept bool, hang bool, flood bool, stallExec ...bool) *inproc {
+	return newInprocExec(t, accept, hang, flood, nil, stallExec...)
+}
+
+// newInprocExec runs exec, when set, as every command, on the open channel.
+func newInprocExec(t *testing.T, accept bool, hang bool, flood bool, exec func(ssh.Channel), stallExec ...bool) *inproc {
 	t.Helper()
 	_, k, _ := ed25519.GenerateKey(rand.Reader)
 	signer, _ := ssh.NewSignerFromKey(k)
@@ -84,6 +91,10 @@ func newInprocFlood(t *testing.T, accept bool, hang bool, flood bool, stallExec 
 								continue // never answer: the command never starts
 							}
 							r.Reply(true, nil) // accept exec and never answer it when hang
+							if exec != nil && r.Type == "exec" {
+								go exec(ch)
+								continue
+							}
 							if flood && r.Type == "exec" {
 								go func() {
 									chunk := make([]byte, 32<<10)
@@ -194,5 +205,71 @@ func TestOutputIsCapped(t *testing.T) {
 		if err == nil || time.Since(start) > 5*time.Second {
 			t.Fatalf("%s: %v after %v", which, err, time.Since(start))
 		}
+	}
+}
+
+// PR #14 review: cancellation while the SSH handshake stalls ends Login and Verify at once,
+// not at the connector timeout.
+func TestHandshakeObservesCancellation(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close() // accept and say nothing
+		}
+	}()
+	s := &inproc{addr: ln.Addr().String()}
+	c := s.connector(5 * time.Second)
+	for _, verify := range []bool{false, true} {
+		ctx, cancel := context.WithCancel(context.Background())
+		time.AfterFunc(200*time.Millisecond, cancel)
+		start := time.Now()
+		if verify {
+			err = c.Verify(ctx, s.descriptor(), []byte("pw"), "")
+		} else {
+			_, err = c.Login(ctx, s.descriptor(), []byte("pw"))
+		}
+		if !errors.Is(err, context.Canceled) || time.Since(start) > 3*time.Second {
+			t.Fatalf("verify=%v: %v after %v", verify, err, time.Since(start))
+		}
+	}
+}
+
+// PR #14 review: a passwd that prints success and never exits cannot hold Change past
+// cancellation.
+func TestChangeObservesCancellationAfterSuccess(t *testing.T) {
+	s := newInprocExec(t, true, true, false, func(ch ssh.Channel) {
+		r := bufio.NewReader(ch)
+		for _, prompt := range []string{"Current password: ", "New password: ", "Retype new password: "} {
+			io.WriteString(ch, prompt)
+			if _, err := r.ReadString('\n'); err != nil {
+				return
+			}
+		}
+		io.WriteString(ch, "passwd: password updated successfully\r\n") // then hang: no exit
+	})
+	sess, err := s.connector(time.Hour).Login(context.Background(), s.descriptor(), []byte("pw"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	committed := false
+	start := time.Now()
+	err = sess.Change(ctx, []byte("pw"), []byte("new"), func() error {
+		committed = true
+		time.AfterFunc(500*time.Millisecond, cancel)
+		return nil
+	})
+	cancel()
+	if !committed || !errors.Is(err, context.Canceled) || time.Since(start) > 5*time.Second {
+		t.Fatalf("committed=%v: %v after %v", committed, err, time.Since(start))
 	}
 }

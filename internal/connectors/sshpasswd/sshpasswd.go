@@ -116,7 +116,11 @@ func (c *Connector) dial(ctx context.Context, d *pqcrypto.TargetDescriptor, pass
 		return nil, err
 	}
 	raw.SetDeadline(time.Now().Add(c.timeout()))
+	// Cancellation during the handshake or authentication closes the connection; the hook
+	// is removed once the handshake ends.
+	stop := context.AfterFunc(ctx, func() { raw.Close() })
 	cc, chans, reqs, err := ssh.NewClientConn(raw, addr, cfg)
+	cancelled := !stop()
 	if err != nil {
 		raw.Close()
 		if errors.Is(err, ErrHostKey) {
@@ -125,7 +129,14 @@ func (c *Connector) dial(ctx context.Context, d *pqcrypto.TargetDescriptor, pass
 		if strings.Contains(err.Error(), "unable to authenticate") || errors.Is(err, errOneSubmission) {
 			return nil, broker.ErrAuthFailed
 		}
+		if cancelled {
+			return nil, ctx.Err()
+		}
 		return nil, err
+	}
+	if cancelled {
+		cc.Close()
+		return nil, ctx.Err()
 	}
 	raw.SetDeadline(time.Time{})
 	return ssh.NewClient(cc, chans, reqs), nil
@@ -313,6 +324,9 @@ func (s *session) Change(ctx context.Context, oldPassword, newPassword []byte, c
 			return fmt.Errorf("sshpasswd: passwd reported success and then failed: %v", waitErr)
 		case <-time.After(s.timeout):
 			return errors.New("sshpasswd: passwd did not exit")
+		case <-ctx.Done():
+			s.c.Close() // the write may have landed: ambiguous, never a refusal
+			return fmt.Errorf("sshpasswd: passwd did not exit: %w", ctx.Err())
 		}
 	case 1: // asked again after the retype: rejected, nothing written
 		return fmt.Errorf("%w: passwd rejected the new password: %q", broker.ErrRefused, t.tail())
