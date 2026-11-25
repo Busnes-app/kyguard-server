@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { secureFetch } from '../api';
 
@@ -71,11 +71,22 @@ export function StepUp({ state, onDone, onLogout }: Props) {
   }
 
   const blocked = !state.enrolled && !state.can_enroll;
+  // A blocked user is refused by the enroll route, which records auth.enrollment_blocked for
+  // the administrators (spec §7.3 rule 3); the screen says they were told only after that 403.
+  const [notified, setNotified] = useState<boolean | null>(null);
+  const asked = useRef(false);
+  useEffect(() => {
+    if (!blocked || asked.current) return;
+    asked.current = true;
+    secureFetch('/api/auth/stepup/enroll', { method: 'POST' })
+      .then((response) => setNotified(response.status === 403))
+      .catch(() => setNotified(false));
+  }, [blocked]);
   return (
     <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 20 }}>
       <div className="panel" style={{ width: '100%', maxWidth: 440 }}>
         <h1>Confirm it is you</h1>
-        {blocked && <p role="alert">Your identity provider did not confirm a multi-factor sign-in, so an authenticator cannot be set up here. An administrator has been notified.</p>}
+        {blocked && notified !== null && <p role="alert">Your identity provider did not confirm a multi-factor sign-in, so an authenticator cannot be set up here. {notified ? 'An administrator has been notified.' : 'Sign out and sign in again, or contact an administrator.'}</p>}
         {!exchanged && !state.enrolled && state.can_enroll && !offer && (
           <>
             <p>Set up an authenticator app for KyGuard. You will enter one of its codes after every sign-in.</p>
