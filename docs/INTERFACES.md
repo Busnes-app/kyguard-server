@@ -557,6 +557,7 @@ carries `TODO(hawthorn §7.5)` until the route registry classifies it.
 | GET `/api/assets` | Administrator | 200 `[{ID, Name, CreatedAt}]` |
 | POST `/api/assets` | Administrator; JSON `{"name"}` (1–128 characters) | 201 asset (UUIDv7 id); audited `inventory.asset_created` |
 | POST `/api/accounts` | Administrator; JSON `{"asset_id","name","account_kind":"managed"\|"vaulted","pool_id"?,"owner_user_id"?}`; unknown fields refused | 201 account, status `active`; 400 for an unknown asset, pool or owner; audited `inventory.account_created` |
+| GET `/api/accounts?status=active\|decommissioned` | Administrator | 200 inventory rows with that status (default `active`); the way back to a decommissioned account |
 | GET `/api/accounts/{id}` | Administrator | 200 `{account, descriptors, attributes}`; descriptors show connector, identity, host, port, the SSH host-key SHA-256 and the SHA-256 of the pinned CA PEM |
 | PATCH `/api/accounts/{id}` | Administrator; any of `name`, `owner_user_id` (`""` clears), `status` (`active`\|`decommissioned`); asset, kind and pool never change | 200 account; audited `inventory.account_updated` |
 | PUT `/api/accounts/{id}/target-descriptor` | Administrator; body is one `TargetDescriptor` (≤64 KiB) for a managed account | 200 `{"digest"}`, stored as canonical JSON; 400 for an out-of-slice descriptor (§3.3) or one naming another deployment, account or asset; 409 when the digest belongs to another account; 503 before `import-bundle`; audited `inventory.descriptor_uploaded` |

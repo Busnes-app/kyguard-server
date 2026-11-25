@@ -110,6 +110,7 @@ export const Accounts: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
           </div>
         </>
       )}
+      {isAdmin && (card.data?.totals.decommissioned ?? 0) > 0 && <Retired onOpen={setOpen} />}
       {open && <AccountDetail id={open} onClose={() => { setOpen(''); reload(); }} />}
     </div>
   );
@@ -269,6 +270,24 @@ const OwnerPicker: React.FC<{ current: string; onPick: (id: string) => void }> =
           {found.data!.users.map((u) => (
             <li key={u.id}><button type="button" className="kg-link" onClick={() => { onPick(u.id); setQ(''); }}>{u.username}{u.display_name && u.display_name !== u.username ? ` (${u.display_name})` : ''}</button></li>
           ))}
+        </ul>
+      )}
+    </div>
+  );
+};
+
+// Retired lists decommissioned accounts, which the traffic light counts but never shows, so an
+// admin can open one and reactivate it.
+const Retired: React.FC<{ onOpen: (id: string) => void }> = ({ onOpen }) => {
+  const [shown, setShown] = useState(false);
+  const list = useJSON<{ ID: string; Name: string; asset_name: string }[]>(shown ? '/api/accounts?status=decommissioned' : null);
+  return (
+    <div className="panel dr-section kg-top">
+      <button type="button" className="btn-secondary" aria-expanded={shown} onClick={() => setShown(!shown)}>{shown ? 'Hide' : 'Show'} decommissioned accounts</button>
+      {list.error && <p role="alert" className="dr-danger">{list.error}</p>}
+      {shown && list.data && (
+        <ul className="kg-plain kg-results">
+          {list.data.map((a) => <li key={a.ID}><button type="button" className="kg-link" onClick={() => onOpen(a.ID)}>{a.asset_name} / {a.Name}</button></li>)}
         </ul>
       )}
     </div>

@@ -80,3 +80,22 @@ it('reports a write that never reached the server', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch'); }));
   expect(await send('PATCH', '/api/accounts/x', { status: 'active' })).toMatch(/Could not reach the server/);
 });
+
+// Decommissioned accounts leave the traffic light; admins can still reach and reactivate them.
+it('lets an admin reach decommissioned accounts', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === '/api/attributes') return json({ account: [], user: [] });
+    if (url === '/api/assets') return json([]);
+    if (url === '/api/accounts?status=decommissioned') return json([{ ID: 'old', Name: 'old-sa', asset_name: 'db1' }]);
+    if (url.startsWith('/api/reports/scorecard')) {
+      const c = card([row('a', 'green', 'Ops')]);
+      c.totals.decommissioned = 1;
+      return json(c);
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  }));
+  render(<Accounts isAdmin />);
+  fireEvent.click(await screen.findByText('Show decommissioned accounts'));
+  expect(await screen.findByText('db1 / old-sa')).toBeTruthy();
+});

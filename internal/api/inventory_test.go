@@ -77,6 +77,14 @@ func TestInventoryWritesNeedAnAdmin(t *testing.T) {
 	if a, _ := st.Inventory().GetAccount(context.Background(), acct.ID); a.Status != "decommissioned" || a.OwnerUserID != "usr_user1" {
 		t.Fatalf("after patch %+v", a)
 	}
+	var retired []store.InventoryAccount
+	created(t, sendJSON(srv, admin, "GET", "/api/accounts?status=decommissioned", ""), &retired)
+	if len(retired) != 1 || retired[0].ID != acct.ID {
+		t.Fatalf("decommissioned list %+v", retired)
+	}
+	if w := sendJSON(srv, user, "GET", "/api/accounts?status=decommissioned", ""); w.Code != http.StatusForbidden {
+		t.Fatalf("user listed accounts: %d", w.Code)
+	}
 }
 
 // The Control Plane rejects out-of-slice descriptors and ones for another account (§3.3).

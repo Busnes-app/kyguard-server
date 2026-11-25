@@ -30,6 +30,7 @@ func (s *Server) inventoryRoutes() {
 	s.mux.HandleFunc("GET /api/assets", s.requireAdmin(s.handleListAssets))
 	s.mux.HandleFunc("POST /api/assets", s.requireAdmin(s.handleCreateAsset))
 	s.mux.HandleFunc("POST /api/accounts", s.requireAdmin(s.handleCreateAccount))
+	s.mux.HandleFunc("GET /api/accounts", s.requireAdmin(s.handleListAccounts))
 	s.mux.HandleFunc("GET /api/accounts/{id}", s.requireAdmin(s.handleGetAccount))
 	s.mux.HandleFunc("PATCH /api/accounts/{id}", s.requireAdmin(s.handleUpdateAccount))
 	// TODO(hawthorn §7.5): classify + fresh(StepupWindow): a descriptor is what a policy pins.
@@ -442,4 +443,29 @@ func (s *Server) handleSetAttributeValue(w http.ResponseWriter, r *http.Request)
 func sha256Hex(b []byte) string {
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
+}
+
+// handleListAccounts lists inventory rows by status (default active) so admins can reach a
+// decommissioned account, which the scorecard counts but never lists (spec §8.1).
+func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	if status == "" {
+		status = "active"
+	}
+	if status != "active" && status != "decommissioned" {
+		s.writeError(w, http.StatusBadRequest, "status is active or decommissioned")
+		return
+	}
+	all, err := s.store.Inventory().ListAccounts(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "could not list accounts")
+		return
+	}
+	out := []*store.InventoryAccount{}
+	for _, a := range all {
+		if a.Status == status {
+			out = append(out, a)
+		}
+	}
+	s.writeJSON(w, http.StatusOK, out)
 }
