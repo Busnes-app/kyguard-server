@@ -196,3 +196,37 @@ func TestOutputIsCapped(t *testing.T) {
 		}
 	}
 }
+
+// PR #14 review: cancellation while the SSH handshake stalls ends Login and Verify at once,
+// not at the connector timeout.
+func TestHandshakeObservesCancellation(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close() // accept and say nothing
+		}
+	}()
+	s := &inproc{addr: ln.Addr().String()}
+	c := s.connector(5 * time.Second)
+	for _, verify := range []bool{false, true} {
+		ctx, cancel := context.WithCancel(context.Background())
+		time.AfterFunc(200*time.Millisecond, cancel)
+		start := time.Now()
+		if verify {
+			err = c.Verify(ctx, s.descriptor(), []byte("pw"), "")
+		} else {
+			_, err = c.Login(ctx, s.descriptor(), []byte("pw"))
+		}
+		if !errors.Is(err, context.Canceled) || time.Since(start) > 3*time.Second {
+			t.Fatalf("verify=%v: %v after %v", verify, err, time.Since(start))
+		}
+	}
+}

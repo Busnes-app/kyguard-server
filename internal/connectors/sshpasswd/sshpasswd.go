@@ -116,7 +116,11 @@ func (c *Connector) dial(ctx context.Context, d *pqcrypto.TargetDescriptor, pass
 		return nil, err
 	}
 	raw.SetDeadline(time.Now().Add(c.timeout()))
+	// Cancellation during the handshake or authentication closes the connection; the hook
+	// is removed once the handshake ends.
+	stop := context.AfterFunc(ctx, func() { raw.Close() })
 	cc, chans, reqs, err := ssh.NewClientConn(raw, addr, cfg)
+	cancelled := !stop()
 	if err != nil {
 		raw.Close()
 		if errors.Is(err, ErrHostKey) {
@@ -125,7 +129,14 @@ func (c *Connector) dial(ctx context.Context, d *pqcrypto.TargetDescriptor, pass
 		if strings.Contains(err.Error(), "unable to authenticate") || errors.Is(err, errOneSubmission) {
 			return nil, broker.ErrAuthFailed
 		}
+		if cancelled {
+			return nil, ctx.Err()
+		}
 		return nil, err
+	}
+	if cancelled {
+		cc.Close()
+		return nil, ctx.Err()
 	}
 	raw.SetDeadline(time.Time{})
 	return ssh.NewClient(cc, chans, reqs), nil
