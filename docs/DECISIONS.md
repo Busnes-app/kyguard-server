@@ -196,6 +196,16 @@ contradicts itself. Each names its section. The most secure reading wins.
     unrecognized prompt is detected by the absence of a known one within the timeout.
 51. §4.4 (SSH baseline). SSH verification is the fresh login alone; the baseline is the
     `chage -l` last-change date when the account may read it and empty otherwise.
+52. §4.5 (quarantine on the Control Plane). The Control Plane allows a reservation over a held
+    lock only when the broker last reported the account `quarantined` or `auth_failed`; the
+    broker checks again and refuses an enrollment while a rotation is open on a healthy
+    account.
+53. §4.5 (which operation signs the aborts). The `abort` (`superseded_by_reenrollment`)
+    receipts carry the enrollment's `operation_id`; the stuck run they end is found by the
+    envelope's `secret_version` and marked `aborted`.
+54. §4.5 (CLI wiring). `cli.SealEnrollment` is the CLI's half (seal, sign the candidate and
+    the `enroll` transaction from its own verified state); the `kyguard-cli vault enroll`
+    command lands with the session-backed `cli.Client` (§7.6).
 61. §4.1 (sync frame bound). `cptrust.Submit` refuses a manifest over 512 KiB
     (`MaxManifest`), so any stored manifest fits a 4 MiB channel frame base64url-encoded. A
     `sync` page carries at most 64 manifests whose encoded size stays within `SyncBudget`

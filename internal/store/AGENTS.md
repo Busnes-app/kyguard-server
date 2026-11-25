@@ -67,6 +67,11 @@ Owns data models, store interfaces (`UserStore`, `SessionStore`, `GroupStore`, `
   `ChainsAfter` (a version range with a limit), `OpenChains` and `Chain` read only the
   envelopes asked for, then their receipts by envelope ID; `Chains` reads a whole history
   and is for tests.
+- Enrollment (migration 102): `ReserveEnrollment` moves the lock to the enrollment
+  operation (allowed with no lock or a quarantined account) and keeps the holder it
+  displaced; a reservation still `reserved` after 15 minutes is restored by
+  `ExpireEnrollments` (and lazily, in its own transaction, before any reserve or accept);
+  `accepted` never expires; `Complete(..., LockRestore)` reinstates the displaced holder.
 
 ## Verification
 - `go test -v ./internal/store/...`

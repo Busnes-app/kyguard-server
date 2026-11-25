@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/Busnes-app/ky-primitives/recoverykey"
 
@@ -168,4 +169,73 @@ func (d *Deployment) ManagedPolicy(account, pool pqcrypto.UUID, epoch pqcrypto.C
 		CheckoutMode: pqcrypto.ModeEphemeral, EnrollerPrincipalIDs: []pqcrypto.UUID{}, AutoStandingRelease: &f,
 		StandingRecipientPrincipalIDs: []pqcrypto.UUID{}, AllowedUserPrincipalIDs: []pqcrypto.UUID{},
 		AllowedApproverPrincipalIDs: []pqcrypto.UUID{}, MaxCheckoutTTLSeconds: 3600}
+}
+
+// Principal is an enrolled user's keys.
+type Principal struct {
+	ID  pqcrypto.UUID
+	Sig *pqcrypto.SigningKey
+	Enc recoverykey.PrivateKey
+}
+
+// NewPrincipal makes fresh user keys.
+func NewPrincipal(t testing.TB) *Principal {
+	t.Helper()
+	sig, err := pqcrypto.GenerateSigningKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := recoverykey.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &Principal{ID: UUID(), Sig: sig, Enc: enc}
+}
+
+// Enrollment returns p's KeyEnrollmentManifest signed by the custodians and by p.
+func (d *Deployment) Enrollment(t testing.TB, p *Principal, epoch pqcrypto.Counter) []byte {
+	t.Helper()
+	sid, err := p.Sig.Public().SigKeyID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &pqcrypto.KeyEnrollmentManifest{Header: d.Header(pqcrypto.TypeKeyEnrollment, pqcrypto.ScopePrincipal, p.ID, epoch),
+		PrincipalID: p.ID, Issuer: "https://idp.example.test", Subject: "sub-" + string(p.ID),
+		Keys: []pqcrypto.EnrolledKey{{EncPub: p.Enc.Public().Bytes(), EncKeyID: pqcrypto.HexID(p.Enc.Public().ID()), SigPub: p.Sig.Public(), SigKeyID: sid, Status: pqcrypto.StatusActive}}}
+	d.sign(t, m)
+	if err := pqcrypto.Sign(m, pqcrypto.RoleUser, p.Sig); err != nil {
+		t.Fatal(err)
+	}
+	return Canon(t, m)
+}
+
+// Tx builds an AccessTransaction for policy pol by p, valid from now for five minutes, and
+// signs it. It returns the canonical bytes and the decoded transaction.
+func (d *Deployment) Tx(t testing.TB, pol *pqcrypto.PolicyManifest, broker pqcrypto.UUID, p *Principal, a pqcrypto.Action, now time.Time) ([]byte, *pqcrypto.AccessTransaction) {
+	t.Helper()
+	pd, err := pqcrypto.ObjDigest(pol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cnf, err := pqcrypto.GenerateSigningKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.AccountID, a.TargetDescriptorDigest = pol.AccountID, pol.TargetDescriptorDigest
+	tx := &pqcrypto.AccessTransaction{Header: pqcrypto.Header{Type: pqcrypto.TypeTx, DeploymentID: d.ID, Epoch: pol.Epoch,
+		Scope: pqcrypto.Scope{Kind: pqcrypto.ScopeAccount, ID: pol.AccountID}, SignerRole: pqcrypto.RoleUser},
+		RequestID: UUID(), RequesterPrincipalID: p.ID, BrokerID: broker, PolicyDigest: pd.Hex(), CnfPub: cnf.Public(),
+		IssuedAt: pqcrypto.NewTime(now), ExpiresAt: pqcrypto.NewTime(now.Add(5 * time.Minute)), Action: a, Approvals: []pqcrypto.Approval{}}
+	if err := pqcrypto.Sign(tx, pqcrypto.RoleUser, p.Sig); err != nil {
+		t.Fatal(err)
+	}
+	return Canon(t, tx), tx
+}
+
+// Decode strictly decodes canonical JSON into v.
+func Decode(t testing.TB, raw []byte, v any) {
+	t.Helper()
+	if _, err := canonical.Decode(raw, v); err != nil {
+		t.Fatal(err)
+	}
 }

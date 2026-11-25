@@ -16,6 +16,7 @@ var (
 	bucketManifests   = []byte("manifests")   // 8-byte seq -> canonical manifest, acceptance order
 	bucketDescriptors = []byte("descriptors") // digest -> canonical target descriptor
 	bucketAccounts    = []byte("accounts")    // account_id -> JSON Account
+	bucketBurned      = []byte("burned")      // request_id -> RFC 3339 expiry (§3.7)
 )
 
 // Rotation states (§4.2).
@@ -65,7 +66,30 @@ type Account struct {
 	MinAgeDeadline time.Time `json:"min_age_deadline"`
 	// Run is the latest rotation attempt.
 	Run *Run `json:"run,omitempty"`
+	// Enrollment is the latest enrollment attempt (§4.5).
+	Enrollment *Enrollment `json:"enrollment,omitempty"`
 }
+
+// Enrollment is one enroll transaction, journaled from its acceptance (§4.5 step 2).
+type Enrollment struct {
+	OperationID pqcrypto.UUID `json:"operation_id"`
+	Tx          pqcrypto.B64  `json:"tx"`
+	Candidate   pqcrypto.B64  `json:"candidate"`
+	// AcceptAck is journaled after the Control Plane accepted the reservation; only then is
+	// the request ID burned and the one bind allowed. VerifyStarted is journaled before
+	// that bind; a restart that finds it without VerifyDone fails without binding again.
+	AcceptAck     bool `json:"accept_ack,omitempty"`
+	VerifyStarted bool `json:"verify_started,omitempty"`
+	VerifyDone    bool `json:"verify_done,omitempty"`
+	Verified      bool `json:"verified,omitempty"`
+	// Receipts to deliver: the aborts of superseded envelopes and vault_commit, or abort
+	// (enrollment_failed). Sent once the Control Plane acknowledged them.
+	Receipts []pqcrypto.B64 `json:"receipts,omitempty"`
+	Sent     bool           `json:"sent,omitempty"`
+}
+
+// Open reports whether the enrollment still blocks the account.
+func (e *Enrollment) Open() bool { return e != nil && !e.Sent }
 
 // ChainCopy is an envelope and its receipts as canonical bytes.
 type ChainCopy struct {
@@ -110,7 +134,7 @@ func seqKey(n uint64) []byte { return binary.BigEndian.AppendUint64(nil, n) }
 
 func (j *Journal) init() error {
 	return j.db.Update(func(tx *bolt.Tx) error {
-		for _, b := range [][]byte{bucketMeta, bucketManifests, bucketDescriptors, bucketAccounts} {
+		for _, b := range [][]byte{bucketMeta, bucketManifests, bucketDescriptors, bucketAccounts, bucketBurned} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -224,4 +248,28 @@ func (a *Account) HighestCopied() pqcrypto.Counter {
 		}
 	}
 	return hv
+}
+
+// Burned reports whether a request ID has been used.
+func (j *Journal) Burned(id pqcrypto.UUID) bool {
+	seen := false
+	j.db.View(func(tx *bolt.Tx) error {
+		seen = tx.Bucket(bucketBurned).Get([]byte(id)) != nil
+		return nil
+	})
+	return seen
+}
+
+// SaveBurn writes an account record and burns a request ID in one transaction.
+func (j *Journal) SaveBurn(a *Account, id pqcrypto.UUID, until time.Time) error {
+	v, err := json.Marshal(a)
+	if err != nil {
+		return err
+	}
+	return j.db.Update(func(tx *bolt.Tx) error {
+		if err := tx.Bucket(bucketBurned).Put([]byte(id), []byte(until.UTC().Format(time.RFC3339))); err != nil {
+			return err
+		}
+		return tx.Bucket(bucketAccounts).Put([]byte(a.ID), v)
+	})
 }

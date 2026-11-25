@@ -419,7 +419,7 @@ func TestOpenChainsArePagedWithinTheBudget(t *testing.T) {
 		if err := f.call(brokerproto.MsgEnvelope, brokerproto.EnvelopeRequest{OperationID: op, Envelope: raw}, nil); err != nil {
 			t.Fatal(err)
 		}
-		if err := v.Complete(ctx, string(op), string(f.acct()), nil, "", "", true); err != nil {
+		if err := v.Complete(ctx, string(op), string(f.acct()), nil, "", "", store.LockDelete); err != nil {
 			t.Fatal(err)
 		}
 		top = ver
