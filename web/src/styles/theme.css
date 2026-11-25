@@ -498,7 +498,7 @@ textarea { border-radius: var(--ky-control-radius); }
 .kg-check { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; color: var(--ink-strong); }
 .kg-check input { width: auto; }
 .tl-green { --tl: var(--success); }
-.tl-yellow { --tl: var(--warning); }
+.tl-yellow { --tl: var(--warning, var(--ky-warning)); }
 .tl-red { --tl: var(--danger); }
 .tl-badge { color: var(--ink-strong); background: color-mix(in srgb, var(--tl) 14%, var(--panel)); border: 1px solid var(--tl); }
 .tl-bar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: var(--panel-hover); border: 1px solid var(--line); }

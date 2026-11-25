@@ -9,7 +9,7 @@ interface Draft {
   epoch: number;
   digest: string;
   signatures: number;
-  status: 'needs_signatures' | 'stale';
+  status: 'needs_signatures' | 'ready' | 'stale';
   code?: string;
   updated_at: string;
 }
@@ -20,6 +20,13 @@ interface Principal { principal_id: string; issuer: string; subject: string; act
 // signing in kyguard-cli (spec §10 item 4). The browser signs nothing.
 export const Policies: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
   const drafts = useJSON<Draft[]>('/api/policy-drafts');
+  const [delErr, setDelErr] = useState('');
+  const remove = async (id: string) => {
+    if (!window.confirm('Delete this draft and its signatures?')) return;
+    const fail = await send('DELETE', `/api/policy-drafts/${id}`);
+    setDelErr(fail);
+    if (!fail) drafts.reload();
+  };
   const trust = useJSON<{ imported: boolean; threshold?: number; custodians?: number; escrow_default_enabled?: boolean }>('/api/trust');
 
   return (
@@ -30,6 +37,7 @@ export const Policies: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
         <code> kyguard-cli sign</code>. Check the digest there against the one shown here.
       </p>
       {drafts.error && <p role="alert" className="dr-alert dr-alert-error">{drafts.error}</p>}
+      {delErr && <p role="alert" className="dr-alert dr-alert-error">{delErr}</p>}
       <div className="panel dr-section kg-scroll">
         <h3 className="kg-sub">Drafts awaiting signatures</h3>
         {(drafts.data || []).length === 0 ? <p className="dr-hint">No drafts.</p> : (
@@ -44,8 +52,10 @@ export const Policies: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
                   <td>{d.signatures}{trust.data?.threshold ? ` / ${trust.data.threshold}` : ''}</td>
                   <td>{d.status === 'stale'
                     ? <span className="badge badge-danger" title={d.code}>Stale{d.code ? `: ${d.code}` : ''}</span>
-                    : <span className="badge badge-accent">Needs signatures</span>}</td>
-                  {isAdmin && <td><button type="button" className="btn-secondary" aria-label="Delete draft" onClick={async () => { if (window.confirm('Delete this draft and its signatures?') && !(await send('DELETE', `/api/policy-drafts/${d.id}`))) drafts.reload(); }}><Trash2 size={14} /></button></td>}
+                    : d.status === 'ready'
+                      ? <span className="badge badge-success" title="Fully signed; signing it again retries admission">Ready</span>
+                      : <span className="badge badge-accent">Needs signatures</span>}</td>
+                  {isAdmin && <td><button type="button" className="btn-secondary" aria-label="Delete draft" onClick={() => remove(d.id)}><Trash2 size={14} /></button></td>}
                 </tr>
               ))}
             </tbody>
