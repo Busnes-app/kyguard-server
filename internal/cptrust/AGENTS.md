@@ -12,6 +12,8 @@ Owns manifest admission on the Control Plane. Verification rules are `internal/p
 - `Submit` is the only way a manifest enters `trust_manifests`. It catches up from the
   database first, so replicas never fork the sequence; a write that loses the race
   (`store.ErrConflict`) rebuilds and retries once.
+- `Submit` refuses a manifest over `MaxManifest` (512 KiB) before parsing it, so every stored
+  manifest fits one broker channel frame (decision 61). The manifest API reads at most that.
 - Equivocation is audited as `trust.equivocation` before the error returns.
 - A failed replay or persist drops the cached state; the next call rebuilds it from the
   database. Never serve a partial replay.

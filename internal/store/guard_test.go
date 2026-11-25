@@ -207,3 +207,32 @@ func TestConcurrentSweepsSettleAnIntentOnce(t *testing.T) {
 		t.Fatalf("settled %d times, audited %d", total, audited)
 	}
 }
+
+// Concurrent creates of one pool name: one wins, every other gets ErrAlreadyExists (the
+// API's 409), never a raw constraint error (PR Reviewer Guide on #8).
+func TestConcurrentPoolCreatesHaveOneWinner(t *testing.T) {
+	_, g := guardStoreFor(t)
+	for round := range 5 {
+		var wg sync.WaitGroup
+		errs := make([]error, 8)
+		for i := range errs {
+			wg.Go(func() {
+				p := &BrokerPool{ID: fmt.Sprint("p", round, "-", i), Name: fmt.Sprint("pool", round), CreatedAt: time.Now().UTC()}
+				errs[i] = g.CreatePool(context.Background(), p, nil)
+			})
+		}
+		wg.Wait()
+		won := 0
+		for _, err := range errs {
+			switch {
+			case err == nil:
+				won++
+			case !errors.Is(err, ErrAlreadyExists):
+				t.Fatalf("round %d: %v", round, err)
+			}
+		}
+		if won != 1 {
+			t.Fatalf("round %d: %d creates won", round, won)
+		}
+	}
+}

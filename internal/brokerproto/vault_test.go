@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto/brokertest"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto/pqtest"
+	"github.com/Busnes-app/kyguard-server/internal/store"
 )
 
 type vaultFixture struct {
@@ -158,6 +161,14 @@ func TestRotationRoundTripOnTheControlPlane(t *testing.T) {
 	if len(st.Chains) != 1 || len(st.Chains[0].Receipts) != 2 || len(st.Descriptor) == 0 || st.HighestVersion != 1 {
 		t.Fatalf("account %+v", st)
 	}
+	// A late retry of the finished reservation takes no version and no lock (PR Reviewer
+	// Guide on #10).
+	if again, err := f.reserve(op, 0); !remote(err, "conflict") {
+		t.Fatalf("retry after completion: %v %v", again, err)
+	}
+	if lock, _, _ := f.cp.Store.Vault().Lock(ctx, string(f.acct())); lock != "" {
+		t.Fatalf("a finished operation took the lock again: %s", lock)
+	}
 	// The next reservation gets a fresh version.
 	if v2, err := f.reserve(pqtest.UUID(), 0); err != nil || v2 != 2 {
 		t.Fatalf("next version %v %v", v2, err)
@@ -282,9 +293,7 @@ func TestSyncIsPaged(t *testing.T) {
 		pages++
 		after += len(s.Manifests)
 		accounts += len(s.Accounts)
-		if len(s.Accounts) > 0 {
-			last = s.Accounts[len(s.Accounts)-1]
-		}
+		last = s.AccountsNext
 		if len(s.Manifests) > brokerproto.SyncPage {
 			t.Fatalf("page of %d", len(s.Manifests))
 		}
@@ -350,35 +359,478 @@ func TestAccountSyncIsBudgeted(t *testing.T) {
 		}
 	}
 	brokerproto.SyncBudget = len(raw) * 2 // one chain fits, two do not
-	got, pages := map[string]bool{}, 0
-	after := v // the broker already holds the current chain; only newer history is missing
+	// The broker already holds the current chain; only newer history is missing.
+	got, pages := syncAll(t, f, v)
+	if len(got) != 13 || pages < 2 {
+		t.Fatalf("%d chains in %d pages", len(got), pages)
+	}
+}
+
+// syncAll pages one account's sync from after and fails if any reply with more than one
+// chain is over SyncBudget. It returns the envelopes received and the page count.
+func syncAll(t *testing.T, f *vaultFixture, after pqcrypto.Counter) (map[string]bool, int) {
+	t.Helper()
+	got, pages, from := map[string]bool{}, 0, pqcrypto.Counter(0)
 	for {
-		if pages > 30 {
+		if pages > 40 {
 			t.Fatal("sync never completes")
 		}
 		var st brokerproto.AccountState
-		if err := f.call(brokerproto.MsgSyncAccount, brokerproto.SyncAccountRequest{AccountID: f.acct(), AfterVersion: after, Continue: pages > 0}, &st); err != nil {
+		if err := f.call(brokerproto.MsgSyncAccount, brokerproto.SyncAccountRequest{AccountID: f.acct(), AfterVersion: after, From: from}, &st); err != nil {
+			t.Fatal(err)
+		}
+		pages++
+		size := (len(st.Descriptor) + 2) / 3 * 4
+		for _, c := range st.Chains {
+			got[string(c.Envelope)] = true
+			size += (len(c.Envelope) + 2) / 3 * 4
+			for _, r := range c.Receipts {
+				size += (len(r) + 2) / 3 * 4
+			}
+			var v struct {
+				V pqcrypto.Counter `json:"secret_version"`
+			}
+			json.Unmarshal(c.Envelope, &v)
+			from = max(from, v.V)
+		}
+		if len(st.Chains) > 1 && size > brokerproto.SyncBudget {
+			t.Fatalf("page %d: %d chains, %d encoded bytes over a %d budget", pages, len(st.Chains), size, brokerproto.SyncBudget)
+		}
+		if !st.More {
+			return got, pages
+		}
+		if len(st.Chains) == 0 {
+			t.Fatal("a page with more carries no chain")
+		}
+	}
+}
+
+// Open chains count against the reply budget like any other and are paged too: several
+// unterminated chains at or below the broker's version, each one admissible but together
+// over the budget, arrive across replies (security review of #10).
+func TestOpenChainsArePagedWithinTheBudget(t *testing.T) {
+	f := newVault(t)
+	saved := brokerproto.SyncBudget
+	defer func() { brokerproto.SyncBudget = saved }()
+	v := f.cp.Store.Vault()
+	ctx := context.Background()
+	var top pqcrypto.Counter
+	var raw []byte
+	for range 6 { // unterminated candidates whose locks were released
+		op := pqtest.UUID()
+		ver, err := f.reserve(op, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, raw = f.envelope(ver)
+		if err := f.call(brokerproto.MsgEnvelope, brokerproto.EnvelopeRequest{OperationID: op, Envelope: raw}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := v.Complete(ctx, string(op), string(f.acct()), nil, "", "", store.LockDelete); err != nil {
+			t.Fatal(err)
+		}
+		top = ver
+	}
+	brokerproto.SyncBudget = (len(raw)+2)/3*4*2 + 64 // two envelopes fit, three do not
+	got, pages := syncAll(t, f, top)
+	if len(got) != 6 || pages < 3 {
+		t.Fatalf("%d open chains in %d pages", len(got), pages)
+	}
+}
+
+// Manifest pages are bounded by SyncBudget in encoded bytes, not only by count, and always
+// carry one manifest so a page of large manifests never repeats forever (PR Reviewer Guide
+// on #10).
+func TestManifestPagesAreBudgeted(t *testing.T) {
+	f := newVault(t)
+	saved := brokerproto.SyncBudget
+	defer func() { brokerproto.SyncBudget = saved }()
+	for range 9 {
+		f.cp.Account(nil)
+	}
+	ms, err := f.cp.Store.Guard().Manifests(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	brokerproto.SyncBudget = len(ms[len(ms)-1].Manifest) * 3 // under four policies
+	after, pages := 0, 0
+	for {
+		if pages > len(ms)+2 {
+			t.Fatal("sync never completes")
+		}
+		var s brokerproto.SyncReply
+		if err := f.call(brokerproto.MsgSync, brokerproto.SyncRequest{ManifestsAfter: after}, &s); err != nil {
 			t.Fatal(err)
 		}
 		pages++
 		size := 0
+		for _, m := range s.Manifests {
+			size += (len(m) + 2) / 3 * 4
+		}
+		if len(s.Manifests) > 1 && size > brokerproto.SyncBudget {
+			t.Fatalf("page of %d manifests, %d encoded bytes over a %d budget", len(s.Manifests), size, brokerproto.SyncBudget)
+		}
+		after += len(s.Manifests)
+		if len(s.Manifests) == 0 {
+			break
+		}
+	}
+	if after != len(ms) || pages < 4 {
+		t.Fatalf("%d of %d manifests in %d pages", after, len(ms), pages)
+	}
+	// A budget below one manifest still advances one manifest per page.
+	brokerproto.SyncBudget = 1
+	var s brokerproto.SyncReply
+	if err := f.call(brokerproto.MsgSync, brokerproto.SyncRequest{}, &s); err != nil || len(s.Manifests) != 1 {
+		t.Fatalf("tiny budget: %d manifests, %v", len(s.Manifests), err)
+	}
+}
+
+// countingStore counts the chains the listener reads from the store.
+type countingStore struct {
+	store.Store
+	n *atomic.Int64
+}
+
+func (s countingStore) Vault() store.VaultStore { return countingVault{s.Store.Vault(), s.n} }
+
+func (s countingStore) Guard() store.GuardStore { return countingGuard{s.Store.Guard(), s.n} }
+
+type countingGuard struct {
+	store.GuardStore
+	n *atomic.Int64
+}
+
+func (g countingGuard) Manifests(ctx context.Context, after int64) ([]*store.TrustManifest, error) {
+	ms, err := g.GuardStore.Manifests(ctx, after)
+	g.n.Add(int64(len(ms)))
+	return ms, err
+}
+
+func (g countingGuard) ManifestsPage(ctx context.Context, after int64, limit int) ([]*store.TrustManifest, error) {
+	ms, err := g.GuardStore.ManifestsPage(ctx, after, limit)
+	g.n.Add(int64(len(ms)))
+	return ms, err
+}
+
+// A manifest sync page reads at most SyncPage manifests from the store, however long the
+// trust history (security review of #10).
+func TestManifestSyncReadsOnlyOnePage(t *testing.T) {
+	f := newVault(t)
+	for range brokerproto.SyncPage + 10 {
+		f.cp.Account(nil)
+	}
+	var n atomic.Int64
+	f.cp.L.Store = countingStore{f.cp.Store, &n}
+	after := 0
+	for pages := 0; ; pages++ {
+		if pages > 10 {
+			t.Fatal("sync never completes")
+		}
+		n.Store(0)
+		var s brokerproto.SyncReply
+		if err := f.call(brokerproto.MsgSync, brokerproto.SyncRequest{ManifestsAfter: after}, &s); err != nil {
+			t.Fatal(err)
+		}
+		if read := n.Load(); read > int64(brokerproto.SyncPage) {
+			t.Fatalf("a sync page read %d manifests", read)
+		}
+		if len(s.Manifests) == 0 {
+			return
+		}
+		after += len(s.Manifests)
+	}
+}
+
+type countingVault struct {
+	store.VaultStore
+	n *atomic.Int64
+}
+
+func (v countingVault) count(cs []*store.StoredChain, err error) ([]*store.StoredChain, error) {
+	v.n.Add(int64(len(cs)))
+	return cs, err
+}
+
+func (v countingVault) Chains(ctx context.Context, a string) ([]*store.StoredChain, error) {
+	return v.count(v.VaultStore.Chains(ctx, a))
+}
+
+func (v countingVault) ChainsAfter(ctx context.Context, a string, after uint64, limit int) ([]*store.StoredChain, error) {
+	return v.count(v.VaultStore.ChainsAfter(ctx, a, after, limit))
+}
+
+func (v countingVault) OpenChains(ctx context.Context, a string, after, upTo uint64, limit int) ([]*store.StoredChain, error) {
+	return v.count(v.VaultStore.OpenChains(ctx, a, after, upTo, limit))
+}
+
+func (v countingVault) Chain(ctx context.Context, a, e string) (*store.StoredChain, error) {
+	c, err := v.VaultStore.Chain(ctx, a, e)
+	if err == nil {
+		v.n.Add(1)
+	}
+	return c, err
+}
+
+// Paging bounds the store reads, not only the reply: an account sync page reads at most
+// SyncChains+1 chains, open or newer, and a receipts request reads only the chain
+// it names, however long the history (PR Reviewer Guide on #10).
+func TestAccountSyncAndReceiptsReadOnlyWhatTheyNeed(t *testing.T) {
+	f := newVault(t)
+	saved := brokerproto.SyncChains
+	defer func() { brokerproto.SyncChains = saved }()
+	brokerproto.SyncChains = 2
+	rotate := func(end string) {
+		op := pqtest.UUID()
+		v, _ := f.reserve(op, 0)
+		e, raw := f.envelope(v)
+		if err := f.call(brokerproto.MsgEnvelope, brokerproto.EnvelopeRequest{OperationID: op, Envelope: raw}, nil); err != nil {
+			t.Fatal(err)
+		}
+		var rs []pqcrypto.B64
+		if end == pqcrypto.ReceiptAbort {
+			ab, _ := f.receipt(e, 1, pqcrypto.ZeroHex, pqcrypto.ReceiptAbort, pqcrypto.ReasonRefused, op)
+			rs = append(rs, ab)
+		} else {
+			c1, h1 := f.receipt(e, 1, pqcrypto.ZeroHex, pqcrypto.ReceiptCommitTarget, "", op)
+			c2, _ := f.receipt(e, 2, h1, pqcrypto.ReceiptRelease, "", op)
+			rs = append(rs, c1, c2)
+		}
+		if err := f.call(brokerproto.MsgReceipts, brokerproto.ReceiptsRequest{OperationID: op, AccountID: f.acct(), Receipts: rs}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rotate(pqcrypto.ReceiptRelease)
+	for range 12 {
+		rotate(pqcrypto.ReceiptAbort)
+	}
+	var n atomic.Int64
+	f.cp.L.Store = countingStore{f.cp.Store, &n} // the next frame orders this write before the listener's reads
+	after, pages, got := pqcrypto.Counter(0), 0, 0
+	for {
+		if pages > 20 {
+			t.Fatal("sync never completes")
+		}
+		n.Store(0)
+		var st brokerproto.AccountState
+		if err := f.call(brokerproto.MsgSyncAccount, brokerproto.SyncAccountRequest{AccountID: f.acct(), From: after}, &st); err != nil {
+			t.Fatal(err)
+		}
+		pages++
+		if read := n.Load(); read > int64(brokerproto.SyncChains)+1 {
+			t.Fatalf("page %d read %d chains for %d sent", pages, read, len(st.Chains))
+		}
+		got += len(st.Chains)
 		for _, c := range st.Chains {
-			got[string(c.Envelope)] = true
-			size += len(c.Envelope)
 			var v struct {
 				V pqcrypto.Counter `json:"secret_version"`
 			}
 			json.Unmarshal(c.Envelope, &v)
 			after = max(after, v.V)
 		}
-		if size*4/3 > brokerproto.SyncBudget+8<<10 {
-			t.Fatalf("page of %d bytes over a %d budget", size, brokerproto.SyncBudget)
-		}
 		if !st.More {
 			break
 		}
 	}
-	if len(got) != 13 || pages < 2 {
-		t.Fatalf("%d chains in %d pages", len(got), pages)
+	if got != 13 || pages < 6 {
+		t.Fatalf("%d chains in %d pages", got, pages)
+	}
+	n.Store(0)
+	rotate(pqcrypto.ReceiptRelease)
+	if read := n.Load(); read != 1 {
+		t.Fatalf("a receipts request read %d chains", read)
+	}
+}
+
+// Pushes the broker has not drained never stall the channel reader: a call still gets its
+// result (PR Reviewer Guide on #10).
+func TestUndrainedPushesNeverBlockResults(t *testing.T) {
+	f := newVault(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for range cap(f.b.Conn.Pushes) + 8 {
+		if err := f.cp.L.Send(ctx, f.b.ID, brokerproto.Message{V: 1, Type: brokerproto.MsgNudge}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var s brokerproto.SyncReply
+	if err := f.call(brokerproto.MsgSync, brokerproto.SyncRequest{}, &s); err != nil {
+		t.Fatalf("call behind a full push queue: %v", err)
+	}
+	if n := len(f.b.Conn.Pushes); n != cap(f.b.Conn.Pushes) {
+		t.Fatalf("%d pushes queued", n)
+	}
+}
+
+// A push relayed by a replica that does not hold the broker's channel is queued and
+// delivered by the one that does (PR Reviewer Guide on #15).
+func TestRelayReachesTheBrokerThroughAnyReplica(t *testing.T) {
+	f := newVault(t)
+	other := &brokerproto.Listener{Store: f.cp.Store, Trust: f.cp.L.Trust} // holds no channel
+	ctx := context.Background()
+	if err := other.Relay(ctx, f.b.ID, brokerproto.Message{V: 1, Type: brokerproto.MsgNudge}, time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case m := <-f.b.Conn.Pushes:
+		if m.Type != brokerproto.MsgNudge {
+			t.Fatalf("push %+v", m)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a queued push never reached the broker")
+	}
+}
+
+// §4.2: a delayed write_outcome_unknown status moves only a mutating run; it never undoes
+// an outcome the receipts recorded.
+func TestLateUnknownStatusNeverRegressesARun(t *testing.T) {
+	f := newVault(t)
+	ctx := context.Background()
+	state := func(op pqcrypto.UUID) string {
+		t.Helper()
+		run, err := f.cp.Store.Vault().GetRun(ctx, string(f.acct()), string(op))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return run.State
+	}
+	unknown := func(op pqcrypto.UUID) {
+		t.Helper()
+		req := brokerproto.StatusRequest{AccountID: f.acct(), Health: "unknown", OperationID: op, RunState: "write_outcome_unknown"}
+		if err := f.call(brokerproto.MsgStatus, req, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, want := range []string{"target_verified", "release_authorized", "aborted"} {
+		op := pqtest.UUID()
+		v, err := f.reserve(op, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e, raw := f.envelope(v)
+		if err := f.call(brokerproto.MsgEnvelope, brokerproto.EnvelopeRequest{OperationID: op, Envelope: raw}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.intent(op, v, e.EnvelopeID); err != nil {
+			t.Fatal(err)
+		}
+		unknown(op)
+		if s := state(op); s != "write_outcome_unknown" {
+			t.Fatalf("mutating run after unknown status: %s", s)
+		}
+		c1, h1 := f.receipt(e, 1, pqcrypto.ZeroHex, pqcrypto.ReceiptCommitTarget, "", op)
+		c2, _ := f.receipt(e, 2, h1, pqcrypto.ReceiptRelease, "", op)
+		a, _ := f.receipt(e, 1, pqcrypto.ZeroHex, pqcrypto.ReceiptAbort, pqcrypto.ReasonRefused, op)
+		rs := map[string][]pqcrypto.B64{"target_verified": {c1}, "release_authorized": {c1, c2}, "aborted": {a}}[want]
+		if err := f.call(brokerproto.MsgReceipts, brokerproto.ReceiptsRequest{OperationID: op, AccountID: f.acct(), Receipts: rs}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if s := state(op); s != want {
+			t.Fatalf("run %s, want %s", s, want)
+		}
+		unknown(op)
+		if s := state(op); s != want {
+			t.Fatalf("late unknown status moved a %s run to %s", want, s)
+		}
+		if want == "target_verified" { // free the lock for the next case
+			if err := f.call(brokerproto.MsgReceipts, brokerproto.ReceiptsRequest{OperationID: op, AccountID: f.acct(), Receipts: []pqcrypto.B64{c1, c2}}, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+type accountCounter struct {
+	store.Store
+	rows, gets *atomic.Int64
+}
+
+func (s accountCounter) Vault() store.VaultStore {
+	return accountVault{s.Store.Vault(), s.rows, s.gets}
+}
+
+type accountVault struct {
+	store.VaultStore
+	rows, gets *atomic.Int64
+}
+
+func (v accountVault) PoolAccounts(ctx context.Context, pool, after string, limit int) ([]*store.Account, error) {
+	as, err := v.VaultStore.PoolAccounts(ctx, pool, after, limit)
+	v.rows.Add(int64(len(as)))
+	return as, err
+}
+
+func (v accountVault) GetAccount(ctx context.Context, id string) (*store.Account, error) {
+	v.gets.Add(1)
+	return v.VaultStore.GetAccount(ctx, id)
+}
+
+// An account sync page reads at most SyncAccountsPage rows, eligible or not, checks them as
+// read with no query per account, and continues past the ones filtered out (PR Reviewer
+// Guide on #10).
+func TestAccountListReadsOnlyOnePage(t *testing.T) {
+	f := newVault(t)
+	saved := brokerproto.SyncAccountsPage
+	defer func() { brokerproto.SyncAccountsPage = saved }()
+	brokerproto.SyncAccountsPage = 2
+	for range 6 {
+		f.cp.Account(nil)
+	}
+	ctx := context.Background()
+	for range 5 { // in the pool, with no admitted policy: never listed
+		acct, asset := pqtest.UUID(), pqtest.UUID()
+		if err := f.cp.Store.Vault().CreateAsset(ctx, &store.Asset{ID: string(asset), Name: "host"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.cp.Store.Vault().CreateAccount(ctx, &store.Account{ID: string(acct), AssetID: string(asset), Name: "svc", AccountKind: pqcrypto.KindManaged, PoolID: string(f.cp.Pool)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var s brokerproto.SyncReply
+	for after := 0; ; after += len(s.Manifests) {
+		if err := f.call(brokerproto.MsgSync, brokerproto.SyncRequest{ManifestsAfter: after}, &s); err != nil {
+			t.Fatal(err)
+		}
+		if len(s.Manifests) == 0 {
+			break
+		}
+	}
+	var rows, gets atomic.Int64
+	f.cp.L.Store = accountCounter{f.cp.Store, &rows, &gets}
+	var next pqcrypto.UUID
+	seen := map[pqcrypto.UUID]bool{}
+	pages := 0
+	for ; ; pages++ {
+		if pages > 20 {
+			t.Fatal("sync never completes")
+		}
+		rows.Store(0)
+		if err := f.call(brokerproto.MsgSync, brokerproto.SyncRequest{ManifestsAfter: 1 << 20, AccountsAfter: next}, &s); err != nil {
+			t.Fatal(err)
+		}
+		if r := rows.Load(); r > int64(brokerproto.SyncAccountsPage) {
+			t.Fatalf("a sync page read %d account rows", r)
+		}
+		for _, a := range s.Accounts {
+			seen[a] = true
+		}
+		if s.Done {
+			break
+		}
+		next = s.AccountsNext
+	}
+	if len(seen) != 7 || gets.Load() != 0 || pages < 5 {
+		t.Fatalf("%d accounts in %d pages, %d per-account reads", len(seen), pages+1, gets.Load())
+	}
+}
+
+// An account whose policy names a descriptor the store cannot return is an error, never a
+// state without its descriptor (PR Reviewer Guide on #10).
+func TestAccountSyncNeedsTheDescriptor(t *testing.T) {
+	f := newVault(t)
+	pol := f.cp.Account(func(p *pqcrypto.PolicyManifest) { p.TargetDescriptorDigest = pqcrypto.HexID(strings.Repeat("cd", 32)) })
+	var st brokerproto.AccountState
+	if err := f.call(brokerproto.MsgSyncAccount, brokerproto.SyncAccountRequest{AccountID: pol.AccountID}, &st); err == nil {
+		t.Fatalf("sync without the descriptor: %+v", st)
 	}
 }

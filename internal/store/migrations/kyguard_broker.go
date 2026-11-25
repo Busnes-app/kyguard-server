@@ -77,6 +77,7 @@ CREATE TABLE accounts (
     health_reason TEXT NOT NULL DEFAULT '',
     created_at {{ts}} NOT NULL
 );
+CREATE INDEX idx_accounts_pool ON accounts(pool_id, id);
 CREATE TABLE target_descriptors (
     digest TEXT PRIMARY KEY,
     account_id TEXT NOT NULL REFERENCES accounts(id),
@@ -104,6 +105,7 @@ CREATE TABLE envelope_receipts (
     created_at {{ts}} NOT NULL,
     PRIMARY KEY (envelope_id, receipt_seq)
 );
+CREATE INDEX idx_receipts_operation ON envelope_receipts(operation_id);
 CREATE TABLE rotation_locks (
     account_id TEXT PRIMARY KEY REFERENCES accounts(id),
     operation_id TEXT NOT NULL,
@@ -134,7 +136,15 @@ CREATE TABLE access_transactions (
     digest TEXT NOT NULL UNIQUE,
     tx TEXT NOT NULL,
     created_at {{ts}} NOT NULL
-);`),
+);
+CREATE TABLE broker_outbox (
+    id TEXT PRIMARY KEY,
+    broker_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    body TEXT NOT NULL,
+    expires_at {{ts}} NOT NULL
+);
+CREATE INDEX broker_outbox_broker ON broker_outbox (broker_id, id);`),
 		dialects(103, "kyguard_checkout", `
 CREATE TABLE checkout_leases (
     request_id TEXT PRIMARY KEY,
@@ -143,6 +153,8 @@ CREATE TABLE checkout_leases (
     secret_version BIGINT NOT NULL CHECK (secret_version > 0),
     state TEXT NOT NULL CHECK (state IN ('active', 'rotation_pending', 'closed')),
     close_reason TEXT NOT NULL DEFAULT '',
+    policy_digest TEXT NOT NULL DEFAULT '',
+    target_descriptor_digest TEXT NOT NULL DEFAULT '',
     opened_at {{ts}} NOT NULL,
     expires_at {{ts}} NOT NULL,
     updated_at {{ts}} NOT NULL

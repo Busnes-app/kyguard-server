@@ -15,6 +15,8 @@ Owns how a broker talks to a target. The rotation order, journaling and quaranti
   host as server name; SSH checks `ssh_host_key_sha256` in the host-key callback before any
   authentication. The `Dial` field exists for tests that map the descriptor host to a
   container; production leaves it nil.
+- Every operation observes its context: cancellation or a deadline closes the target
+  connection rather than waiting for the connector's fixed timeout.
 - `Session.Change` calls `commit` immediately before the first byte of the new password
   leaves and sends nothing if it fails.
 - Return `broker.ErrAuthFailed` only for a deterministic authentication failure and
@@ -22,6 +24,9 @@ Owns how a broker talks to a target. The rotation order, journaling and quaranti
 - `adldaps`: simple bind only (empty passwords refused), LDAPS only, TLS 1.2 minimum;
   baseline is `pwdLastSet` and `msDS-KeyVersionNumber`; verify is a fresh bind plus
   `pwdLastSet` advancing; LDAP 49 is `ErrAuthFailed`, 19 and 53 on the modify are
+  `ErrRefused`; `PasswordAge` reads `pwdLastSet` and the minimum age of the account's
+  resultant PSO (`msDS-ResultantPSO`), failing if that PSO is unreadable, or the domain
+  `minPwdAge` when there is none (DECISIONS 65).
   `ErrRefused`; `PasswordAge` reads `pwdLastSet` and the domain `minPwdAge`.
 - `sshpasswd`: the host-key callback compares the hex SHA-256 of the wire-format key in
   constant time and fails before authentication. Password or keyboard-interactive (only

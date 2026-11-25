@@ -74,7 +74,7 @@ func New(t *testing.T, o Options) *Rig {
 	j.Close()
 	r.CPW = broker.NewChannelCP(b.Conn)
 	if !o.NoSeed {
-		r.seed()
+		r.Seed()
 	}
 	m := r.Machine()
 	defer m.J.Close()
@@ -84,9 +84,9 @@ func New(t *testing.T, o Options) *Rig {
 	return r
 }
 
-// seed puts v1 on the Control Plane: a broker-sealed envelope of the initial
+// Seed puts v1 on the Control Plane: a broker-sealed envelope of the initial
 // password with commit_target and release, as a completed earlier rotation leaves it.
-func (r *Rig) seed() {
+func (r *Rig) Seed() {
 	t := r.T
 	ctx := context.Background()
 	v := r.CP.Store.Vault()
@@ -170,9 +170,32 @@ type WrapCP struct {
 	OnIntent  func(ctx context.Context, raw []byte) error
 	OnReserve func(ctx context.Context, account, op pqcrypto.UUID, reported pqcrypto.Counter) (pqcrypto.Counter, error)
 	OnSync    func(ctx context.Context, req brokerproto.SyncRequest) (*brokerproto.SyncReply, error)
-	OnAccount func(ctx context.Context, id pqcrypto.UUID, after pqcrypto.Counter, more bool) (*brokerproto.AccountState, error)
-	// ReceiptsErr fails every receipts delivery while set.
-	ReceiptsErr error
+	OnAccount func(ctx context.Context, id pqcrypto.UUID, after, from pqcrypto.Counter) (*brokerproto.AccountState, error)
+	// ReceiptsErr fails every receipts delivery while set; StatusErr every status report.
+	ReceiptsErr, StatusErr error
+	// LeaseErr and DeliveryErr fail every lease mirror or checkout delivery while set.
+	LeaseErr, DeliveryErr error
+}
+
+func (w *WrapCP) Status(ctx context.Context, s brokerproto.StatusRequest) error {
+	if w.StatusErr != nil {
+		return w.StatusErr
+	}
+	return w.ControlPlane.Status(ctx, s)
+}
+
+func (w *WrapCP) Lease(ctx context.Context, r brokerproto.LeaseRequest) error {
+	if w.LeaseErr != nil {
+		return w.LeaseErr
+	}
+	return w.ControlPlane.Lease(ctx, r)
+}
+
+func (w *WrapCP) Delivery(ctx context.Context, r brokerproto.DeliveryRequest) error {
+	if w.DeliveryErr != nil {
+		return w.DeliveryErr
+	}
+	return w.ControlPlane.Delivery(ctx, r)
 }
 
 func (w *WrapCP) Intent(ctx context.Context, raw []byte) error {
@@ -196,11 +219,11 @@ func (w *WrapCP) Sync(ctx context.Context, req brokerproto.SyncRequest) (*broker
 	return w.ControlPlane.Sync(ctx, req)
 }
 
-func (w *WrapCP) SyncAccount(ctx context.Context, id pqcrypto.UUID, after pqcrypto.Counter, more bool) (*brokerproto.AccountState, error) {
+func (w *WrapCP) SyncAccount(ctx context.Context, id pqcrypto.UUID, after, from pqcrypto.Counter) (*brokerproto.AccountState, error) {
 	if w.OnAccount != nil {
-		return w.OnAccount(ctx, id, after, more)
+		return w.OnAccount(ctx, id, after, from)
 	}
-	return w.ControlPlane.SyncAccount(ctx, id, after, more)
+	return w.ControlPlane.SyncAccount(ctx, id, after, from)
 }
 
 func (w *WrapCP) Receipts(ctx context.Context, op, account pqcrypto.UUID, rs []pqcrypto.B64) error {

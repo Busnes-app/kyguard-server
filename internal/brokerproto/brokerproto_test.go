@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Busnes-app/ky-primitives/recoverykey"
+	"github.com/coder/websocket"
 
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto/brokertest"
@@ -365,4 +366,62 @@ func copyFile(from, to string) error {
 		return err
 	}
 	return os.WriteFile(to, b, 0o644)
+}
+
+// A broker reconnecting while its previous connection is unresponsive must not hold the
+// listener-wide lock: the old connection's close handshake (up to 5s) runs outside it, so
+// Send (to this or any broker) and registration go on.
+func TestReconnectDoesNotBlockOnAnUnresponsiveConnection(t *testing.T) {
+	f := newFixture(t)
+	p, k := f.mustPair()
+	f.admitPool(1, member(p, k, pqcrypto.StatusActive))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn := func() *websocket.Conn {
+		c, err := brokerproto.Dial(ctx, f.srv.URL, p.CACert, clientCert(p, k))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { c.CloseNow() })
+		return c
+	}
+	conn() // never read: it cannot answer the close handshake
+	fresh := conn()
+	time.Sleep(200 * time.Millisecond) // let the listener register the reconnect
+
+	start := time.Now()
+	if err := f.l.Send(ctx, p.BrokerID, brokerproto.Message{V: 1, Type: brokerproto.MsgNudge}); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("Send blocked %v behind the old connection's close", d)
+	}
+	if _, _, err := fresh.Read(ctx); err != nil {
+		t.Fatalf("reconnected broker did not get the message: %v", err)
+	}
+}
+
+// CloseAll drops a broker's channel at once, so the broker reconnects elsewhere instead of
+// waiting out the shutdown drain (PR Reviewer Guide on #8).
+func TestCloseAllDropsEveryChannel(t *testing.T) {
+	f := newFixture(t)
+	p, k := f.mustPair()
+	f.admitPool(1, member(p, k, pqcrypto.StatusActive))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := brokerproto.Dial(ctx, f.srv.URL, p.CACert, clientCert(p, k))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	time.Sleep(200 * time.Millisecond) // let the listener register it
+	f.l.CloseAll()
+	rctx, rcancel := context.WithTimeout(ctx, 3*time.Second)
+	defer rcancel()
+	if _, _, err := c.Read(rctx); err == nil || rctx.Err() != nil {
+		t.Fatalf("channel still open after CloseAll: %v", err)
+	}
+	if err := f.l.Send(ctx, p.BrokerID, brokerproto.Message{V: 1, Type: brokerproto.MsgNudge}); err == nil {
+		t.Fatal("Send reached a closed channel")
+	}
 }

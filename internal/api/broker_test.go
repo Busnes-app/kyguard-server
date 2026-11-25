@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,5 +129,56 @@ func TestSubmitManifestVerifiesSignatures(t *testing.T) {
 	w := postJSON(srv, user, "/api/manifests", forged)
 	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("foreign custodians: %d %s", w.Code, w.Body)
+	}
+}
+
+// §3.8: an epoch at 2^63-1 is stored and read back intact; one above it is refused at
+// decode, so a manifest epoch never reaches the BIGINT column out of range.
+func TestSubmitManifestEpochAtTheCounterLimit(t *testing.T) {
+	srv, st, _, d := setupBrokerServer(t)
+	user := loginAs(t, srv, st, "custodian1", "user")
+	raw := d.Pool(t, pqtest.UUID(), pqcrypto.MaxCounter, []pqcrypto.BrokerMember{}, nil)
+	w := postJSON(srv, user, "/api/manifests", raw)
+	if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"epoch":"9223372036854775807"`) {
+		t.Fatalf("max epoch: %d %s", w.Code, w.Body)
+	}
+	ms, err := st.Guard().Manifests(context.Background(), 0)
+	if err != nil || len(ms) != 1 || ms[0].Epoch != pqcrypto.MaxCounter {
+		t.Fatalf("stored: %+v %v", ms, err)
+	}
+	over := bytes.Replace(raw, []byte(`"9223372036854775807"`), []byte(`"9223372036854775808"`), 1)
+	if bytes.Equal(over, raw) {
+		t.Fatal("epoch not found in manifest")
+	}
+	w = postJSON(srv, user, "/api/manifests", over)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), `"code":"invalid_counter"`) {
+		t.Fatalf("epoch above 2^63-1: %d %s", w.Code, w.Body)
+	}
+	if ms, _ := st.Guard().Manifests(context.Background(), 0); len(ms) != 1 {
+		t.Fatalf("over-limit manifest stored: %d rows", len(ms))
+	}
+}
+
+// A standing_release is refused at submission while the broker has no path for it
+// (decision 76; PR Reviewer Guide on #16).
+func TestStandingReleaseIsRefusedAtSubmission(t *testing.T) {
+	srv, st, _, d := setupBrokerServer(t)
+	user := loginAs(t, srv, st, "alice", "user")
+	acct := pqtest.UUID()
+	pol := d.ManagedPolicy(acct, pqtest.UUID(), 1, pqcrypto.HexID(strings.Repeat("ab", 32)))
+	raw, _ := d.Tx(t, pol, pqtest.UUID(), pqtest.NewPrincipal(t), pqcrypto.Action{ActionType: pqcrypto.ActionStandingRelease}, time.Now())
+	body, _ := json.Marshal(brokerproto.TxPush{Tx: raw})
+	w := postJSON(srv, user, "/api/accounts/"+string(acct)+"/transactions", body)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), `"code":"unsupported_action"`) {
+		t.Fatalf("standing_release: %d %s", w.Code, w.Body)
+	}
+}
+
+// Startup serves and shutdown closes the same listener, the one holding the broker
+// connections (security review of #8).
+func TestBrokerListenerIsOneInstance(t *testing.T) {
+	srv, _, _, _ := setupBrokerServer(t)
+	if l := srv.BrokerListener(); l == nil || l != srv.BrokerListener() {
+		t.Fatal("BrokerListener returned a new listener")
 	}
 }

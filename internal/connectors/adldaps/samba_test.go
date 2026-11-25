@@ -368,3 +368,34 @@ func TestRotationRefusedForMinimumAgeOnAD(t *testing.T) {
 		t.Fatalf("min age %d deadline %v next %v", a.MinAgeSeconds, a.MinAgeDeadline, a.NextAttemptAt)
 	}
 }
+
+// PR #13 review: an account governed by a fine-grained password policy reports that
+// policy's minimum age, not the domain's; a policy the account cannot read is an unknown
+// minimum age (an error), never the domain value.
+func TestFineGrainedMinimumAge(t *testing.T) {
+	need(t)
+	minAge(t, 0)
+	dn := newUser(t)
+	user := strings.TrimPrefix(strings.SplitN(dn, ",", 2)[0], "CN=")
+	pso := "pso-" + user
+	samba(t, "domain", "passwordsettings", "pso", "create", pso, "1", "--min-pwd-age=2")
+	defer samba(t, "domain", "passwordsettings", "pso", "delete", pso)
+	samba(t, "domain", "passwordsettings", "pso", "apply", pso, user)
+	age := func() (time.Duration, error) {
+		s, err := connector().Login(context.Background(), descriptor(dn), []byte(startPw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		_, min, err := s.(broker.AgeReporter).PasswordAge(context.Background())
+		return min, err
+	}
+	if min, err := age(); err == nil {
+		t.Fatalf("unreadable policy reported %v", min)
+	}
+	samba(t, "dsacl", "set", "--objectdn=CN="+pso+",CN=Password Settings Container,CN=System,DC=kyg,DC=test",
+		"--sddl=(A;;RPLCLORC;;;AU)")
+	if min, err := age(); err != nil || min != 48*time.Hour {
+		t.Fatalf("readable policy: %v %v", min, err)
+	}
+}
