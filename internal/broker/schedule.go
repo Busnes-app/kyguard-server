@@ -58,6 +58,14 @@ func (m *Machine) Tick(ctx context.Context) error {
 	}
 	now := m.now()
 	for _, a := range accts {
+		// A run left reserving by a lost reply is settled first, so its lock never blocks
+		// the schedule until the next reconnect (decision 72).
+		if a.Run != nil && a.Run.State == StateReserving {
+			if err := m.settle(ctx, a); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+		}
 		p, _ := m.Trust.Policy(a.ID)
 		if p == nil || p.AccountKind != pqcrypto.KindManaged || p.RotationSchedule == nil || a.Quarantined || a.Run.Open() ||
 			now.Before(a.NextAttemptAt) || a.Refusals >= MaxRefusals {

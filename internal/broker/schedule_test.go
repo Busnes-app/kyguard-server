@@ -2,6 +2,7 @@ package broker_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -197,5 +198,34 @@ func TestTheTargetsMinimumAgeIsReadAtLogin(t *testing.T) {
 	m.Tick(context.Background())
 	if a := r.account(m); a.HealthReason != broker.ReasonBelowMinAge || a.Run.Attempt != 0 {
 		t.Fatalf("health %s/%s after attempt %d", a.Health, a.HealthReason, a.Run.Attempt)
+	}
+}
+
+// A reserve reply lost on a channel that stays open is settled by the next tick, which then
+// runs the occurrence (security review of #11).
+func TestTickSettlesALostReservation(t *testing.T) {
+	start := time.Now().UTC()
+	r := newRig(t, scheduled(start))
+	real := r.cpw
+	lost := true
+	r.cpw = &wrapCP{ControlPlane: real, reserve: func(ctx context.Context, account, op pqcrypto.UUID, reported pqcrypto.Counter) (pqcrypto.Counter, error) {
+		v, err := real.Reserve(ctx, account, op, reported)
+		if lost {
+			lost = false
+			return 0, errors.New("reply lost")
+		}
+		return v, err
+	}}
+	m := r.machine()
+	defer m.J.Close()
+	clock(m, start.Add(day+time.Hour))
+	m.Tick(context.Background())
+	if a := r.account(m); a.Run.State != broker.StateReserving || r.cpLock() != string(a.Run.OperationID) {
+		t.Fatalf("after the lost reply: %+v lock %q", a.Run, r.cpLock())
+	}
+	m.Tick(context.Background()) // settles the reservation
+	m.Tick(context.Background()) // runs the occurrence
+	if a := r.account(m); a.Run.State != broker.StateReleaseAuthorized || r.cpLock() != "" {
+		t.Fatalf("after two ticks: %+v lock %q", a.Run, r.cpLock())
 	}
 }
