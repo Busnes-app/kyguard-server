@@ -28,7 +28,7 @@ type VaultStore interface {
 	CreateAsset(ctx context.Context, a *Asset) error
 	CreateAccount(ctx context.Context, a *Account) error
 	GetAccount(ctx context.Context, id string) (*Account, error)
-	PoolAccounts(ctx context.Context, poolID string) ([]*Account, error)
+	PoolAccounts(ctx context.Context, poolID, after string, limit int) ([]*Account, error)
 	// PutTargetDescriptor stores a descriptor by digest; storing it again is a no-op.
 	PutTargetDescriptor(ctx context.Context, digest, accountID string, raw []byte) error
 	TargetDescriptor(ctx context.Context, digest string) ([]byte, error)
@@ -167,8 +167,9 @@ func (v vaultStore) GetAccount(ctx context.Context, id string) (*Account, error)
 	return scanAccount(v.s.db.QueryRowContext(ctx, v.s.rebind(`SELECT `+accountCols+` FROM accounts WHERE id = ?`), id))
 }
 
-func (v vaultStore) PoolAccounts(ctx context.Context, poolID string) ([]*Account, error) {
-	rows, err := v.s.db.QueryContext(ctx, v.s.rebind(`SELECT `+accountCols+` FROM accounts WHERE pool_id = ? ORDER BY id`), poolID)
+// PoolAccounts returns at most limit of the pool's accounts with IDs above after, by ID.
+func (v vaultStore) PoolAccounts(ctx context.Context, poolID, after string, limit int) ([]*Account, error) {
+	rows, err := v.s.db.QueryContext(ctx, v.s.rebind(`SELECT `+accountCols+` FROM accounts WHERE pool_id = ? AND id > ? ORDER BY id LIMIT ?`), poolID, after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -482,7 +483,9 @@ func (v vaultStore) Complete(ctx context.Context, op, accountID string, rs []*St
 			}
 		}
 		if runState != "" {
-			if _, err := tx.ExecContext(ctx, v.s.rebind(`UPDATE rotation_runs SET state = ?, updated_at = ? WHERE operation_id = ? AND account_id = ?`), runState, time.Now().UTC(), op, accountID); err != nil {
+			// Only a mutating run becomes unknown (§4.2): a late status never undoes an outcome.
+			if _, err := tx.ExecContext(ctx, v.s.rebind(`UPDATE rotation_runs SET state = ?, updated_at = ? WHERE operation_id = ? AND account_id = ?
+ AND (state = 'mutating' OR ? <> 'write_outcome_unknown')`), runState, time.Now().UTC(), op, accountID, runState); err != nil {
 				return err
 			}
 		}
