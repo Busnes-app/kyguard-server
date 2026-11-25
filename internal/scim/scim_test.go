@@ -29,7 +29,7 @@ func setupSCIMServer(t *testing.T) (*scim.Server, *http.ServeMux, string) {
 	}, "http://localhost:8080")
 
 	mux := http.NewServeMux()
-	srv.RegisterRoutes(mux)
+	srv.RegisterRoutes(mux.Handle)
 	return srv, mux, token
 }
 
