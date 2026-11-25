@@ -6,3 +6,6 @@ func SetReceiptBatch(n int) func() {
 	receiptBatch = n
 	return func() { receiptBatch = old }
 }
+
+// Retry exposes the start-up retry loop.
+var Retry = retry
