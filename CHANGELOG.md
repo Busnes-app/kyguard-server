@@ -15,6 +15,7 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 
 - The web shell asks for a fresh authenticator code when a privileged action is refused because
   its step-up window passed (`stepup_stale`), then sends the action again.
+  If the shell goes away while the refusal is being read, the action gets the refusal back.
 - `kyguard-cli login`, server side (spec §7.6): an SSO login started with `cli_port` and an S256
   `cli_challenge` ends with a 60-second one-time code sent to `http://127.0.0.1:<port>/cb`;
   `POST /api/auth/cli/exchange` trades code and verifier for a pending bearer session, and

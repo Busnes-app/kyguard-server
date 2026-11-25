@@ -72,6 +72,27 @@ it('returns the refusal when the shell goes away with the prompt open', async ()
   expect((await action).status).toBe(403);
 });
 
+it('returns the refusal when the shell goes away while the refusal is being read', async () => {
+  let finishBody = () => {};
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      finishBody = () => {
+        controller.enqueue(new TextEncoder().encode(JSON.stringify({ code: 'stepup_stale' })));
+        controller.close();
+      };
+    },
+  });
+  const fetcher = vi.fn(async () => new Response(body, { status: 403 }));
+  vi.stubGlobal('fetch', fetcher);
+  const { unmount } = render(<ReStepUp />);
+  const action = secureFetch('/api/backup/deposit', { method: 'POST' });
+  await waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
+  unmount();
+  finishBody();
+  expect((await action).status).toBe(403);
+  expect(fetcher).toHaveBeenCalledOnce();
+});
+
 it('shows a retryable error when the server cannot be reached', async () => {
   let reachable = false;
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {

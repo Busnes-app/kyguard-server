@@ -28,6 +28,8 @@ export async function secureFetch(input: RequestInfo | URL, init: RequestInit = 
   if (response.status !== 403 || !reStepUp) return response;
   const body: unknown = await response.clone().json().catch(() => null);
   const stale = typeof body === 'object' && body !== null && 'code' in body && body.code === 'stepup_stale';
-  if (!stale || !(await reStepUp())) return response;
+  // The shell may have unmounted while the body was read: then there is no prompt to ask.
+  const ask = reStepUp;
+  if (!stale || !ask || !(await ask())) return response;
   return send(input, init);
 }
