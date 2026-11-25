@@ -49,3 +49,25 @@ it('does not prompt for any other 403', async () => {
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(fetcher).toHaveBeenCalledOnce();
 });
+
+it('answers every action refused while the prompt was open', async () => {
+  const fetcher = stubServer();
+  render(<ReStepUp />);
+  const first = secureFetch('/api/backup/deposit', { method: 'POST' });
+  const second = secureFetch('/api/backup/deposit', { method: 'POST' });
+  fireEvent.change(await screen.findByLabelText('Authenticator code'), { target: { value: '123456' } });
+  expect(screen.getAllByRole('dialog')).toHaveLength(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+  expect((await first).status).toBe(200);
+  expect((await second).status).toBe(200);
+  expect(calls(fetcher, '/api/auth/stepup/totp')).toBe(1);
+});
+
+it('returns the refusal when the shell goes away with the prompt open', async () => {
+  stubServer();
+  const { unmount } = render(<ReStepUp />);
+  const action = secureFetch('/api/backup/deposit', { method: 'POST' });
+  await screen.findByRole('dialog');
+  unmount();
+  expect((await action).status).toBe(403);
+});

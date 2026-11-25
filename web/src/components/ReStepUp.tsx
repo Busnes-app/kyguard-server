@@ -9,23 +9,32 @@ export function ReStepUp() {
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const settle = useRef<((ok: boolean) => void) | null>(null);
+  // Every action waiting on this prompt: concurrent refusals share one dialog and all of them
+  // hear its answer.
+  const waiting = useRef<((ok: boolean) => void)[]>([]);
+
+  const finish = (ok: boolean) => {
+    const resolvers = waiting.current;
+    waiting.current = [];
+    setOpen(false);
+    resolvers.forEach((resolve) => resolve(ok));
+  };
 
   useEffect(() => {
     onStepupStale(() => new Promise<boolean>((resolve) => {
-      settle.current = resolve;
-      setCode('');
-      setError('');
-      setOpen(true);
+      if (waiting.current.length === 0) {
+        setCode('');
+        setError('');
+        setOpen(true);
+      }
+      waiting.current.push(resolve);
     }));
-    return () => onStepupStale(null);
+    // Leaving the shell (signing out) cancels an open prompt: its callers get the refusal.
+    return () => {
+      onStepupStale(null);
+      waiting.current.splice(0).forEach((resolve) => resolve(false));
+    };
   }, []);
-
-  function finish(ok: boolean) {
-    setOpen(false);
-    settle.current?.(ok);
-    settle.current = null;
-  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
