@@ -235,3 +235,34 @@ func TestTickSettlesALostReservation(t *testing.T) {
 		t.Fatalf("after two ticks: %+v lock %q", a.Run, r.cpLock())
 	}
 }
+
+// A policy that stops the schedule, accepted by a Sync that runs after Tick lists the
+// accounts and before it starts the rotation, is the one checked: nothing reaches the
+// target (security review of #12).
+func TestTickRechecksAPolicyAcceptedMeanwhile(t *testing.T) {
+	start := time.Now().UTC()
+	r := newRig(t, scheduled(start))
+	m := r.machine()
+	defer m.J.Close()
+	ctx := context.Background()
+	clock(m, start.Add(day+time.Hour))
+	var serr error
+	m.Hook = func(p string) error {
+		if p == "tick_listed" {
+			p2 := *r.pol
+			p2.Signatures, p2.Epoch, p2.RotationSchedule = nil, 2, nil
+			r.cp.Submit(r.cp.Dep.Signed(t, &p2))
+			serr = m.Sync(ctx)
+		}
+		return nil
+	}
+	if err := m.Tick(ctx); err != nil || serr != nil {
+		t.Fatalf("tick %v, sync %v", err, serr)
+	}
+	if p, _ := m.Trust.Policy(r.pol.AccountID); p == nil || p.Epoch != 2 {
+		t.Fatal("the new policy was not accepted")
+	}
+	if _, w := r.target.state(); w != 0 || len(r.target.logins) != 0 || r.account(m).Run != nil {
+		t.Fatalf("writes=%d logins=%d run=%v", w, len(r.target.logins), r.account(m).Run != nil)
+	}
+}

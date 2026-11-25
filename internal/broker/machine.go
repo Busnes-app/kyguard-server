@@ -190,6 +190,12 @@ func (m *Machine) Rotate(ctx context.Context, account pqcrypto.UUID, occurrence 
 	if err != nil {
 		return err
 	}
+	return m.rotate(ctx, a, occurrence, due)
+}
+
+// rotate is Rotate with m.mu held and the account loaded.
+func (m *Machine) rotate(ctx context.Context, a *Account, occurrence pqcrypto.Counter, due time.Time) error {
+	account := a.ID
 	if a.Quarantined {
 		return ErrQuarantined
 	}
