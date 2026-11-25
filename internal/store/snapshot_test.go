@@ -50,6 +50,8 @@ func seedEveryTable(t *testing.T, st *SQLStore) {
 	must(st.Sessions().EndSSOSubject(ctx, "kysignon", "sub-1", now, now.Add(time.Hour)))
 	_, _, err := st.TakeAttempt(ctx, "login:198.51.100.1", 5, time.Minute)
 	must(err)
+	_, err = st.Intents().Begin(ctx, "deposit", "kyguard")
+	must(err)
 	_, err = st.SpendChallenge(ctx, "0123456789abcdef0123456789abcdef", now.Add(time.Minute).UnixMilli())
 	must(err)
 	g := st.Guard()
