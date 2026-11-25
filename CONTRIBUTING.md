@@ -1,6 +1,6 @@
-# Contributing to ky_server_base
+# Contributing to KyGuard
 
-ky_server_base is the scaffold every Busnes.app server is built from: Go backend, embedded React PWA, SQLite/storage glue, auth, SSO, and the shared backup adapter. A change here propagates to every server that derives from it, so secure-by-default behavior and conservative changes are the whole point.
+KyGuard is a privileged access management platform built on `ky_server_base`. It guards credentials for other systems, so secure-by-default behaviour and conservative changes are the whole point. The design is `docs/SPEC.md`.
 
 ## Before contributing
 
@@ -41,7 +41,7 @@ every purpose, regardless of how it was produced.
 
 ## Pull requests
 
-Branch off `master` with a focused name, and use a Conventional Commit subject
+Branch off `main` with a focused name, and use a Conventional Commit subject
 (`fix:`, `feat:`, `docs:`, `refactor:`, `test:`, or `chore:`). The pull request
 explains why the change exists, the verification performed, the security impact,
 and any known limitations.
@@ -66,7 +66,7 @@ selection and how an image digest maps to its notes.
 
 ## Licence
 
-ky_server_base is licensed under the MIT License. See [LICENSE.txt](LICENSE.txt).
+KyGuard is licensed under the MIT License. See [LICENSE.txt](LICENSE.txt).
 
 The repository follows the [REUSE](https://reuse.software/) specification: `REUSE.toml`
 names the license and copyright of every file, and `LICENSES/` holds each license text.

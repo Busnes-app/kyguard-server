@@ -16,7 +16,7 @@
 **/*.log
 **/coverage.out
 **/node_modules
-/ky_server_base
+/kyguard-server
 /server
 .claude/
 .codex/

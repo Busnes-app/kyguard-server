@@ -36,7 +36,6 @@ type Server struct {
 	sessions   *auth.SessionManager
 	kysignon   *sso.KySignOnClient
 	oidc       *sso.GenericOIDCClient
-	saml       *sso.SAMLServiceProvider
 	scim       *scim.Server
 	recovery   recoveryClient
 	mux        *http.ServeMux
@@ -153,7 +152,6 @@ func NewServer(cfg *config.Config, st store.Store) *Server {
 	sessions := auth.NewSessionManager(st, cfg.Security)
 	kysignon := sso.NewKySignOnClient(cfg.SSO, st)
 	oidc := sso.NewGenericOIDCClient(cfg.SSO, st)
-	saml := sso.NewSAMLServiceProvider(cfg.SSO.SAMLEntityID, cfg.Server.AppURL+"/saml/acs")
 	scimSrv := scim.NewServer(st, cfg.SCIM, cfg.Server.AppURL)
 	recovery := recoveryclient.NewClient(recoveryclient.Options{AllowPrivate: cfg.Backup.AllowPrivateRecovery})
 
@@ -163,7 +161,6 @@ func NewServer(cfg *config.Config, st store.Store) *Server {
 		sessions: sessions,
 		kysignon: kysignon,
 		oidc:     oidc,
-		saml:     saml,
 		scim:     scimSrv,
 		recovery: recovery,
 		mux:      http.NewServeMux(),
@@ -311,7 +308,6 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/sso/kysignon/login", s.handleKySignOnLogin)
 	s.mux.HandleFunc("/api/sso/kysignon/callback", s.handleKySignOnCallback)
 	s.mux.HandleFunc("POST /api/sso/kysignon/backchannel-logout", s.handleKySignOnBackchannelLogout)
-	s.mux.HandleFunc("/saml/metadata", s.handleSAMLMetadata)
 
 	// Feature 0 KyBackup & Restore Drills. Capsules carry site data and keys: admins only.
 	// Method patterns: only the declared method reaches a handler. Export is a POST so the
@@ -336,6 +332,9 @@ func (s *Server) routes() {
 
 	// SCIM 2.0 routes
 	s.scim.RegisterRoutes(s.mux)
+
+	// SAML is removed (spec §7.2); keep its old paths out of the SPA fallback.
+	s.mux.Handle("/saml/", http.NotFoundHandler())
 
 	// Embedded React PWA Frontend
 	s.mux.Handle("/", web.Handler())

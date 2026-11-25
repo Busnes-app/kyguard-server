@@ -41,8 +41,6 @@ func sharedFields(c *Config) [][2]string {
 		{"KY_OIDC_ISSUER", c.SSO.GenericOIDCIssuer},
 		{"KY_OIDC_CLIENT_ID", c.SSO.GenericOIDCClientID},
 		{"KY_OIDC_SECRET", c.SSO.GenericOIDCSecret},
-		{"KY_SAML_ENTITY_ID", c.SSO.SAMLEntityID},
-		{"KY_SAML_METADATA_URL", c.SSO.SAMLMetadataURL},
 		{"KY_SSO_AUTO_PROVISION", b(c.SSO.AutoProvision)},
 		{"KY_CAPTCHA_PROVIDER", c.Captcha.Provider},
 		{"KY_CAPTCHA_SITE_KEY", c.Captcha.SiteKey},

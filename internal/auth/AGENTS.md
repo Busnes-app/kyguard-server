@@ -1,7 +1,7 @@
 # Auth
 
 ## Purpose
-Manages user authentication, password policies, session token lifecycle, client addresses for rate limits, and anti-abuse CAPTCHA (Proof-of-Work default). There is no local MFA: MFA is a KyIdentity (SSO) feature.
+Manages user authentication, password policies, session token lifecycle, local TOTP step-up, client addresses for rate limits, and anti-abuse CAPTCHA (Proof-of-Work default).
 
 ## Ownership
 Owns session issuance and verification, the client-address helpers, and PoW challenge generation and verification.
@@ -18,7 +18,8 @@ Owns session issuance and verification, the client-address helpers, and PoW chal
 - `CheckPoWSolution` validates signed work without spending it; PostgreSQL API handlers
   spend the returned salt atomically in shared storage. SQLite retains `PoWSpent`.
 - The default puzzle size is `config.DefaultPoWDifficulty`, measured so the browser's median solve is about one second; re-measure before changing it.
-- Local TOTP and recovery codes are retired: their columns keep their data but nothing reads them. Do not add local MFA back.
+- KyGuard reverses the base rule that retired local MFA (spec §7.1). Local TOTP is the break-glass second factor (§7.4) and the step-up factor after every SSO login and before privileged actions (§7.3). Factors live in `mfa_factors`, sealed under `data/encryption.key` with label `kyguard:mfa_factors`; a code is accepted only when its counter is above the stored `last_counter`, by compare-and-swap. The base's retired columns (`totp_secret_enc`, `totp_enabled`, `totp_last_counter`, `recovery_codes_hash`) stay unused. There are no recovery codes.
+- The SSO first factor never yields an active session directly: it yields a restricted pending session that only TOTP step-up exchanges for a new active token (§7.3).
 - `ClientIP` is the one client-address helper: the rate limiter and session binding both use it. `X-Forwarded-For` is honoured only when the peer is in `KY_TRUSTED_PROXIES`, walking the chain from the right past trusted hops; `X-Real-IP` is ignored. Each entry may be a bare IP or `ip:port` (Azure App Service/Application Gateway append the port); anything else ends the walk and falls back to the peer.
 - `RateLimitKey` reduces an IPv6 client to its /64 for rate limits; IPv4 is unchanged.
 

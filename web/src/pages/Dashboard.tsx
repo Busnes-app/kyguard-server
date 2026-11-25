@@ -30,7 +30,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ settings, user, onNavigate
     },
     {
       title: 'Single Sign-On & Federation',
-      desc: 'KySignOn OIDC + Signed Directory Webhooks, Generic OIDC, and SAML 2.0 SP.',
+      desc: 'KySignOn and generic OIDC, with TOTP step-up on every login.',
       status: settings?.sso_enabled ? 'Enabled' : 'Disabled',
       statusType: settings?.sso_enabled ? 'success' : 'neutral',
       icon: Key,
@@ -51,7 +51,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ settings, user, onNavigate
   return (
     <div className="dr-page">
       <div className="dr-header"><h1>Welcome, {user?.display_name || user?.username}!</h1></div>
-      <p className="page-intro">{settings?.app_name || 'Busnes.app'} is initialized on the Ky Server Base platform.</p>
+      <p className="page-intro">{settings?.app_name || 'KyGuard'}: privileged access management.</p>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px' }}>
         {cards.map((c, i) => {

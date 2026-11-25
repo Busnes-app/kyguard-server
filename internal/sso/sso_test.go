@@ -43,15 +43,3 @@ func TestOAuthAuthorizationURLUsesDiscoveryAndPKCE(t *testing.T) {
 		t.Fatalf("unexpected authorization URL: %s", authURL)
 	}
 }
-
-func TestSAMLServiceProvider(t *testing.T) {
-	sp := sso.NewSAMLServiceProvider("https://app.busnes.app/saml/metadata", "https://app.busnes.app/saml/acs")
-
-	metadata := sp.GenerateMetadata()
-	if len(metadata) == 0 || !testing.Verbose() && len(metadata) < 50 {
-		if len(metadata) == 0 {
-			t.Errorf("expected non-empty metadata")
-		}
-	}
-
-}

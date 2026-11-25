@@ -1,4 +1,4 @@
-# Restoring a Busnes.app server from a capsule
+# Restoring a KyGuard server from a capsule
 
 This is the procedure for bringing a server built on this scaffold back from a `.kycap`
 backup after the original is gone. It needs three things, held by three different parties by
@@ -48,10 +48,10 @@ part of the database.
 ## Before you start
 
 - **Pick the capsule.** In the KyRecovery dashboard, open Capsules, find the newest one for
-  this service (the app name, `Busnes.app` unless `KY_APP_NAME` was set) that is not flagged
+  this service (the app name, `KyGuard` unless `KY_APP_NAME` was set) that is not flagged
   corrupt, and note its `capsule_id`, `created_at` and `digest`. You will compare these after
   the restore. From a local backup directory the file is `<escaped app name>.<capsule-id>.kycap`
-  (`Busnes_2eapp.cap-Busnes.app-<n>.kycap` by default); the newest is the one to use unless
+  (`KyGuard.cap-KyGuard-<n>.kycap` by default); the newest is the one to use unless
   you have a reason.
 - **Gather k custodians.** Each card carries one share, a single line beginning `ky2-`. They
   type or paste it themselves; do not collect the shares in a file, a chat, or an email. Two
@@ -64,13 +64,12 @@ part of the database.
 With the binary (from a release, or `go build ./cmd/server`):
 
 ```bash
-ky_server_base restore -capsule Busnes_2eapp.cap-XXXXXXXX.kycap -to ./restored
+kyguard-server restore -capsule KyGuard.cap-XXXXXXXX.kycap -to ./restored
 ```
 
-`-service` defaults to `KY_APP_NAME`, then `Busnes.app`. Pass it only when the backup was made
+`-service` defaults to `KY_APP_NAME`, then `KyGuard`. Pass it only when the backup was made
 under a different app name; the capsule's service name must match or the restore stops before
-reading a share. Older Compose installs used the literal `Busnes.app Base`; restore their
-local capsules with `-service 'Busnes.app Base'`, even after the runtime name changes.
+reading a share.
 The encryption and recovery keys stay the same.
 
 For a published-image install, and always on a fresh recovery machine, pin the commit you
@@ -84,25 +83,25 @@ in `.env` after the drill: see the README's upgrade note for moving off it. Imag
 
 ```bash
 sha=<full commit sha you intend to run, e.g. $(git rev-parse origin/master)>
-d=$(docker buildx imagetools inspect ghcr.io/busnes-app/ky-server-base:$sha --format '{{.Manifest.Digest}}') \
-  && gh attestation verify "oci://ghcr.io/busnes-app/ky-server-base@$d" --repo Busnes-app/ky-server-base \
-       --cert-identity https://github.com/Busnes-app/ky-server-base/.github/workflows/ci.yml@refs/heads/master \
-  && [ "$(gh attestation verify "oci://ghcr.io/busnes-app/ky-server-base@$d" --repo Busnes-app/ky-server-base \
-       --cert-identity https://github.com/Busnes-app/ky-server-base/.github/workflows/ci.yml@refs/heads/master \
+d=$(docker buildx imagetools inspect ghcr.io/busnes-app/kyguard-server:$sha --format '{{.Manifest.Digest}}') \
+  && gh attestation verify "oci://ghcr.io/busnes-app/kyguard-server@$d" --repo Busnes-app/kyguard-server \
+       --cert-identity https://github.com/Busnes-app/kyguard-server/.github/workflows/ci.yml@refs/heads/main \
+  && [ "$(gh attestation verify "oci://ghcr.io/busnes-app/kyguard-server@$d" --repo Busnes-app/kyguard-server \
+       --cert-identity https://github.com/Busnes-app/kyguard-server/.github/workflows/ci.yml@refs/heads/main \
        --format json --jq '.[0].verificationResult.statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit')" = "$sha" ] \
   && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KY_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
-      && echo "KY_IMAGE=ghcr.io/busnes-app/ky-server-base@$d" >> "$t" && mv "$t" .env) \
-  && grep -qxF "KY_IMAGE=ghcr.io/busnes-app/ky-server-base@$d" .env
+      && echo "KY_IMAGE=ghcr.io/busnes-app/kyguard-server@$d" >> "$t" && mv "$t" .env) \
+  && grep -qxF "KY_IMAGE=ghcr.io/busnes-app/kyguard-server@$d" .env
 ```
 
 Then, in the same shell (the check compares against `$d`), refuse to go on unless the image in
-effect is exactly that digest. A source install passes on its `ky_server_base:local` build instead,
+effect is exactly that digest. A source install passes on its `kyguard-server:local` build instead,
 since `docker-compose.build.yml` wins over the pin, which is what a source install wants. The
 two refusal messages are distinct on purpose: a broken invocation is not an unpinned image.
 
 ```bash
 imgs=$(docker compose config --images) || { echo 'refusing: compose could not resolve the image'; false; }
-printf '%s\n' "$imgs" | grep -qxF "ghcr.io/busnes-app/ky-server-base@$d" || printf '%s\n' "$imgs" | grep -qxF 'ky_server_base:local' \
+printf '%s\n' "$imgs" | grep -qxF "ghcr.io/busnes-app/kyguard-server@$d" || printf '%s\n' "$imgs" | grep -qxF 'kyguard-server:local' \
   || { echo "refusing: image in effect is '$imgs', not the digest verified above"; false; }
 ```
 
@@ -115,7 +114,7 @@ keeps the real server down:
 ```bash
 mkdir -m 700 restored
 docker compose run --rm --no-deps --user "$(id -u):$(id -g)" \
-  -v "$PWD/Busnes_2eapp.cap-XXXXXXXX.kycap:/in.kycap:ro" \
+  -v "$PWD/KyGuard.cap-XXXXXXXX.kycap:/in.kycap:ro" \
   -v "$PWD/restored:/restored" \
   app restore -capsule /in.kycap -to /restored
 ```
@@ -138,7 +137,7 @@ Delete it afterwards; a file holding k shares is the suite key in a file.
 On success it prints the authenticated manifest:
 
 ```
-Restored 4 files from capsule cap-Busnes.app-1788605720094118543
+Restored 4 files from capsule cap-KyGuard-1788605720094118543
   service:      Busnes.app (v1.0.0)
   created:      2026-09-05T12:15:20Z
   recovery key: 886ff52c...

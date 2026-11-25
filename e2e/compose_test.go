@@ -90,7 +90,7 @@ func startProject(t *testing.T) *project {
 	t.Helper()
 	image := os.Getenv("KY_IMAGE")
 	if image == "" {
-		image = "ky_server_base:local"
+		image = "kyguard-server:local"
 	}
 	dir := t.TempDir()
 	for _, f := range []string{"docker-compose.yml", "docker-compose.replicas.yml", "deploy/replicas/haproxy.cfg"} {
@@ -563,7 +563,7 @@ func TestReplicaFailover(t *testing.T) {
 	step("AC21 security state is shared", func(t *testing.T) {
 		app := p.appContainers()[0]
 		lockPwd := "lockme-" + secret(8)
-		p.must(nil, "docker", "exec", app, "/app/ky_server_base", "init-admin", "-username", "lockme", "-password", lockPwd)
+		p.must(nil, "docker", "exec", app, "/app/kyguard-server", "init-admin", "-username", "lockme", "-password", lockPwd)
 		for i := range 10 {
 			if code, _ := p.login("lockme", "wrong-"+fmt.Sprint(i)); code != http.StatusUnauthorized {
 				t.Fatalf("failed login %d: %d", i, code)
@@ -654,10 +654,10 @@ func TestReplicaFailover(t *testing.T) {
 
 	step("CLI drill and export on PostgreSQL", func(t *testing.T) {
 		app := p.appContainers()[0]
-		if out := p.must(nil, "docker", "exec", app, "/app/ky_server_base", "backup-drill"); !strings.Contains(out, "PASSED") {
+		if out := p.must(nil, "docker", "exec", app, "/app/kyguard-server", "backup-drill"); !strings.Contains(out, "PASSED") {
 			t.Fatalf("backup-drill:\n%s", out)
 		}
-		p.must(nil, "docker", "exec", app, "/app/ky_server_base", "export-capsule", "-out", "/tmp/e2e.kycap")
+		p.must(nil, "docker", "exec", app, "/app/kyguard-server", "export-capsule", "-out", "/tmp/e2e.kycap")
 		p.must(nil, "docker", "exec", app, "rm", "/tmp/e2e.kycap")
 	})
 

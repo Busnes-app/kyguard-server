@@ -18,7 +18,7 @@ import (
 	"github.com/Busnes-app/kyguard-server/internal/crypto"
 )
 
-// Config encapsulates all runtime configuration for ky_server_base.
+// Config encapsulates all runtime configuration for kyguard-server.
 type Config struct {
 	Server   ServerConfig   `json:"server"`
 	Database DatabaseConfig `json:"database"`
@@ -78,8 +78,6 @@ type SSOConfig struct {
 	GenericOIDCIssuer   string `json:"generic_oidc_issuer"`
 	GenericOIDCClientID string `json:"generic_oidc_client_id"`
 	GenericOIDCSecret   string `json:"generic_oidc_secret"`
-	SAMLEntityID        string `json:"saml_entity_id"`
-	SAMLMetadataURL     string `json:"saml_metadata_url"`
 	AutoProvision       bool   `json:"auto_provision"`
 }
 
@@ -129,7 +127,7 @@ const MinPostgresOpenConns = 4
 
 // DefaultAppName is the service name an unconfigured instance runs under. Capsules are sealed
 // under it, so the restore CLI has to agree with it without loading a whole Config.
-const DefaultAppName = "Busnes.app"
+const DefaultAppName = "KyGuard"
 
 // LoadFromEnv initializes a Config struct populated from environment variables with sensible defaults.
 func LoadFromEnv() (*Config, error) {
@@ -256,8 +254,6 @@ func LoadFromEnv() (*Config, error) {
 			GenericOIDCIssuer:   getEnv("KY_OIDC_ISSUER", ""),
 			GenericOIDCClientID: getEnv("KY_OIDC_CLIENT_ID", ""),
 			GenericOIDCSecret:   getEnv("KY_OIDC_SECRET", ""),
-			SAMLEntityID:        getEnv("KY_SAML_ENTITY_ID", ""),
-			SAMLMetadataURL:     getEnv("KY_SAML_METADATA_URL", ""),
 			AutoProvision:       getEnvBool("KY_SSO_AUTO_PROVISION", true),
 		},
 		SCIM: SCIMConfig{

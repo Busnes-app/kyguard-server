@@ -1,5 +1,5 @@
 {
-  "name": "ky-server-base-web",
+  "name": "kyguard-server-web",
   "private": true,
   "version": "1.0.0",
   "type": "module",

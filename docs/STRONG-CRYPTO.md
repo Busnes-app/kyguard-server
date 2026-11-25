@@ -64,7 +64,7 @@ export KY_ENV=production
 export KY_COOKIE_SECURE=true
 export KY_APP_URL=https://your-public-host.example
 # Load your previously prepared KY_SESSION_SECRET privately, then start the server.
-./ky_server_base
+./kyguard-server
 ```
 
 If an existing `GODEBUG` contains other settings, retain them and set its

@@ -1,11 +1,16 @@
-# ky_server_base
+# KyGuard
 
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15937/badge)](https://www.bestpractices.dev/projects/15937)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Busnes-app/ky-server-base/badge)](https://scorecard.dev/viewer/?uri=github.com/Busnes-app/ky-server-base)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Busnes-app/kyguard-server/badge)](https://scorecard.dev/viewer/?uri=github.com/Busnes-app/kyguard-server)
 
-The scaffold every Busnes.app server is built from: Go backend, embedded React PWA, SQLite or
-PostgreSQL, local and federated sign-in (KySignOn, OIDC, SAML), SCIM provisioning, and
-disaster recovery through the suite's KyRecovery.
+KyGuard is a self-hosted privileged access management (PAM) and just-in-time access platform
+for the Busnes.app suite. This repository ships the Control Plane (`kyguard-server`); the
+Resource Broker (`kyguard-broker`) and `kyguard-cli` follow. It is built on `ky_server_base`:
+Go backend, embedded React PWA, SQLite or PostgreSQL, federated sign-in (KySignOn, OIDC),
+SCIM provisioning, and disaster recovery through the suite's KyRecovery.
+
+The design is [docs/SPEC.md](docs/SPEC.md) (v2.4). Only its Phase 0 and Phase 1A sections are
+being built; until they land, much of what the spec describes does not exist yet.
 
 Published image (Docker Compose 2.24.0 or later):
 
@@ -19,7 +24,7 @@ Source install (never paste this into a published-image install: the build overl
 `KY_IMAGE` digest pin, and a source install must set this line before its first `up -d` on a
 new checkout; an install from before the published image existed has no such line yet, so run
 this block once and confirm with `docker compose config --images`, which must print
-`ky_server_base:local` rather than the `ghcr.io` name):
+`kyguard-server:local` rather than the `ghcr.io` name):
 
 ```bash
 make ci        # gofmt, vet, race tests, smoke test
@@ -50,8 +55,7 @@ the threat model, trust boundaries and why the security requirements hold.
 
 [External interface reference](docs/INTERFACES.md) documents HTTP routes, request and
 response fields, authentication/CSRF, SCIM limitations, CLI commands and environment
-configuration. It describes the scaffold's implemented interfaces; derived products
-document their own additions.
+configuration. It describes the implemented interfaces.
 
 [Strong-key/TLS configuration](docs/STRONG-CRYPTO.md) describes the optional
 production profile, Compose overlay and migration for existing signing secrets
@@ -76,15 +80,11 @@ its identity, change the password or sign out; privileged APIs remain blocked. R
 revokes existing sessions atomically. Existing accounts
 are not retroactively flagged, since the server cannot infer whether they still use a bootstrap password.
 
-## Upgrading after the Busnes-app owner move
-
-The GitHub organisation was renamed on 2026-09-16 and the image now lives at `ghcr.io/busnes-app/ky-server-base`. The project no longer controls `ghcr.io/busness-app`; GHCR does not redirect it, and anything served under that name must be treated as untrusted. If `KY_IMAGE` still names the old namespace or image name, re-pinning is required, not optional: inspect `git remote -v` before any `git pull`, `make ci`, or `docker compose` command, and replace a retired-owner remote with `https://github.com/Busnes-app/ky-server-base.git` (prefer a fresh clone plus a known commit). Then remove `KY_IMAGE` to follow the compose default or verify and pin a digest using `docs/RESTORE.md` before pulling.
-
 ## License
 
-ky_server_base is released under the [MIT License](LICENSE.txt).
+KyGuard is released under the [MIT License](LICENSE.txt).
 
-[![OctoCounts](https://api.octocounts.com/badge/Busnes-app/ky-server-base/branch/master)](https://octocounts.com/github/Busnes-app/ky-server-base/tree/master)
+[![OctoCounts](https://api.octocounts.com/badge/Busnes-app/kyguard-server/branch/main)](https://octocounts.com/github/Busnes-app/kyguard-server/tree/main)
 
 ## Documentation
 

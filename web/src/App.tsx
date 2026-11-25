@@ -70,7 +70,7 @@ export const App: React.FC = () => {
   if (loading) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', color: 'var(--ink)' }}>
-        Loading {settings?.app_name || 'Busnes.app'}...
+        Loading {settings?.app_name || 'KyGuard'}...
       </div>
     );
   }
@@ -81,7 +81,7 @@ export const App: React.FC = () => {
       {notice && <p role="status" style={{ padding: 16 }}>{notice}</p>}
       <Login
         key={loginKey}
-        appName={settings?.app_name || 'Busnes.app'}
+        appName={settings?.app_name || 'KyGuard'}
         onSuccess={async (u) => {
           // A Secure session cookie is dropped on a plain-HTTP page, so a 200 from login does
           // not mean the browser is signed in: ask the server before showing the app.
@@ -115,7 +115,7 @@ export const App: React.FC = () => {
   return (
     <div className="app-shell">
       <AppHeader
-        appName={settings?.app_name || 'Busnes.app'}
+        appName={settings?.app_name || 'KyGuard'}
         activeTab={activeTab}
         onTabChange={(tab) => setActiveTab(tab)}
         user={user}

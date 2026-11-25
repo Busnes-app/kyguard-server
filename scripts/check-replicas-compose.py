@@ -34,7 +34,7 @@ for missing in required:
     assert missing in result.stderr, f"error does not name {missing}: {result.stderr}"
 print("PASS replicas: each required variable is named when missing")
 
-for chain, image in [([], "ghcr.io/busnes-app/ky-server-base:latest"), (["docker-compose.build.yml"], "ky_server_base:local")]:
+for chain, image in [([], "ghcr.io/busnes-app/kyguard-server:latest"), (["docker-compose.build.yml"], "kyguard-server:local")]:
     chain_files = ["docker-compose.yml"] + chain + ["docker-compose.replicas.yml"]
     result = compose(chain_files, base_env | required | {"KY_REPLICAS": "3"})
     assert result.returncode == 0, result.stderr
@@ -53,7 +53,7 @@ for chain, image in [([], "ghcr.io/busnes-app/ky-server-base:latest"), (["docker
     assert env["KY_DB_DRIVER"] == "postgres"
     # KyRecovery claim/deposit contract (limits.go): one path-safe service label.
     service = env["KY_APP_NAME"]
-    assert service == "Busnes.app" and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", service) and ".." not in service, service
+    assert service == "KyGuard" and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", service) and ".." not in service, service
     assert env["KY_TRUSTED_PROXIES"] == required["KY_PROXY_IP"] + "/32", env["KY_TRUSTED_PROXIES"]
     assert env["KY_ENCRYPTION_KEY"] == required["KY_ENCRYPTION_KEY"]
     assert set(app["networks"]) == {"replicas", "database"}
