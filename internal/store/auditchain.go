@@ -194,12 +194,20 @@ func (s *SQLStore) VerifyAuditChain(ctx context.Context) error {
 	return auditchain.Verify(s.auditKey, recs, anchor)
 }
 
-// adoptLegacyAudit chains the records written before migration 15 (seq IS NULL), oldest
-// first, in their canonical form, after any chained ones. Open runs it, so the first append
-// finds one whole chain. A store without the chain key (a drill copy) leaves them.
+// auditChainMigration is the version that adds the chain columns.
+const auditChainMigration = 15
+
+// adoptLegacyAudit chains the records written before the audit chain (seq IS NULL), oldest
+// first, in their canonical form. It runs only in the open that applied auditChainMigration,
+// so no later unchained row (one a writer without the key inserted) is ever signed: those
+// stay unchained and verification reports them. A store without the chain key (a drill copy)
+// leaves them unchained.
 func (s *SQLStore) adoptLegacyAudit(ctx context.Context) error {
+	if !s.chainLegacy || len(s.auditKey) < 32 {
+		return nil
+	}
 	var n int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM audit_records WHERE seq IS NULL`).Scan(&n); err != nil || n == 0 || len(s.auditKey) < 32 {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM audit_records WHERE seq IS NULL`).Scan(&n); err != nil || n == 0 {
 		return err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)

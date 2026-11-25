@@ -62,9 +62,11 @@ contradicts itself. Each names its section. The most secure reading wins.
 18. §9.3 (key plumbing). The chain key travels as `config.DatabaseConfig.AuditKey`; stores opened
    without it (backup drill scratch copies, migration sources) can read but refuse audit writes.
 18a. §9.3 (upgrade and verification). Records written before migration 15 have no chain fields.
-   Opening a store that has the chain key chains them, oldest first, in their canonical form and
-   after any chained records, so the first append finds one chain. Until then, verification
-   reports them as unchained. Verification rejects any stored field that differs from its
+   The open that applies migration 15 chains them, oldest first, in their canonical form, so the
+   first append finds one chain. No later open signs anything, so a row a writer without the key
+   inserts unchained stays unchained and verification reports it. Forging the trigger means
+   deleting the migration's record, and then the migration's `ALTER TABLE` fails and the start
+   is refused. Verification rejects any stored field that differs from its
    canonical rendering, because the HMAC covers only that rendering. On PostgreSQL it reads the
    head and the records in one REPEATABLE READ snapshot.
 19. §9.3 (scope of this PR). `operation_intents` and startup reconciliation of external effects

@@ -15,15 +15,18 @@ import (
 
 // SQLStore implements Store on top of database/sql.
 type SQLStore struct {
-	db       *sql.DB
-	driver   string
-	users    *userStore
-	sessions *sessionStore
-	groups   *groupStore
-	audit    *auditStore
-	settings *settingsStore
-	lockPath string
-	auditKey []byte
+	db     *sql.DB
+	driver string
+	// chainLegacy is set when this open applied the audit chain migration, so the records it
+	// found may be chained once (adoptLegacyAudit).
+	chainLegacy bool
+	users       *userStore
+	sessions    *sessionStore
+	groups      *groupStore
+	audit       *auditStore
+	settings    *settingsStore
+	lockPath    string
+	auditKey    []byte
 }
 
 // newSQLStore creates and initializes a SQLStore, running migrations automatically.
@@ -34,7 +37,12 @@ func newSQLStore(ctx context.Context, db *sql.DB, driver string) (*SQLStore, err
 	}
 
 	s := &SQLStore{db: db, driver: driver}
-	apply := func(ctx context.Context) error { return applySchema(ctx, db, driver) }
+	apply := func(ctx context.Context) error {
+		applied, err := applySchema(ctx, db, driver)
+		// Only the open that adds the chain columns may chain the records it found (Open).
+		s.chainLegacy = slices.Contains(applied, auditChainMigration)
+		return err
+	}
 	if driver == "postgres" {
 		// Multiple replicas may start together. Keep schema changes under one owner.
 		for {
@@ -64,18 +72,19 @@ func newSQLStore(ctx context.Context, db *sql.DB, driver string) (*SQLStore, err
 	return s, nil
 }
 
-func applySchema(ctx context.Context, db *sql.DB, driver string) error {
-	if err := migrations.Run(ctx, db, driver); err != nil {
-		return fmt.Errorf("migration failure on driver %s: %w", driver, err)
+func applySchema(ctx context.Context, db *sql.DB, driver string) ([]int, error) {
+	applied, err := migrations.RunApplied(ctx, db, driver)
+	if err != nil {
+		return applied, fmt.Errorf("migration failure on driver %s: %w", driver, err)
 	}
 	clashes, err := migrations.EnsureUsernameIndex(ctx, db)
 	if err != nil {
-		return fmt.Errorf("case-insensitive username index: %w", err)
+		return applied, fmt.Errorf("case-insensitive username index: %w", err)
 	}
 	for _, names := range clashes {
 		log.Printf("[STORE] usernames differ only in letter case: %s. Sign-in picks one of them arbitrarily; rename or remove all but one. New case-variant names are refused.", strings.Join(names, ", "))
 	}
-	return nil
+	return applied, nil
 }
 
 func (s *SQLStore) Users() UserStore                { return s.users }

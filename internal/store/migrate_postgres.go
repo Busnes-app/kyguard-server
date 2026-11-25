@@ -110,7 +110,7 @@ func migrateToPostgres(ctx context.Context, source string, target config.Databas
 			if err := preflightPostgresTarget(ctx, db); err != nil {
 				return err
 			}
-			if err := applySchema(ctx, db, "postgres"); err != nil {
+			if _, err := applySchema(ctx, db, "postgres"); err != nil {
 				return errors.New("cannot initialize PostgreSQL target schema")
 			}
 			return copyPostgres(ctx, src, dst, &report)

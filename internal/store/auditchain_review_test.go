@@ -39,9 +39,11 @@ func TestNoncanonicalStoredFieldBreaksTheChain(t *testing.T) {
 	}
 }
 
-// §9.3 upgrade: records written before migration 15 carry no chain fields. Opening the store
-// chains them, after any chained ones, so the next append and verification succeed.
-func TestRecordsFromBeforeTheChainAreChainedAtOpen(t *testing.T) {
+// §9.3 upgrade: records written before migration 15 carry no chain fields. The open that
+// applies the migration chains them, so the next append and verification succeed. A row that
+// shows up unchained afterwards (a writer without the key) is never signed: verification
+// keeps reporting it.
+func TestRecordsFromBeforeTheChainAreChainedOnce(t *testing.T) {
 	ctx := context.Background()
 	cfg := testdb.Config(t)
 	st, err := store.Open(ctx, cfg)
@@ -49,43 +51,47 @@ func TestRecordsFromBeforeTheChainAreChainedAtOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 	db, q := open(t, cfg)
-	legacy := func(action string) {
+	exec := func(query string, args ...any) {
 		t.Helper()
-		if _, err := db.Exec(q(`INSERT INTO audit_records (user_id, action, resource, details, ip_address, created_at) VALUES (?, ?, ?, ?, ?, ?)`),
-			"u", action, "r", "d\x01", "", time.Now().UTC()); err != nil {
-			t.Fatal(err)
+		if _, err := db.Exec(q(query), args...); err != nil {
+			t.Fatalf("%s: %v", query, err)
 		}
 	}
-	legacy("legacy.one")
-	legacy("legacy.two")
-	if err := st.Audit().VerifyAuditChain(ctx); !errors.Is(err, auditchain.ErrBrokenChain) {
-		t.Fatalf("a log with unchained records verified: %v", err)
+	unchained := func(action string) {
+		t.Helper()
+		exec(`INSERT INTO audit_records (user_id, action, resource, details, ip_address, created_at) VALUES (?, ?, ?, ?, ?, ?)`, "u", action, "r", "d\x01", "", time.Now().UTC())
 	}
 	_ = st.Close()
-	for round, action := range []string{"after.genesis", "after.chained"} {
-		st, err = store.Open(ctx, cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := st.Audit().LogAudit(ctx, &store.AuditRecord{Action: action}); err != nil {
-			t.Fatalf("round %d: append after the upgrade: %v", round, err)
-		}
-		if err := st.Audit().VerifyAuditChain(ctx); err != nil {
-			t.Fatalf("round %d: %v", round, err)
-		}
-		_ = st.Close()
-		legacy("legacy.late") // an old binary wrote more; the next open chains it after the head
+	// Back to the schema before migration 15, holding two records.
+	exec(`DROP INDEX idx_audit_records_seq`)
+	for _, col := range []string{"seq", "prev_hash", "hash"} {
+		exec(`ALTER TABLE audit_records DROP COLUMN ` + col)
 	}
+	exec(`DROP TABLE audit_chain_head`)
+	exec(`DELETE FROM schema_migrations WHERE version = 15`)
+	exec(`INSERT INTO audit_records (user_id, action, resource, details, ip_address, created_at) VALUES (?, ?, ?, ?, ?, ?)`, "u", "legacy.one", "r", "d\x01", "", time.Now().UTC())
+	exec(`INSERT INTO audit_records (user_id, action, resource, details, ip_address, created_at) VALUES (?, ?, ?, ?, ?, ?)`, "u", "legacy.two", "r", "d", "", time.Now().UTC())
+
+	st, err = store.Open(ctx, cfg) // applies migration 15
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Audit().LogAudit(ctx, &store.AuditRecord{Action: "after.upgrade"}); err != nil {
+		t.Fatalf("append after the upgrade: %v", err)
+	}
+	if err := st.Audit().VerifyAuditChain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+
+	unchained("forged.later")
 	st, err = store.Open(ctx, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	if err := st.Audit().VerifyAuditChain(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if _, n, err := st.Audit().ListAuditRecords(ctx, 0, 10); err != nil || n != 6 {
-		t.Fatalf("%d records (%v), want 6", n, err)
+	if err := st.Audit().VerifyAuditChain(ctx); !errors.Is(err, auditchain.ErrBrokenChain) {
+		t.Fatalf("a row inserted unchained after the migration was signed: %v", err)
 	}
 }
 
