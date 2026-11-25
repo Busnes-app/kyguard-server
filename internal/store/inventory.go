@@ -232,22 +232,25 @@ func (v inventoryStore) ListAccounts(ctx context.Context) ([]*InventoryAccount, 
 
 func (v inventoryStore) PutDescriptor(ctx context.Context, digest, accountID string, canonical []byte, audit *AuditRecord) error {
 	return v.s.inTx(ctx, func(tx *sql.Tx) error {
+		// Conflict-safe, so two concurrent uploads of one descriptor both succeed.
+		res, err := tx.ExecContext(ctx, v.s.rebind(`INSERT INTO target_descriptors (digest, account_id, descriptor, created_at) VALUES (?, ?, ?, ?) ON CONFLICT (digest) DO NOTHING`),
+			digest, accountID, string(canonical), time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return err
+		} else if n == 1 {
+			return v.s.auditTx(ctx, tx, audit)
+		}
 		var owner string
-		err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT account_id FROM target_descriptors WHERE digest = ?`), digest).Scan(&owner)
-		if err == nil {
-			if owner != accountID {
-				return ErrConflict
-			}
-			return nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
+		if err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT account_id FROM target_descriptors WHERE digest = ?`), digest).Scan(&owner); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, v.s.rebind(`INSERT INTO target_descriptors (digest, account_id, descriptor, created_at) VALUES (?, ?, ?, ?)`),
-			digest, accountID, string(canonical), time.Now().UTC()); err != nil {
-			return err
+		if owner != accountID {
+			return ErrConflict
 		}
-		return v.s.auditTx(ctx, tx, audit)
+		return nil
 	})
 }
 
