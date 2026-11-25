@@ -113,6 +113,15 @@ func TestPolicyDraftSigning(t *testing.T) {
 	}
 
 	both, _ := sign(one, d.Custodians[1])
+	// A fully signed draft whose admission was interrupted is ready, not stale.
+	if err := st.Drafts().SetDraftObject(ctx, draft.ID, one, both, nil); err != nil {
+		t.Fatal(err)
+	}
+	var ready []map[string]any
+	created(t, sendJSON(srv, user, "GET", "/api/policy-drafts", ""), &ready)
+	if len(ready) != 1 || ready[0]["status"] != "ready" {
+		t.Fatalf("interrupted draft %v", ready)
+	}
 	created(t, sendJSON(srv, user, "POST", sigPath, string(both)), &res)
 	if res["accepted"] != true {
 		t.Fatalf("not accepted at quorum: %v", res)

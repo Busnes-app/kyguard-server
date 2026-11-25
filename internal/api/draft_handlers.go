@@ -152,7 +152,8 @@ type draftView struct {
 	*store.PolicyDraft
 	Account    string `json:"account"`
 	Signatures int    `json:"signatures"`
-	// Status is needs_signatures, or stale (with Code) once the draft can never be accepted:
+	// Status is needs_signatures; ready when fully signed (an admission was interrupted; a
+	// retry admits it); or stale (with Code) once the draft can never be accepted:
 	// another policy was accepted meanwhile, or a principal or pool changed.
 	Status string `json:"status"`
 	Code   string `json:"code,omitempty"`
@@ -164,7 +165,10 @@ func (s *Server) viewDraft(tr *pqcrypto.Trust, d *store.PolicyDraft, account str
 	if json.Unmarshal(d.Object, &sigs) == nil {
 		v.Signatures = len(sigs.Signatures)
 	}
-	if err := tr.Check(d.Object); !errors.Is(err, pqcrypto.ErrThreshold) {
+	switch err := tr.Check(d.Object); {
+	case err == nil: // fully signed; an earlier admission was interrupted, so a retry admits it
+		v.Status = "ready"
+	case !errors.Is(err, pqcrypto.ErrThreshold):
 		v.Status = "stale"
 		var perr pqcrypto.Error
 		if errors.As(err, &perr) {

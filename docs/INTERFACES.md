@@ -584,7 +584,7 @@ signing key: it builds and checks the unsigned object, relays it and admits it o
 | Route | Authentication and input | Success |
 |---|---|---|
 | PUT `/api/accounts/{id}/policy-draft` | Administrator (step-up window pending §7.5); JSON policy body: `checkout_mode`, `target_descriptor_digest` (an uploaded descriptor of this account), principal lists, `required_approver_count`, `max_checkout_ttl_seconds`, `rotation_schedule`, `recovery_escrow_enabled`, `auto_standing_release`; kind and pool come from the account | 201 `{id, account_id, epoch, digest}` for the next epoch, replacing any earlier draft and its signatures; 400 for a field the kind forbids or an unknown descriptor; 422 `{"code"}` when it could never be accepted (`unknown_principal`, `unsupported` for `proxy_only`, …). Audited `policy.draft_saved` |
-| GET `/api/policy-drafts` | Any session | 200 `[{…draft, account, signatures, status: needs_signatures\|stale, code?}]` |
+| GET `/api/policy-drafts` | Any session | 200 `[{…draft, account, signatures, status: needs_signatures\|ready\|stale, code?}]` |
 | GET `/api/policy-drafts/{id}` | Any session | 200 `{draft, object, target, labels}`: the canonical object to sign, the descriptor it pins and unverified labels |
 | POST `/api/policy-drafts/{id}/signatures` | Any session; body is the object with more Custodian signatures | 200 `{accepted:false, signatures}` below quorum; 201 `{accepted:true, epoch, digest}` at quorum, when it is submitted as a manifest and the draft removed; 409 for another digest or a dropped signature; 422 `{"code"}` for a bad signature. Audited `policy.draft_signed` |
 | DELETE `/api/policy-drafts/{id}` | Administrator | 204 |
