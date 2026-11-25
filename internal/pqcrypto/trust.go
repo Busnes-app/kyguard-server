@@ -136,6 +136,16 @@ func (t *Trust) PolicyByDigest(d HexID) *PolicyManifest {
 	return nil
 }
 
+// policyAt returns the accepted policy of an account at an epoch, or nil.
+func (t *Trust) policyAt(account UUID, epoch Counter) *PolicyManifest {
+	for _, p := range t.policies {
+		if p.AccountID == account && p.Epoch == epoch {
+			return p
+		}
+	}
+	return nil
+}
+
 // Pool returns the current pool manifest, or nil.
 func (t *Trust) Pool(pool UUID) *BrokerPoolManifest {
 	if r := t.Lookup(TypePool, pool); r != nil {

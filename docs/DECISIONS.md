@@ -52,3 +52,24 @@ contradicts itself. Each names its section. The most secure reading wins.
     key may be enrolled to only one principal.
 14. §3.3 (policy shape). The six managed-only fields are absent on a vaulted policy and
     present on a managed one; a vaulted policy has `rotation_schedule: null`.
+15. §3.4, §3.5 (single signer). Transactions, envelopes, receipts and possession proofs carry
+    exactly one signature. Any invalid, duplicate or unlisted approval rejects the whole
+    transaction, rather than being skipped while others meet the count.
+16. §3.4, §3.5 (IDs). `request_id` and `envelope_id` must be UUIDv7.
+17. §3.4 (scope of the library). The journal-state checks (open rotations and leases,
+    quarantine, the enrollment reset rule) are the broker's (Phase 1A). `VerifyTx` does the
+    checks that need only signed state plus the context the broker passes in.
+18. §3.5 (history versus new work). A historical envelope may name any recovery epoch from 1
+    up to the persisted one; a new envelope must name the persisted one. A historical
+    receipt's epoch is at least its envelope's; a new receipt's epoch is the current policy
+    epoch. A sealing context resolves only to a policy accepted in order. New work is
+    authorized by the current policy: a new envelope must be sealed under it, and a new
+    receipt's broker must belong to its pool and its users to its lists, so a broker of a
+    pool the account has left is refused. History is judged by the policy at the receipt's
+    epoch if it was accepted, otherwise by the sealing policy, so removing a user never
+    breaks replay of a valid chain.
+19. §3.5 (abort reasons). `refused` and `restart_before_send` appear only at seq 1 of a
+    broker-sealed rotation envelope, `enrollment_failed` only at seq 1 of a user-signed
+    enrollment candidate, and `superseded_by_reenrollment` at the next seq of any unterminated
+    envelope. A vaulted `rewrap_user` signer must already be a user recipient (initial or
+    added by an earlier rewrap).
