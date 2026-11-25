@@ -160,6 +160,14 @@ func TestRotationRoundTripOnTheControlPlane(t *testing.T) {
 	if len(st.Chains) != 1 || len(st.Chains[0].Receipts) != 2 || len(st.Descriptor) == 0 || st.HighestVersion != 1 {
 		t.Fatalf("account %+v", st)
 	}
+	// A late retry of the finished reservation takes no version and no lock (PR Reviewer
+	// Guide on #10).
+	if again, err := f.reserve(op, 0); !remote(err, "conflict") {
+		t.Fatalf("retry after completion: %v %v", again, err)
+	}
+	if lock, _, _ := f.cp.Store.Vault().Lock(ctx, string(f.acct())); lock != "" {
+		t.Fatalf("a finished operation took the lock again: %s", lock)
+	}
 	// The next reservation gets a fresh version.
 	if v2, err := f.reserve(pqtest.UUID(), 0); err != nil || v2 != 2 {
 		t.Fatalf("next version %v %v", v2, err)
@@ -284,9 +292,7 @@ func TestSyncIsPaged(t *testing.T) {
 		pages++
 		after += len(s.Manifests)
 		accounts += len(s.Accounts)
-		if len(s.Accounts) > 0 {
-			last = s.Accounts[len(s.Accounts)-1]
-		}
+		last = s.AccountsNext
 		if len(s.Manifests) > brokerproto.SyncPage {
 			t.Fatalf("page of %d", len(s.Manifests))
 		}
@@ -758,8 +764,9 @@ func (v accountVault) GetAccount(ctx context.Context, id string) (*store.Account
 	return v.VaultStore.GetAccount(ctx, id)
 }
 
-// An account sync page reads about one page of account rows and checks them as read,
-// with no query per account (PR Reviewer Guide on #10).
+// An account sync page reads at most SyncAccountsPage rows, eligible or not, checks them as
+// read with no query per account, and continues past the ones filtered out (PR Reviewer
+// Guide on #10).
 func TestAccountListReadsOnlyOnePage(t *testing.T) {
 	f := newVault(t)
 	saved := brokerproto.SyncAccountsPage
@@ -767,6 +774,16 @@ func TestAccountListReadsOnlyOnePage(t *testing.T) {
 	brokerproto.SyncAccountsPage = 2
 	for range 6 {
 		f.cp.Account(nil)
+	}
+	ctx := context.Background()
+	for range 5 { // in the pool, with no admitted policy: never listed
+		acct, asset := pqtest.UUID(), pqtest.UUID()
+		if err := f.cp.Store.Vault().CreateAsset(ctx, &store.Asset{ID: string(asset), Name: "host"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.cp.Store.Vault().CreateAccount(ctx, &store.Account{ID: string(acct), AssetID: string(asset), Name: "svc", AccountKind: pqcrypto.KindManaged, PoolID: string(f.cp.Pool)}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var s brokerproto.SyncReply
 	for after := 0; ; after += len(s.Manifests) {
@@ -779,28 +796,29 @@ func TestAccountListReadsOnlyOnePage(t *testing.T) {
 	}
 	var rows, gets atomic.Int64
 	f.cp.L.Store = accountCounter{f.cp.Store, &rows, &gets}
-	var last pqcrypto.UUID
+	var next pqcrypto.UUID
 	seen := map[pqcrypto.UUID]bool{}
-	for pages := 0; ; pages++ {
-		if pages > 10 {
+	pages := 0
+	for ; ; pages++ {
+		if pages > 20 {
 			t.Fatal("sync never completes")
 		}
 		rows.Store(0)
-		if err := f.call(brokerproto.MsgSync, brokerproto.SyncRequest{ManifestsAfter: 1 << 20, AccountsAfter: last}, &s); err != nil {
+		if err := f.call(brokerproto.MsgSync, brokerproto.SyncRequest{ManifestsAfter: 1 << 20, AccountsAfter: next}, &s); err != nil {
 			t.Fatal(err)
 		}
-		if r := rows.Load(); r > int64(brokerproto.SyncAccountsPage)+1 {
+		if r := rows.Load(); r > int64(brokerproto.SyncAccountsPage) {
 			t.Fatalf("a sync page read %d account rows", r)
 		}
 		for _, a := range s.Accounts {
 			seen[a] = true
-			last = a
 		}
 		if s.Done {
 			break
 		}
+		next = s.AccountsNext
 	}
-	if len(seen) != 7 || gets.Load() != 0 {
-		t.Fatalf("%d accounts, %d per-account reads", len(seen), gets.Load())
+	if len(seen) != 7 || gets.Load() != 0 || pages < 5 {
+		t.Fatalf("%d accounts in %d pages, %d per-account reads", len(seen), pages+1, gets.Load())
 	}
 }

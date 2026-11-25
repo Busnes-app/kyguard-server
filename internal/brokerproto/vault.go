@@ -100,28 +100,23 @@ func (l *Listener) sync(ctx context.Context, tr *pqcrypto.Trust, b *store.Broker
 	if len(out.Manifests) > 0 {
 		return out, nil // accounts come once every manifest is delivered
 	}
-	// Accounts are read in ID order, a page at a time, and checked as read (PR Reviewer Guide on #10).
-	after := string(req.AccountsAfter)
-	for {
-		accts, err := l.Store.Vault().PoolAccounts(ctx, b.PoolID, after, SyncAccountsPage+1)
-		if err != nil {
-			return nil, err
-		}
-		for _, a := range accts {
-			if inPool(tr, b, a) == nil {
-				continue
-			}
-			if len(out.Accounts) == SyncAccountsPage {
-				return out, nil
-			}
+	// One page scans at most SyncAccountsPage rows, in ID order, eligible or not, and
+	// AccountsNext continues past the ones filtered out (PR Reviewer Guide on #10).
+	accts, err := l.Store.Vault().PoolAccounts(ctx, b.PoolID, string(req.AccountsAfter), SyncAccountsPage)
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range accts {
+		if inPool(tr, b, a) != nil {
 			out.Accounts = append(out.Accounts, pqcrypto.UUID(a.ID))
 		}
-		if len(accts) <= SyncAccountsPage {
-			out.Done = true
-			return out, nil
-		}
-		after = accts[len(accts)-1].ID
 	}
+	if len(accts) < SyncAccountsPage {
+		out.Done = true
+	} else {
+		out.AccountsNext = pqcrypto.UUID(accts[len(accts)-1].ID)
+	}
+	return out, nil
 }
 
 func (l *Listener) syncAccount(ctx context.Context, tr *pqcrypto.Trust, b *store.Broker, body json.RawMessage) (*AccountState, error) {

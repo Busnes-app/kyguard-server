@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"bytes"
 	"crypto/x509"
 	"errors"
 	"fmt"
@@ -97,11 +98,12 @@ func (j *Journal) Identity() (*Identity, error) {
 		if b.Get(keyBrokerID) == nil {
 			return ErrNotPaired
 		}
+		// A parsed certificate keeps its input, and bbolt's bytes die with the transaction.
 		var err error
-		if id.Cert, err = x509.ParseCertificate(b.Get(keyCert)); err != nil {
+		if id.Cert, err = x509.ParseCertificate(bytes.Clone(b.Get(keyCert))); err != nil {
 			return err
 		}
-		if id.CACert, err = x509.ParseCertificate(b.Get(keyCACert)); err != nil {
+		if id.CACert, err = x509.ParseCertificate(bytes.Clone(b.Get(keyCACert))); err != nil {
 			return err
 		}
 		id.BrokerID = pqcrypto.UUID(b.Get(keyBrokerID))

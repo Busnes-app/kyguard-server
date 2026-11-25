@@ -286,6 +286,16 @@ func (v vaultStore) Reserve(ctx context.Context, accountID, op string, reported 
 		if holder != "" {
 			return ErrLocked
 		}
+		// An operation that already ended never reserves again: a late retry would take a new
+		// version and a lock nothing releases (PR Reviewer Guide on #10).
+		var ended int
+		if err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT COUNT(1) FROM envelope_receipts r JOIN secret_envelopes e ON e.envelope_id = r.envelope_id
+ WHERE r.operation_id = ? AND e.account_id = ?`), op, accountID).Scan(&ended); err != nil {
+			return err
+		}
+		if ended > 0 {
+			return ErrConflict
+		}
 		version = max(highest, reported) + 1
 		if version > 1<<63-1 {
 			return errors.New("secret_version exhausted")
