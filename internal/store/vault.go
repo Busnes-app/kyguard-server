@@ -334,7 +334,10 @@ FROM envelope_receipts r JOIN secret_envelopes e ON e.envelope_id = r.envelope_i
 			return nil, err
 		}
 		r.ReceiptSeq, r.Receipt = uint64(seq), []byte(raw)
-		byID[r.EnvelopeID].Receipts = append(byID[r.EnvelopeID].Receipts, &r)
+		// An envelope committed between the two reads is left for the next call.
+		if c := byID[r.EnvelopeID]; c != nil {
+			c.Receipts = append(c.Receipts, &r)
+		}
 	}
 	return out, rows.Err()
 }

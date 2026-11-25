@@ -93,22 +93,43 @@ const (
 	MsgResult = "result"
 
 	// Broker requests.
-	MsgSync     = "sync"     // -> SyncReply
-	MsgReserve  = "reserve"  // ReserveRequest -> ReserveReply
-	MsgEnvelope = "envelope" // EnvelopeRequest
-	MsgIntent   = "intent"   // IntentRequest; the reply is the §4.3 rule 2 acknowledgement
-	MsgReceipts = "receipts" // ReceiptsRequest
-	MsgStatus   = "status"   // StatusRequest
+	MsgSync        = "sync"         // SyncRequest -> SyncReply
+	MsgSyncAccount = "sync_account" // SyncAccountRequest -> AccountState
+	MsgReserve     = "reserve"      // ReserveRequest -> ReserveReply
+	MsgEnvelope    = "envelope"     // EnvelopeRequest
+	MsgIntent      = "intent"       // IntentRequest; the reply is the §4.3 rule 2 acknowledgement
+	MsgReceipts    = "receipts"     // ReceiptsRequest
+	MsgStatus      = "status"       // StatusRequest
 )
 
 // Signed objects travel base64url-encoded so their canonical bytes survive any JSON
 // re-encoding.
 
-// SyncReply is the Control Plane's state for the broker's pool: every verified manifest in
-// acceptance order and, per account, the descriptor its current policy pins and its chains.
+// MaxFrame is the largest channel frame either end reads.
+const MaxFrame = 4 << 20
+
+// SyncPage is how many manifests one sync reply carries.
+const SyncPage = 64
+
+// SyncRequest asks for the verified manifests after the first ManifestsAfter, in
+// acceptance order.
+type SyncRequest struct {
+	ManifestsAfter int `json:"manifests_after"`
+}
+
+// SyncReply is one page of manifests; the last page (Done) also lists the accounts of the
+// broker's pool, which the broker then fetches one by one with MsgSyncAccount.
 type SyncReply struct {
-	Manifests []pqcrypto.B64 `json:"manifests"`
-	Accounts  []AccountState `json:"accounts"`
+	Manifests []pqcrypto.B64  `json:"manifests"`
+	Done      bool            `json:"done"`
+	Accounts  []pqcrypto.UUID `json:"accounts"`
+}
+
+// SyncAccountRequest asks for one account: its chains above AfterVersion plus its current
+// and unterminated ones, so the reply stays small however long its history grows.
+type SyncAccountRequest struct {
+	AccountID    pqcrypto.UUID    `json:"account_id"`
+	AfterVersion pqcrypto.Counter `json:"after_version"`
 }
 
 // AccountState is one account as the Control Plane holds it.
