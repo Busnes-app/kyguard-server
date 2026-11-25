@@ -158,3 +158,18 @@ func TestSubmitManifestEpochAtTheCounterLimit(t *testing.T) {
 		t.Fatalf("over-limit manifest stored: %d rows", len(ms))
 	}
 }
+
+// A standing_release is refused at submission while the broker has no path for it
+// (decision 76; PR Reviewer Guide on #16).
+func TestStandingReleaseIsRefusedAtSubmission(t *testing.T) {
+	srv, st, _, d := setupBrokerServer(t)
+	user := loginAs(t, srv, st, "alice", "user")
+	acct := pqtest.UUID()
+	pol := d.ManagedPolicy(acct, pqtest.UUID(), 1, pqcrypto.HexID(strings.Repeat("ab", 32)))
+	raw, _ := d.Tx(t, pol, pqtest.UUID(), pqtest.NewPrincipal(t), pqcrypto.Action{ActionType: pqcrypto.ActionStandingRelease}, time.Now())
+	body, _ := json.Marshal(brokerproto.TxPush{Tx: raw})
+	w := postJSON(srv, user, "/api/accounts/"+string(acct)+"/transactions", body)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), `"code":"unsupported_action"`) {
+		t.Fatalf("standing_release: %d %s", w.Code, w.Body)
+	}
+}

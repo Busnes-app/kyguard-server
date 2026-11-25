@@ -40,7 +40,7 @@ func (s *Server) relayTx(r *http.Request, account pqcrypto.UUID, typ string, bod
 	return s.relay(r.Context(), broker, brokerproto.Message{V: 1, Type: typ, Body: b}, time.Now().Add(10*time.Minute))
 }
 
-// handleSubmitTx stores a vault_checkout, standing_release or manual_rotation and relays it.
+// handleSubmitTx stores a vault_checkout or manual_rotation and relays it.
 // The Control Plane checks the signatures and policy it can; the broker decides.
 func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 	var req brokerproto.TxPush
@@ -55,7 +55,11 @@ func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch tx.Action.ActionType {
-	case pqcrypto.ActionVaultCheckout, pqcrypto.ActionStandingRelease, pqcrypto.ActionManualRotation:
+	case pqcrypto.ActionVaultCheckout, pqcrypto.ActionManualRotation:
+	case pqcrypto.ActionStandingRelease:
+		// The broker has no standing_release path yet, so it is refused here (decision 76).
+		s.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "transaction refused", "code": "unsupported_action"})
+		return
 	default:
 		s.writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "transaction refused", "code": string(pqcrypto.ErrAction)})
 		return

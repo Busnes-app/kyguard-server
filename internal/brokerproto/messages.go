@@ -112,7 +112,7 @@ const (
 
 	// Control Plane pushes.
 	MsgEnroll  = "enroll"  // EnrollPush: a relayed enroll transaction and its candidate
-	MsgTx      = "tx"      // TxPush: vault_checkout, standing_release or manual_rotation
+	MsgTx      = "tx"      // TxPush: vault_checkout or manual_rotation
 	MsgProof   = "proof"   // ProofPush: a possession proof for a challenge
 	MsgCheckin = "checkin" // CheckinPush: the lease holder asks for a check-in challenge
 )

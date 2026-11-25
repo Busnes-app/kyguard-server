@@ -299,3 +299,7 @@ contradicts itself. Each names its section. The most secure reading wins.
     `DELETE ... RETURNING`, so each queued push is taken once. A queued push expires with
     its transaction. The submission answers 202 either way; the CLI follows the
     enrollment's state.
+76. §3.4 (`standing_release` not yet built). The broker has no `standing_release` path in
+    this slice (no `rewrap_user` receipts), so the Control Plane refuses one at submission
+    with 422 `unsupported_action` instead of relaying a transaction the broker would
+    reject. The route accepts it again when the broker path lands.
