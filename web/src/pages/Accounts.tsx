@@ -190,7 +190,6 @@ interface Detail {
 const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onClose }) => {
   const detail = useJSON<Detail>(`/api/accounts/${id}`);
   const defs = useJSON<Record<string, AttributeDefinition[]>>('/api/attributes');
-  const users = useJSON<{ users: { id: string; username: string }[] }>('/api/admin/users?limit=200');
   const [err, setErr] = useState('');
   const act = async (fail: Promise<string>) => { const f = await fail; setErr(f); if (!f) detail.reload(); };
   const d = detail.data;
@@ -211,12 +210,7 @@ const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onCl
         {detail.error && <p role="alert" className="dr-danger">{detail.error}</p>}
         {d && (
           <div className="dr-stack">
-            <label className="dr-field">Owner
-              <select value={d.account.owner_user_id} onChange={(e) => act(send('PATCH', `/api/accounts/${id}`, { owner_user_id: e.target.value }))}>
-                <option value="">No owner</option>
-                {(users.data?.users || []).map((u) => <option key={u.id} value={u.id}>{u.username}</option>)}
-              </select>
-            </label>
+            <OwnerPicker current={d.account.owner_user_id} onPick={(owner) => act(send('PATCH', `/api/accounts/${id}`, { owner_user_id: owner }))} />
             {(defs.data?.account || []).map((a) => (
               <label key={a.id} className="dr-field">{a.label}
                 {a.type === 'enum' ? (
@@ -257,5 +251,26 @@ const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onCl
           </div>
         )}
     </dialog>
+  );
+};
+
+// OwnerPicker searches the whole directory on the server, so any user can be chosen.
+const OwnerPicker: React.FC<{ current: string; onPick: (id: string) => void }> = ({ current, onPick }) => {
+  const [q, setQ] = useState('');
+  const found = useJSON<{ users: { id: string; username: string; display_name: string }[] }>(
+    q.trim().length >= 2 ? `/api/admin/users?limit=20&search=${encodeURIComponent(q.trim())}` : null);
+  return (
+    <div className="dr-field">
+      <span>Owner: <span className="dr-mono">{current || 'none'}</span>
+        {current && <button type="button" className="btn-secondary kg-inline" onClick={() => onPick('')}>Clear</button>}</span>
+      <input aria-label="Find owner" placeholder="Type 2+ letters of a name" value={q} onChange={(e) => setQ(e.target.value)} />
+      {(found.data?.users || []).length > 0 && (
+        <ul className="kg-plain kg-results">
+          {found.data!.users.map((u) => (
+            <li key={u.id}><button type="button" className="kg-link" onClick={() => { onPick(u.id); setQ(''); }}>{u.username}{u.display_name && u.display_name !== u.username ? ` (${u.display_name})` : ''}</button></li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 };

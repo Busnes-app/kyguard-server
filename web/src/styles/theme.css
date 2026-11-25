@@ -512,3 +512,5 @@ textarea { border-radius: var(--ky-control-radius); }
 .kg-table .badge { white-space: nowrap; }
 a.btn { text-decoration: none; }
 .kg-plain { list-style: none; padding: 0; }
+.kg-inline { margin-left: 8px; padding: 2px 8px; min-height: 0; font-size: 12px; }
+.kg-results { margin: 4px 0 0; display: flex; flex-direction: column; gap: 4px; }

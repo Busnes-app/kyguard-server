@@ -81,6 +81,10 @@ const DraftForm: React.FC<{ escrowDefault: boolean; onSaved: () => void }> = ({ 
       allowed_user_principal_ids: lists.users, allowed_approver_principal_ids: lists.approvers,
       required_approver_count: approvals, max_checkout_ttl_seconds: ttl, recovery_escrow_enabled: escrow ?? escrowDefault,
     };
+    if (managed && schedule.on && Number.isNaN(new Date(schedule.anchor).getTime())) {
+      setErr('Choose when the first rotation runs.');
+      return;
+    }
     if (managed) {
       Object.assign(body, {
         checkout_mode: mode, target_descriptor_digest: target, enroller_principal_ids: lists.enrollers,
@@ -146,7 +150,7 @@ const DraftForm: React.FC<{ escrowDefault: boolean; onSaved: () => void }> = ({ 
             {managed && (
               <>
                 <label className="kg-check"><input type="checkbox" checked={schedule.on} onChange={(e) => setSchedule({ ...schedule, on: e.target.checked })} /><span>Rotate on a schedule</span></label>
-                {schedule.on && <label className="dr-field">First rotation (local time)<input type="datetime-local" value={schedule.anchor} onChange={(e) => setSchedule({ ...schedule, anchor: e.target.value })} /></label>}
+                {schedule.on && <label className="dr-field">First rotation (local time)<input type="datetime-local" required value={schedule.anchor} onChange={(e) => setSchedule({ ...schedule, anchor: e.target.value })} /></label>}
                 {schedule.on && <label className="dr-field dr-narrow">Every (hours)<input type="number" min={1} value={schedule.hours} onChange={(e) => setSchedule({ ...schedule, hours: +e.target.value })} /></label>}
               </>
             )}
