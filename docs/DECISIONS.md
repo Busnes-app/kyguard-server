@@ -60,6 +60,24 @@ contradicts itself. Each names its section. The most secure reading wins.
    `POST /api/broker-pools/{id}/pairing-tokens` are session routes with the 5-minute window
    (broker and pairing actions). `POST /api/manifests` is a session route with no window: rule 6
    does not list it, and the manifest's Custodian signatures are what authorize it.
+17. §9.3 (stored values). Audit fields pass through `logging.AuditFields`, which bounds each
+   value to 256 bytes; the stored columns hold those rendered values, so nothing outside the hash
+   is stored.
+18. §9.3 (key plumbing). The chain key travels as `config.DatabaseConfig.AuditKey`; stores opened
+   without it (backup drill scratch copies, migration sources) can read but refuse audit writes.
+18a. §9.3 (upgrade and verification). Records written before migration 15 have no chain fields.
+   Migration 15 chains them inside its own transaction, oldest first, in their canonical form,
+   so the first append finds one chain. An interrupted upgrade leaves both undone and the next
+   start retries them, and without the chain key a database holding such records refuses to
+   migrate. No later open signs anything, so a row a writer without the key
+   inserts unchained stays unchained and verification reports it. Forging the trigger means
+   deleting the migration's record, and then the migration's `ALTER TABLE` fails and the start
+   is refused. Verification rejects any stored field that differs from its
+   canonical rendering, because the HMAC covers only that rendering. On PostgreSQL it reads the
+   head and the records in one REPEATABLE READ snapshot.
+19. §9.3 (scope of this PR). `operation_intents` and startup reconciliation of external effects
+   (pairing claim, deposit, pin) are the next PR. Until then a failed audit write after a backup
+   run is logged loudly (`recordRun`) rather than retried.
 
 ## Crypto wire format and contracts (§3)
 
