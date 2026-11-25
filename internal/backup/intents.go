@@ -46,7 +46,7 @@ func ReconcileIntents(ctx context.Context, st store.Store) error {
 // on them is gone by then. Startup and every scheduled-worker tick call it, so an intent too
 // young to settle at startup is settled later without waiting for another such request.
 func ReconcileStale(ctx context.Context, st store.Store) error {
-	for _, kind := range []string{"pairing", "pin"} {
+	for _, kind := range []string{"recovery_pairing", "pin"} {
 		n, err := st.Intents().Reconcile(ctx, kind, StaleIntent)
 		if err != nil {
 			return fmt.Errorf("reconcile %s intents: %w", kind, err)
