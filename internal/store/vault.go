@@ -41,7 +41,7 @@ type VaultStore interface {
 	SetHealth(ctx context.Context, accountID, health, reason string) error
 	// Lock returns the operation holding the account's lock, or "".
 	Lock(ctx context.Context, accountID string) (op string, version uint64, err error)
-	GetRun(ctx context.Context, op string) (*RotationRun, error)
+	GetRun(ctx context.Context, accountID, op string) (*RotationRun, error)
 }
 
 // Asset is a host or directory that accounts live on.
@@ -276,7 +276,7 @@ func (v vaultStore) PutEnvelope(ctx context.Context, op string, e *StoredEnvelop
 func (v vaultStore) RecordIntent(ctx context.Context, r *RotationRun) error {
 	return v.s.inTx(ctx, func(tx *sql.Tx) error {
 		var have string
-		err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT intent FROM rotation_runs WHERE operation_id = ?`), r.OperationID).Scan(&have)
+		err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT intent FROM rotation_runs WHERE account_id = ? AND operation_id = ?`), r.AccountID, r.OperationID).Scan(&have)
 		if err == nil {
 			if have == string(r.Intent) {
 				return nil
@@ -427,11 +427,11 @@ func (v vaultStore) Lock(ctx context.Context, accountID string) (string, uint64,
 	return op, uint64(ver), err
 }
 
-func (v vaultStore) GetRun(ctx context.Context, op string) (*RotationRun, error) {
+func (v vaultStore) GetRun(ctx context.Context, accountID, op string) (*RotationRun, error) {
 	var r RotationRun
 	var ver int64
 	var intent string
-	err := v.s.db.QueryRowContext(ctx, v.s.rebind(`SELECT operation_id, account_id, broker_id, secret_version, intent, state FROM rotation_runs WHERE operation_id = ?`), op).
+	err := v.s.db.QueryRowContext(ctx, v.s.rebind(`SELECT operation_id, account_id, broker_id, secret_version, intent, state FROM rotation_runs WHERE account_id = ? AND operation_id = ?`), accountID, op).
 		Scan(&r.OperationID, &r.AccountID, &r.BrokerID, &ver, &intent, &r.State)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound

@@ -2,6 +2,7 @@ package brokerproto_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -116,7 +117,7 @@ func TestRotationRoundTripOnTheControlPlane(t *testing.T) {
 	if err := f.intent(op, v, e.EnvelopeID); err != nil {
 		t.Fatal(err)
 	}
-	if run, err := f.cp.Store.Vault().GetRun(ctx, string(op)); err != nil || run.State != "mutating" {
+	if run, err := f.cp.Store.Vault().GetRun(ctx, string(f.acct()), string(op)); err != nil || run.State != "mutating" {
 		t.Fatalf("run %v %v", run, err)
 	}
 	c1, h1 := f.receipt(e, 1, pqcrypto.ZeroHex, pqcrypto.ReceiptCommitTarget, "", op)
@@ -141,7 +142,10 @@ func TestRotationRoundTripOnTheControlPlane(t *testing.T) {
 		t.Fatalf("chains after re-send: %+v", chains)
 	}
 	var s brokerproto.SyncReply
-	if err := f.call(brokerproto.MsgSync, brokerproto.SyncRequest{}, &s); err != nil {
+	if err := f.call(brokerproto.MsgSync, brokerproto.SyncRequest{}, &s); err != nil || s.Done || len(s.Manifests) == 0 {
+		t.Fatalf("first page %+v %v", s, err)
+	}
+	if err := f.call(brokerproto.MsgSync, brokerproto.SyncRequest{ManifestsAfter: len(s.Manifests)}, &s); err != nil {
 		t.Fatal(err)
 	}
 	if !s.Done || len(s.Accounts) != 1 || s.Accounts[0] != f.acct() {
@@ -269,18 +273,22 @@ func TestSyncIsPaged(t *testing.T) {
 		f.cp.Account(nil)
 	}
 	after, pages, accounts := 0, 0, 0
+	var last pqcrypto.UUID
 	for {
 		var s brokerproto.SyncReply
-		if err := f.call(brokerproto.MsgSync, brokerproto.SyncRequest{ManifestsAfter: after}, &s); err != nil {
+		if err := f.call(brokerproto.MsgSync, brokerproto.SyncRequest{ManifestsAfter: after, AccountsAfter: last}, &s); err != nil {
 			t.Fatal(err)
 		}
 		pages++
 		after += len(s.Manifests)
+		accounts += len(s.Accounts)
+		if len(s.Accounts) > 0 {
+			last = s.Accounts[len(s.Accounts)-1]
+		}
 		if len(s.Manifests) > brokerproto.SyncPage {
 			t.Fatalf("page of %d", len(s.Manifests))
 		}
 		if s.Done {
-			accounts = len(s.Accounts)
 			break
 		}
 	}
@@ -311,5 +319,52 @@ func TestSyncIsPaged(t *testing.T) {
 		if len(st.Chains) != want {
 			t.Fatalf("after %d: %d chains, want %d", after, len(st.Chains), want)
 		}
+	}
+}
+
+// An account's history is sent within SyncBudget per reply, continued by version, until
+// all of it arrived (security review of #10).
+func TestAccountSyncIsBudgeted(t *testing.T) {
+	f := newVault(t)
+	saved := brokerproto.SyncBudget
+	brokerproto.SyncBudget = 20 << 10
+	defer func() { brokerproto.SyncBudget = saved }()
+	for range 12 { // twelve refused rotations: terminated, each a few KiB
+		op := pqtest.UUID()
+		v, _ := f.reserve(op, 0)
+		e, raw := f.envelope(v)
+		f.call(brokerproto.MsgEnvelope, brokerproto.EnvelopeRequest{OperationID: op, Envelope: raw}, nil)
+		ab, _ := f.receipt(e, 1, pqcrypto.ZeroHex, pqcrypto.ReceiptAbort, pqcrypto.ReasonRefused, op)
+		if err := f.call(brokerproto.MsgReceipts, brokerproto.ReceiptsRequest{OperationID: op, AccountID: f.acct(), Receipts: []pqcrypto.B64{ab}}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, pages := map[string]bool{}, 0
+	after := pqcrypto.Counter(0)
+	for {
+		var st brokerproto.AccountState
+		if err := f.call(brokerproto.MsgSyncAccount, brokerproto.SyncAccountRequest{AccountID: f.acct(), AfterVersion: after}, &st); err != nil {
+			t.Fatal(err)
+		}
+		pages++
+		size := 0
+		for _, c := range st.Chains {
+			got[string(c.Envelope)] = true
+			size += len(c.Envelope)
+			var v struct {
+				V pqcrypto.Counter `json:"secret_version"`
+			}
+			json.Unmarshal(c.Envelope, &v)
+			after = max(after, v.V)
+		}
+		if size*4/3 > brokerproto.SyncBudget+8<<10 {
+			t.Fatalf("page of %d bytes over a %d budget", size, brokerproto.SyncBudget)
+		}
+		if !st.More {
+			break
+		}
+	}
+	if len(got) != 12 || pages < 2 {
+		t.Fatalf("%d chains in %d pages", len(got), pages)
 	}
 }
