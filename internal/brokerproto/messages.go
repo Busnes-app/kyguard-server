@@ -110,12 +110,12 @@ const (
 // MaxFrame is the largest channel frame either end reads.
 const MaxFrame = 4 << 20
 
-// SyncPage is the most manifests one sync reply carries; SyncAccountsPage how many account
-// IDs.
-const (
-	SyncPage         = 64
-	SyncAccountsPage = 4096
-)
+// SyncPage is the most manifests one sync reply carries.
+const SyncPage = 64
+
+// SyncAccountsPage is the most account IDs one sync reply carries, and so about the most
+// accounts it reads. It is a variable only so tests can lower it.
+var SyncAccountsPage = 4096
 
 // SyncBudget bounds the encoded manifests of one sync page and the encoded descriptor and
 // chains of one sync_account reply. A page that would be empty carries its first item
