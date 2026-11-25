@@ -81,7 +81,7 @@ func runInterrupted(t *testing.T, cfg *config.Config, st store.Store, rc recover
 	defer cancel()
 	result := make(chan error, 1)
 	go func() {
-		_, err := backup.Run(ctx, cfg, rc, st, client)
+		_, err := backup.Run(ctx, cfg, rc, st, client, nil)
 		result <- err
 	}()
 	select {
@@ -153,7 +153,7 @@ func TestInterruptedUploadIsDueAgainAndLeavesOnlyWholeCapsules(t *testing.T) {
 
 	// The next start: the same schedule now delivers.
 	next := &storingDepositor{}
-	if _, err := backup.Run(context.Background(), cfg, rc, st, next); err != nil {
+	if _, err := backup.Run(context.Background(), cfg, rc, st, next, nil); err != nil {
 		t.Fatalf("the run after the interruption failed: %v", err)
 	}
 	if _, ok, _ := recoveryclient.LastDeposit(settings); !ok || next.deposits != 1 {
@@ -234,7 +234,7 @@ func TestInterruptedSnapshotLeavesNothingBehind(t *testing.T) {
 func TestFailedRunKeepsItsAttemptStamp(t *testing.T) {
 	cfg, st, rc, _ := pairedInstance(t)
 	failing := depositorFunc(func() error { return fmt.Errorf("%w: refused", recoveryclient.ErrRemote) })
-	if _, err := backup.Run(context.Background(), cfg, rc, st, failing); err == nil || errors.Is(err, backup.ErrInterrupted) {
+	if _, err := backup.Run(context.Background(), cfg, rc, st, failing, nil); err == nil || errors.Is(err, backup.ErrInterrupted) {
 		t.Fatalf("failing run returned %v", err)
 	}
 	if dueNow(t, cfg, st) {
@@ -246,4 +246,90 @@ type depositorFunc func() error
 
 func (f depositorFunc) Deposit(context.Context, string, string, []byte) (recoveryclient.Receipt, error) {
 	return recoveryclient.Receipt{}, f()
+}
+
+// crashAfterEffect is the store of a process killed between an external effect and its
+// completion append: Settle never lands. It remembers the intent it was asked to settle.
+type crashAfterEffect struct {
+	store.Store
+	settled *string
+}
+
+func (c crashAfterEffect) Intents() store.IntentStore {
+	return crashedIntents{c.Store.Intents(), c.settled}
+}
+
+type crashedIntents struct {
+	store.IntentStore
+	settled *string
+}
+
+func (c crashedIntents) Settle(_ context.Context, id, _ string, _ *store.AuditRecord) error {
+	*c.settled = id
+	return errors.New("process killed")
+}
+
+// checkingDepositor deposits like storingDepositor after running check, the moment the
+// effect would leave the process.
+type checkingDepositor struct {
+	storingDepositor
+	check func()
+}
+
+func (d *checkingDepositor) Deposit(ctx context.Context, url, token string, raw []byte) (recoveryclient.Receipt, error) {
+	d.check()
+	return d.storingDepositor.Deposit(ctx, url, token, raw)
+}
+
+// Acceptance 12: a crash after a deposit and before its completion append leaves a durable
+// intent; startup reconciles it to outcome_unknown with an audit record, before any retry.
+func TestStartupReconcilesADepositLostInACrash(t *testing.T) {
+	cfg, st, rc, _ := pairedInstance(t)
+	ctx := context.Background()
+	var lost string
+	dep := &storingDepositor{}
+	if _, err := backup.Run(ctx, cfg, rc, crashAfterEffect{st, &lost}, dep, nil); !errors.Is(err, backup.ErrNotRecorded) || dep.deposits != 1 {
+		t.Fatalf("crashed run: %v (deposits=%d)", err, dep.deposits)
+	}
+	if in, err := st.Intents().Get(ctx, lost); err != nil || in.State != store.IntentPending || in.Kind != "deposit" {
+		t.Fatalf("no durable deposit intent after the crash: %+v %v", in, err)
+	}
+	if err := backup.ReconcileIntents(ctx, st); err != nil {
+		t.Fatal(err)
+	}
+	if in, _ := st.Intents().Get(ctx, lost); in == nil || in.State != store.IntentUnknown {
+		t.Fatalf("after startup the lost deposit is %+v, want outcome_unknown", in)
+	}
+	recs, _, err := st.Audit().ListAuditRecords(ctx, 0, 10)
+	if err != nil || len(recs) == 0 || recs[0].Action != "operation.outcome_unknown" {
+		t.Fatalf("no outcome_unknown record: %v %v", recs, err)
+	}
+}
+
+// §9.3: a retried deposit reconciles the lost one before its own effect, and its success
+// supersedes it. A fresh capsule is sealed; the lost bytes are never replayed.
+func TestRetriedDepositReconcilesFirstAndSupersedes(t *testing.T) {
+	cfg, st, rc, _ := pairedInstance(t)
+	ctx := context.Background()
+	var lost string
+	first := &storingDepositor{}
+	if _, err := backup.Run(ctx, cfg, rc, crashAfterEffect{st, &lost}, first, nil); !errors.Is(err, backup.ErrNotRecorded) {
+		t.Fatal(err)
+	}
+	retry := &checkingDepositor{check: func() {
+		if in, _ := st.Intents().Get(ctx, lost); in == nil || in.State != store.IntentUnknown {
+			t.Errorf("the retry deposited while the lost intent was %+v", in)
+		}
+	}}
+	if _, err := backup.Run(ctx, cfg, rc, st, retry, func(res recoveryclient.Result, err error) *store.AuditRecord {
+		return &store.AuditRecord{UserID: "system", Action: "backup.run", Resource: res.Manifest.CapsuleID}
+	}); err != nil || retry.deposits != 1 {
+		t.Fatalf("retry: %v (deposits=%d)", err, retry.deposits)
+	}
+	if in, _ := st.Intents().Get(ctx, lost); in == nil || in.State != store.IntentSuperseded {
+		t.Fatalf("after a later deposit the lost one is %+v, want superseded", in)
+	}
+	if err := st.Audit().VerifyAuditChain(ctx); err != nil {
+		t.Fatal(err)
+	}
 }

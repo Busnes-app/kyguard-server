@@ -14,6 +14,7 @@ import (
 	"github.com/Busnes-app/kyguard-server/internal/backup"
 	"github.com/Busnes-app/kyguard-server/internal/config"
 	"github.com/Busnes-app/kyguard-server/internal/store"
+	"github.com/Busnes-app/kyguard-server/internal/testdb"
 )
 
 // sqliteInstance is a fresh SQLite store in a temp data dir, the way every backup adapter
@@ -28,6 +29,7 @@ func sqliteInstance(t *testing.T) (*config.Config, store.Store) {
 	cfg.Database.DataDir = dir
 	cfg.Database.DSN = filepath.Join(dir, "ky_server.db") + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)"
 	cfg.Security.EncryptionKey = bytes.Repeat([]byte{1}, 32)
+	cfg.Database.AuditKey = testdb.AuditKey
 	st, err := store.Open(context.Background(), cfg.Database)
 	if err != nil {
 		t.Fatal(err)
