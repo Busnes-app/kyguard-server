@@ -31,6 +31,8 @@ type VaultStore interface {
 	// RecordIntent stores a mutating intent in rotation_runs under op's lock (§4.3 rule 2).
 	// The same record again is a no-op; a different one for op is ErrConflict.
 	RecordIntent(ctx context.Context, r *RotationRun) error
+	// EnvelopeByDigest returns a stored envelope's bytes.
+	EnvelopeByDigest(ctx context.Context, digest string) ([]byte, error)
 	// Chains returns every envelope of the account with its receipts in order.
 	Chains(ctx context.Context, accountID string) ([]*StoredChain, error)
 	// Complete appends receipts by compare-and-swap (a byte-identical re-append is a no-op),
@@ -438,4 +440,13 @@ func (v vaultStore) GetRun(ctx context.Context, accountID, op string) (*Rotation
 	}
 	r.SecretVersion, r.Intent = uint64(ver), []byte(intent)
 	return &r, err
+}
+
+func (v vaultStore) EnvelopeByDigest(ctx context.Context, digest string) ([]byte, error) {
+	var raw string
+	err := v.s.db.QueryRowContext(ctx, v.s.rebind(`SELECT envelope FROM secret_envelopes WHERE digest = ?`), digest).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return []byte(raw), err
 }
