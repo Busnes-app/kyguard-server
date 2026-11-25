@@ -217,3 +217,27 @@ func TestSessionClassChecksTheStageOnStepUpPaths(t *testing.T) {
 		t.Fatalf("pending session on a session route: %d %s, want 403 stepup_required", w.Code, w.Body.String())
 	}
 }
+
+// §7.3 rule 6 and §7.5: the broker routes are session routes; broker and pairing actions need
+// a step-up in the last five minutes.
+func TestBrokerRoutesAreClassifiedWithTheirWindows(t *testing.T) {
+	srv, _, _ := setupTestServer(t)
+	want := map[string]time.Duration{
+		"POST /api/broker-pools":                     api.StepupWindow,
+		"POST /api/broker-pools/{id}/pairing-tokens": api.StepupWindow,
+		"POST /api/manifests":                        0,
+	}
+	for _, r := range srv.Routes() {
+		fresh, ok := want[r.Pattern]
+		if !ok {
+			continue
+		}
+		delete(want, r.Pattern)
+		if r.Class != api.ClassSession || r.Fresh != fresh {
+			t.Errorf("%s: class %q window %v, want session %v", r.Pattern, r.Class, r.Fresh, fresh)
+		}
+	}
+	for pattern := range want {
+		t.Errorf("%s is not registered", pattern)
+	}
+}
