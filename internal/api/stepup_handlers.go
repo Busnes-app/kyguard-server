@@ -74,14 +74,33 @@ func (s *Server) exchanged(w http.ResponseWriter, err error) {
 }
 
 // handleStepupTOTP exchanges a pending session for an active one with a valid TOTP code
-// (spec §7.3 rule 2).
+// (spec §7.3 rule 2). On an active session it refreshes the step-up that privileged routes'
+// windows check (rule 6).
 func (s *Server) handleStepupTOTP(w http.ResponseWriter, r *http.Request) {
-	user, sess, ok := s.pendingSession(w, r)
-	if !ok {
+	// Pending or active: AuthenticateRequest admits a pending session on /api/auth/stepup/*
+	// (auth.pendingAllowed), and the stage picks the branch below.
+	user, sess, err := s.sessions.AuthenticateRequest(r)
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "Authentication required")
 		return
 	}
 	code, ok := s.readCode(w, r)
 	if !ok {
+		return
+	}
+	if sess.Stage == store.StageActive {
+		factorID, err := s.factors.Check(r.Context(), user.ID, "", code)
+		if err != nil {
+			s.codeRefused(w, r, user.ID, err)
+			return
+		}
+		if err := detachedWrite(r, func(ctx context.Context) error {
+			return s.store.Sessions().RefreshStepup(ctx, sess, user.PasswordHash, factorID)
+		}); err != nil {
+			s.exchanged(w, err)
+			return
+		}
+		s.writeJSON(w, http.StatusOK, map[string]bool{"stepped_up": true})
 		return
 	}
 	factorID, err := s.factors.Check(r.Context(), user.ID, sess.TokenHash, code)
@@ -157,4 +176,33 @@ func (s *Server) handleStepupEnrollConfirm(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.exchanged(w, err)
+}
+
+// handleDeleteFactor lets an administrator reset an SSO user's TOTP factor, with a fresh code
+// of their own in the request (spec §7.3 rule 6). The user's sessions end and their next
+// sign-in enrolls again. Break-glass factors are reset only on the host.
+func (s *Server) handleDeleteFactor(w http.ResponseWriter, r *http.Request) {
+	admin, _, err := s.sessions.AuthenticateRequest(r)
+	if err != nil {
+		s.authFailed(w, err)
+		return
+	}
+	code, ok := s.readCode(w, r)
+	if !ok {
+		return
+	}
+	if _, err := s.factors.Check(r.Context(), admin.ID, "", code); err != nil {
+		s.codeRefused(w, r, admin.ID, err)
+		return
+	}
+	target := r.PathValue("id")
+	rec := &store.AuditRecord{UserID: admin.ID, Action: "admin.factor_reset", Resource: target, Details: "severity=critical", IPAddress: s.requestIP(r)}
+	if err := detachedWrite(r, func(ctx context.Context) error { return s.store.MFA().DeleteFactor(ctx, target, rec) }); errors.Is(err, store.ErrNotFound) {
+		s.writeError(w, http.StatusNotFound, "No SSO account with an enrolled factor has that ID")
+		return
+	} else if err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, "Factor reset temporarily unavailable")
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]bool{"factor_reset": true})
 }

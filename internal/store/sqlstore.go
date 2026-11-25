@@ -538,6 +538,24 @@ func (s *sessionStore) ExchangeSession(ctx context.Context, pendingHash, passwor
 	return s.fenceCheck(ctx, active)
 }
 
+// RefreshStepup records a new step-up on an active session, if factorID (whose code was just
+// checked) is still the user's factor; ErrNotFound otherwise.
+func (s *sessionStore) RefreshStepup(ctx context.Context, sess *Session, passwordHash, factorID string) error {
+	return s.store.withPassword(ctx, sess.UserID, passwordHash, func(tx *sql.Tx) error {
+		if err := factorStillCurrent(ctx, s.store, tx, sess.UserID, factorID); err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, s.store.rebind(`UPDATE sessions SET stepup_at = ? WHERE token_hash = ? AND stage = ?`), time.Now().UTC(), sess.TokenHash, StageActive)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
 // SetPendingSecret stores the sealed enrollment secret on a pending session.
 func (s *sessionStore) SetPendingSecret(ctx context.Context, tokenHash, sealed string) error {
 	res, err := s.store.db.ExecContext(ctx, s.store.rebind(`UPDATE sessions SET pending_secret_enc = ? WHERE token_hash = ? AND stage = ?`), sealed, tokenHash, StagePending)

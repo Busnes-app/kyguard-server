@@ -110,6 +110,8 @@ type SessionStore interface {
 	// ExchangeSession replaces a pending session with active (and a first factor when
 	// newFactor is set) in one transaction; see sessionStore.ExchangeSession.
 	ExchangeSession(ctx context.Context, pendingHash, passwordHash string, active *Session, newFactor *MFAFactor) error
+	// RefreshStepup sets an active session's stepup_at to now after a code from factorID.
+	RefreshStepup(ctx context.Context, sess *Session, passwordHash, factorID string) error
 	// SetPendingSecret stores the sealed enrollment secret on a pending session.
 	SetPendingSecret(ctx context.Context, tokenHash, sealed string) error
 	// SetBreakGlassReason records the reason once, with its audit record in the same

@@ -281,3 +281,19 @@ func TestSubjectLogoutUsesTheOriginalIat(t *testing.T) {
 		t.Fatal("a subject logout after the token's iat left the exchanged session alive")
 	}
 }
+
+// Acceptance 4: an enrolled user's next sign-in is pending until a code from the existing
+// factor exchanges it (POST /api/auth/stepup/totp admits pending sessions).
+func TestEnrolledUserStepsUpAPendingSession(t *testing.T) {
+	srv, _, f := ssoServer(t)
+	secret, _ := enroll(t, srv, pending(t, srv, f, "eve", "sid-1", mfaClaims))
+	c := pending(t, srv, f, "eve", "sid-2", mfaClaims)
+	code, _ := totp.Code(secret, time.Now().Add(totp.Period*time.Second)) // the next step: enrollment spent this one
+	w := post(srv, c, "/api/auth/stepup/totp", map[string]string{"code": code})
+	if w.Code != http.StatusOK || sessionCookie(w) == nil {
+		t.Fatalf("step-up with the enrolled factor: %d %s", w.Code, w.Body)
+	}
+	if !signedIn(srv, sessionCookie(w)) {
+		t.Fatal("the exchanged session does not authenticate")
+	}
+}
