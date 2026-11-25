@@ -1,0 +1,42 @@
+# Web
+
+## Purpose
+React 19 + TypeScript + Vite PWA frontend using the current shared ky-ui catalog (six light/dark pairs, Busnes by default), client-side WebCrypto PoW CAPTCHA, and administrative management panels.
+
+## Ownership
+Owns user interface components, service worker caching, PWA installation manifests, and frontend theme switching.
+
+## Local Contracts
+- Status colors use the shared palettes. Browser regressions measure every current named light palette against page and panel surfaces. Filled `.btn-danger` labels use the page color for named palettes except the Nord pair, which keeps `--button-text`; `browser/danger-button.spec.mjs` checks rest, hover and focus on a labelled diagnostic button in the real page.
+- Web themes default to Busnes light/dark following the OS until a browser-local choice is saved.
+- A signed-in user with `must_change_password` sees only password replacement and sign-out. Replacement uses `secureFetch`, returns to login after session revocation, and never exposes the normal navigation before completion. A local account (`sso_provider` `local`) can open the same form from the header's key button at any time; that form has Cancel instead of Sign out. Federated accounts get no button.
+- Strict TypeScript type safety without unused imports.
+- The authenticated shell uses a persistent sidebar; the selected page is marked by a quiet surface and slim accent rail, with a horizontal overflow navigation on small screens that keeps the current row in view on every page change (`scrollIntoView` nearest; the header is sticky, so the page does not move; focus stays put). `browser/nav.spec.mjs` covers it.
+- Settings & DB is a titled card with label/value rows on the card surface (`.settings-facts`): no nested tinted box and no accent icon or chip; the overview driver state is a neutral badge. `.page-intro` sits 8px under the page title. Evidence: `docs/ui-visual-refinement-2026-10-26/`.
+- `src/theme.ts` uses only the current shared catalog (`ky-ui/themes.js`), plus Match system. Owner decision (2026-11-09): retired choices fall back to Busnes following the OS; aliases retained upstream resolve normally. Saved choices use `ky_theme`; supported names and IDs normalize through `findTheme`. Named palettes apply inline through `applyThemeVariables`; Busnes clears them. Every theme control reads the one `useTheme()` store.
+- The Appearance page (`src/pages/Appearance.tsx`) is the theme picker for every signed-in role: shared native radio cards (`ky-ui/appearance.css`, previews from `appearance-themes.css`, imported after product CSS). The signed-in shell has no other theme selector; only the sign-in page keeps `ThemeSwitcher`, over the same store. The page uses the shared `ky-appearance-description` copy.
+- After a successful login the shell confirms the session with `GET /api/auth/me` before showing the app; when the browser dropped the cookie (a Secure cookie on a plain-HTTP page) it stays on the sign-in page, says why, and remounts the form so a fresh CAPTCHA replaces the spent token.
+- Authenticated state-changing requests use `secureFetch` so the CSRF cookie (`__Host-ky_csrf` on https, else `ky_csrf`) is mirrored into `X-CSRF-Token`.
+- Register the service worker from the production JS bundle; keep `script-src 'self'` intact.
+- Worker caching is limited to the same-origin public shell, manifest and assets. HTML is network-first with offline fallback so deployments refresh; dynamic/auth routes stay uncached.
+- `Backup.tsx` shows no database-driver notice: SQLite and PostgreSQL seal the same capsule (`Backup.test.tsx` checks both). Pinning the write-once recovery key asks `window.confirm` with the k-of-n first.
+- `CaptchaWidget` takes a stable `onToken` (a state setter); an inline callback restarts the solve on every parent render. It renews its token every four minutes, inside the five-minute challenge life, and `Login.tsx` remounts it (new `key`) after a failed sign-in so a token that expired while the tab slept is replaced.
+- `Login.tsx` has no MFA step: MFA is KyIdentity's. `CaptchaWidget` hashes with `components/sha256.ts`, not `crypto.subtle`, which browsers withhold outside secure contexts (plain HTTP on a LAN address); it yields about every 50 ms. `Login.tsx` keeps Sign In disabled until a token exists, so a failed check shows a Try again button.
+- `Settings.tsx` shows administrators the Office networks card: one network per line, saved through PUT `/api/settings/rate-limit-networks` with `secureFetch`, the server's refusal shown verbatim, the environment's networks read-only and the exempted count. Other roles never request the route.
+- `SCIMAdmin.tsx` lists every account (with its source: Local, KyIdentity or SCIM) from the admin route GET `/api/admin/users`, 50 per page, shows the load error instead of an empty directory, and shows the token field only when a real token is supplied; otherwise it asks for `KY_SCIM_TOKEN`.
+
+## Verification
+- `npm run audit` runs the shared audit gate and regression checks; `../docs/NPM-AUDIT.md`
+  owns its scoped, expiring build-tool exception.
+- Browser setup: build the frontend, run `go build -o .browser/server ./cmd/server` at the repo root, then `cd web && npx playwright install chromium && npm run test:browser`. CI runs it in the pinned Playwright container, whose tag must match `@playwright/test` in `package-lock.json`.
+- `make test-web` or `cd web && npm ci && npm test`, then `npm run build` (vitest with jsdom; `src/pages/Backup.test.tsx` renders the recovery screen against a stubbed status route). Commit `web/dist` after a build; CI diffs it.
+
+## Shared browser UI
+
+- `src/ky-ui/` is generated from Busnes-app/ky-ui, pinned by `VERSION` file hashes. Change shared colors, navigation states and storage helpers upstream, then run its consumer sync with an explicit worktree map; do not hand-edit vendored files.
+- Shell geometry (sidebar width, 40px navigation and control rows, 8px radius, title/body type) reads ky-ui tokens in the suite-shell block at the end of `src/styles/theme.css`.
+- Shared files include `appearance.css`, `appearance-themes.css` and `themes.js`; the catalog and palette values come only from there. Products own layout, routes and saved choice keys. Busnes aliases consume shared tokens; mark primary navigation with `ky-nav-item` while preserving current-page semantics.
+- Verify vendored files with `node src/ky-ui/check-vendor.mjs` from this document's directory. Builds/CI run that check. Rendered evidence and capture limitations are recorded in the repository-root `UI-VERIFICATION.md`; the fleet Appearance stages (screenshots, manifests with hashes and behaviour checks, results CSV, reproducible `capture.mjs`) live in `docs/ui-fleet-2026-10-26/`.
+
+## Child DOX Index
+- [browser/AGENTS.md](./browser/AGENTS.md): Production-server browser regression harness and disposable test data.

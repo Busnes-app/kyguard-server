@@ -1,0 +1,314 @@
+package config_test
+
+import (
+	"bytes"
+	"log"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Busnes-app/kyguard-server/internal/config"
+)
+
+func TestConfigLoadDefaults(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if cfg.Server.Port != 8080 {
+		t.Errorf("expected default port 8080, got %d", cfg.Server.Port)
+	}
+	if cfg.Database.Driver != "sqlite" {
+		t.Errorf("expected default driver sqlite, got %s", cfg.Database.Driver)
+	}
+	if cfg.Captcha.Provider != "pow" {
+		t.Errorf("expected default captcha provider pow, got %s", cfg.Captcha.Provider)
+	}
+	if cfg.Backup.Dir != "" {
+		t.Errorf("expected empty default backup dir (sealed local copies off), got %q", cfg.Backup.Dir)
+	}
+}
+
+func TestConfigRefusesShortHMACSecrets(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	for _, name := range []string{"KY_SESSION_SECRET"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(name, strings.Repeat("x", 15))
+			if _, err := config.LoadFromEnv(); err == nil || !strings.Contains(err.Error(), name) {
+				t.Fatalf("short %s: %v", name, err)
+			}
+			t.Setenv(name, strings.Repeat("x", 16))
+			if _, err := config.LoadFromEnv(); err != nil {
+				t.Fatalf("minimum %s: %v", name, err)
+			}
+		})
+	}
+}
+
+func TestConfigLoadFromEnvOverrides(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	t.Setenv("KY_PORT", "9090")
+	t.Setenv("KY_DB_DRIVER", "postgres")
+	t.Setenv("KY_DB_DSN", "postgres://user:pass@localhost:5432/testdb")
+	t.Setenv("KY_APP_NAME", "CustomBusnesApp")
+	t.Setenv("KY_CAPTCHA_PROVIDER", "turnstile")
+
+	t.Setenv("KY_SESSION_SECRET", "test-stable-session-secret-at-least-32-bytes")
+	t.Setenv("KY_SCIM_TOKEN", "test-stable-scim-token")
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	if cfg.Server.Port != 9090 {
+		t.Errorf("expected port 9090, got %d", cfg.Server.Port)
+	}
+	if cfg.Database.Driver != "postgres" {
+		t.Errorf("expected driver postgres, got %s", cfg.Database.Driver)
+	}
+	if cfg.Database.DSN != "postgres://user:pass@localhost:5432/testdb" {
+		t.Errorf("expected custom DSN, got %s", cfg.Database.DSN)
+	}
+	if cfg.Server.AppName != "CustomBusnesApp" {
+		t.Errorf("expected custom app name, got %s", cfg.Server.AppName)
+	}
+	if cfg.Captcha.Provider != "turnstile" {
+		t.Errorf("expected captcha provider turnstile, got %s", cfg.Captcha.Provider)
+	}
+}
+
+func TestEncryptionKeyPersistsAcrossLoads(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	t.Setenv("KY_ENCRYPTION_KEY", "")
+	a, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a.Security.EncryptionKey) != 32 || !bytes.Equal(a.Security.EncryptionKey, b.Security.EncryptionKey) {
+		t.Fatal("encryption key was not persisted between loads")
+	}
+}
+
+func TestEncryptionKeyFromEnvMustBe32Bytes(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	t.Setenv("KY_ENCRYPTION_KEY", "deadbeef")
+	if _, err := config.LoadFromEnv(); err == nil {
+		t.Fatal("8-byte key accepted")
+	}
+}
+
+func TestDepositIntervalFromEnv(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	for _, tc := range []struct {
+		in   string
+		want time.Duration
+		ok   bool
+	}{
+		{"", 24 * time.Hour, true},
+		{"90m", 90 * time.Minute, true},
+		{"15m", 15 * time.Minute, true},
+		{"0", 0, true},
+		{"1s", 0, false},
+		{"14m", 0, false},
+		{"-1h", 0, false},
+		{"daily", 0, false},
+	} {
+		t.Setenv("KY_BACKUP_DEPOSIT_INTERVAL", tc.in)
+		cfg, err := config.LoadFromEnv()
+		if (err == nil) != tc.ok {
+			t.Errorf("%q: err=%v, want ok=%v", tc.in, err, tc.ok)
+			continue
+		}
+		if tc.ok && cfg.Backup.DepositInterval != tc.want {
+			t.Errorf("%q: got %v, want %v", tc.in, cfg.Backup.DepositInterval, tc.want)
+		}
+	}
+}
+
+func TestBackupConfigFromEnv(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	t.Setenv("KY_BACKUP_DIR", "/tmp/x")
+	t.Setenv("KY_BACKUP_KEEP", "3")
+	t.Setenv("KY_BACKUP_ALLOW_PRIVATE_RECOVERY", "true")
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Backup.Dir != "/tmp/x" || cfg.Backup.Keep != 3 || !cfg.Backup.AllowPrivateRecovery {
+		t.Fatalf("%+v", cfg.Backup)
+	}
+}
+
+func TestBackupKeepBelowOneIsRefused(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	t.Setenv("KY_BACKUP_KEEP", "0")
+	if _, err := config.LoadFromEnv(); err == nil || !strings.Contains(err.Error(), "KY_BACKUP_KEEP") {
+		t.Fatalf("want KY_BACKUP_KEEP error, got %v", err)
+	}
+}
+
+func TestCookieSecureFollowsHTTPSAppURL(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	for _, tc := range []struct {
+		url, explicit string
+		want          bool
+	}{
+		{"https://app.example.com", "", true},
+		{"HTTPS://app.example.com", "", true},
+		{"http://localhost:8080", "", false},
+		{"http://localhost:8080", "true", true},
+	} {
+		t.Setenv("KY_APP_URL", tc.url)
+		if tc.explicit == "" {
+			os.Unsetenv("KY_COOKIE_SECURE")
+		} else {
+			t.Setenv("KY_COOKIE_SECURE", tc.explicit)
+		}
+		cfg, err := config.LoadFromEnv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Security.CookieSecure != tc.want {
+			t.Errorf("KY_APP_URL=%s KY_COOKIE_SECURE=%q: CookieSecure=%v, want %v", tc.url, tc.explicit, cfg.Security.CookieSecure, tc.want)
+		}
+	}
+}
+
+// An https KY_APP_URL has __Host- cookies: they must be Secure and take no Domain, so
+// KY_COOKIE_SECURE=false and KY_COOKIE_DOMAIN are refused there; plain HTTP keeps the bare
+// names and may set a domain.
+func TestHostCookiesOnHTTPS(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	t.Setenv("KY_APP_URL", "https://app.example.com")
+	t.Setenv("KY_COOKIE_SECURE", "false")
+	if _, err := config.LoadFromEnv(); err == nil || !strings.Contains(err.Error(), "KY_COOKIE_SECURE") {
+		t.Errorf("https with KY_COOKIE_SECURE=false: %v, want refused", err)
+	}
+	for _, tc := range []struct {
+		url, secure  string
+		host, refuse bool
+	}{
+		{"https://app.example.com", "", true, true},
+		{"http://app.example.com", "true", false, false},
+		{"http://app.example.com", "", false, false},
+	} {
+		t.Setenv("KY_APP_URL", tc.url)
+		if tc.secure == "" {
+			os.Unsetenv("KY_COOKIE_SECURE")
+		} else {
+			t.Setenv("KY_COOKIE_SECURE", tc.secure)
+		}
+		os.Unsetenv("KY_COOKIE_DOMAIN")
+		cfg, err := config.LoadFromEnv()
+		if err != nil || cfg.Security.HostCookies != tc.host {
+			t.Errorf("KY_APP_URL=%s KY_COOKIE_SECURE=%q: HostCookies=%v err=%v, want %v", tc.url, tc.secure, cfg != nil && cfg.Security.HostCookies, err, tc.host)
+		}
+		t.Setenv("KY_COOKIE_DOMAIN", "example.com")
+		_, err = config.LoadFromEnv()
+		if refused := err != nil && strings.Contains(err.Error(), "KY_COOKIE_DOMAIN"); refused != tc.refuse {
+			t.Errorf("KY_APP_URL=%s KY_COOKIE_SECURE=%q with KY_COOKIE_DOMAIN: err %v, want refused=%v", tc.url, tc.secure, err, tc.refuse)
+		}
+	}
+}
+
+func TestRetiredKyIdentityHMACSettingIsAcceptedWithWarning(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	for _, secret := range []string{"x", strings.Repeat("private-value", 4)} {
+		t.Run(secret[:1], func(t *testing.T) {
+			t.Setenv("KY_KYSIGNON_HMAC_SECRET", secret)
+			var logs bytes.Buffer
+			previous := log.Writer()
+			log.SetOutput(&logs)
+			defer log.SetOutput(previous)
+			cfg, err := config.LoadFromEnv()
+			if err != nil || cfg.SSO.KySignOnHMACSecret != secret {
+				t.Fatalf("legacy setting rejected: %v", err)
+			}
+			if !strings.Contains(logs.String(), "deprecated and ignored") || !strings.Contains(logs.String(), "/scim/v2") || strings.Contains(logs.String(), secret) {
+				t.Fatalf("missing migration warning or leaked secret: %q", logs.String())
+			}
+		})
+	}
+}
+
+func TestRateLimitExemptNetworksAreValidatedAtStartup(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	t.Setenv("KY_RATE_LIMIT_EXEMPT_NETWORKS", " 203.0.113.9/24, 2001:db8:1::/48 ")
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Security.RateLimitExemptNetworks; got != "203.0.113.0/24,2001:db8:1::/48" {
+		t.Fatalf("RateLimitExemptNetworks = %q", got)
+	}
+	for _, bad := range []string{"0.0.0.0/0", "10.0.0.0/8", "::/0", "office"} {
+		t.Setenv("KY_RATE_LIMIT_EXEMPT_NETWORKS", bad)
+		if _, err := config.LoadFromEnv(); err == nil || !strings.Contains(err.Error(), "KY_RATE_LIMIT_EXEMPT_NETWORKS") {
+			t.Errorf("%q: err = %v, want a startup failure naming the variable", bad, err)
+		}
+	}
+}
+
+func TestPostgresRequiresStableReplicaSecrets(t *testing.T) {
+	for _, driver := range []string{"postgres", "postgresql", "pgx"} {
+		t.Run(driver, func(t *testing.T) {
+			t.Setenv("KY_DATA_DIR", t.TempDir())
+			t.Setenv("KY_DB_DRIVER", driver)
+			t.Setenv("KY_DB_DSN", "")
+			t.Setenv("KY_SESSION_SECRET", "")
+			t.Setenv("KY_SCIM_TOKEN", "")
+			if _, err := config.LoadFromEnv(); err == nil {
+				t.Fatal("PostgreSQL generated a per-replica session secret")
+			}
+			t.Setenv("KY_SESSION_SECRET", "test-stable-session-secret-at-least-32-bytes")
+			if _, err := config.LoadFromEnv(); err == nil {
+				t.Fatal("PostgreSQL generated a per-replica SCIM token")
+			}
+			t.Setenv("KY_SCIM_ENABLED", "false")
+			cfg, err := config.LoadFromEnv()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Database.Driver != "postgres" || !strings.HasPrefix(cfg.Database.DSN, "postgres://") {
+				t.Fatalf("alias was not canonicalized: %+v", cfg.Database)
+			}
+		})
+	}
+}
+
+func TestSQLiteAliasIsCanonicalBeforeInstanceLock(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	t.Setenv("KY_DB_DRIVER", "sqlite3")
+	cfg, err := config.LoadFromEnv()
+	if err != nil || cfg.Database.Driver != "sqlite" {
+		t.Fatalf("alias bypasses instance lock: %v %v", cfg, err)
+	}
+}
+
+// A scheduled PostgreSQL backup holds three connections at once; the pool must leave one more.
+func TestPostgresPoolFloor(t *testing.T) {
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	t.Setenv("KY_DB_DRIVER", "postgres")
+	t.Setenv("KY_SESSION_SECRET", strings.Repeat("s", 32))
+	t.Setenv("KY_SCIM_TOKEN", strings.Repeat("t", 32))
+	t.Setenv("KY_DB_MAX_OPEN_CONNS", "3")
+	if _, err := config.LoadFromEnv(); err == nil || !strings.Contains(err.Error(), "KY_DB_MAX_OPEN_CONNS") {
+		t.Fatalf("3 connections on PostgreSQL: %v", err)
+	}
+	t.Setenv("KY_DB_MAX_OPEN_CONNS", "4")
+	if cfg, err := config.LoadFromEnv(); err != nil || cfg.Database.MaxOpenConns != config.MinPostgresOpenConns {
+		t.Fatalf("the floor itself: %v", err)
+	}
+	t.Setenv("KY_DB_DRIVER", "sqlite")
+	t.Setenv("KY_DB_MAX_OPEN_CONNS", "1")
+	if _, err := config.LoadFromEnv(); err != nil {
+		t.Fatalf("SQLite has no pool floor: %v", err)
+	}
+}

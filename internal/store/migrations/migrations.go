@@ -1,0 +1,521 @@
+package migrations
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// Migration represents an incremental schema change step.
+type Migration struct {
+	Version  int
+	Name     string
+	SQLite   string
+	Postgres string
+}
+
+var registry = []Migration{
+	{
+		Version: 1,
+		Name:    "initial_schema",
+		SQLite: `
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    email TEXT NOT NULL DEFAULT '',
+    display_name TEXT NOT NULL DEFAULT '',
+    password_hash TEXT NOT NULL DEFAULT '',
+    role TEXT NOT NULL DEFAULT 'user',
+    status TEXT NOT NULL DEFAULT 'active',
+    sso_provider TEXT NOT NULL DEFAULT 'local',
+    sso_subject TEXT NOT NULL DEFAULT '',
+    totp_secret_enc TEXT NOT NULL DEFAULT '',
+    totp_enabled INTEGER NOT NULL DEFAULT 0,
+    recovery_codes_hash TEXT NOT NULL DEFAULT '[]',
+    push_device_id TEXT NOT NULL DEFAULT '',
+    must_change_password INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    last_login_at DATETIME
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_sso ON users(sso_provider, sso_subject);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_agent TEXT NOT NULL DEFAULT '',
+    ip_address TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL,
+    expires_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS device_pairings (
+    secret TEXT PRIMARY KEY,
+    code TEXT NOT NULL UNIQUE,
+    user_id TEXT NOT NULL DEFAULT '',
+    device_name TEXT NOT NULL DEFAULT '',
+    platform TEXT NOT NULL DEFAULT '',
+    push_token TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at DATETIME NOT NULL,
+    expires_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pairings_code ON device_pairings(code);
+CREATE INDEX IF NOT EXISTS idx_pairings_expires ON device_pairings(expires_at);
+
+CREATE TABLE IF NOT EXISTS groups (
+    id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL UNIQUE,
+    external_id TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS group_members (
+    group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (group_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS audit_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL,
+    resource TEXT NOT NULL DEFAULT '',
+    details TEXT NOT NULL DEFAULT '',
+    ip_address TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_user_created ON audit_records(user_id, created_at);
+
+CREATE TABLE IF NOT EXISTS server_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT '',
+    updated_at DATETIME NOT NULL
+);
+`,
+		Postgres: `
+CREATE TABLE IF NOT EXISTS users (
+    id VARCHAR(64) PRIMARY KEY,
+    username VARCHAR(128) NOT NULL UNIQUE,
+    email VARCHAR(255) NOT NULL DEFAULT '',
+    display_name VARCHAR(255) NOT NULL DEFAULT '',
+    password_hash TEXT NOT NULL DEFAULT '',
+    role VARCHAR(32) NOT NULL DEFAULT 'user',
+    status VARCHAR(32) NOT NULL DEFAULT 'active',
+    sso_provider VARCHAR(32) NOT NULL DEFAULT 'local',
+    sso_subject VARCHAR(255) NOT NULL DEFAULT '',
+    totp_secret_enc TEXT NOT NULL DEFAULT '',
+    totp_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    recovery_codes_hash TEXT NOT NULL DEFAULT '[]',
+    push_device_id VARCHAR(255) NOT NULL DEFAULT '',
+    must_change_password BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    last_login_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_sso ON users(sso_provider, sso_subject);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash VARCHAR(64) PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_agent TEXT NOT NULL DEFAULT '',
+    ip_address VARCHAR(64) NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS device_pairings (
+    secret VARCHAR(64) PRIMARY KEY,
+    code VARCHAR(16) NOT NULL UNIQUE,
+    user_id VARCHAR(64) NOT NULL DEFAULT '',
+    device_name VARCHAR(255) NOT NULL DEFAULT '',
+    platform VARCHAR(32) NOT NULL DEFAULT '',
+    push_token TEXT NOT NULL DEFAULT '',
+    status VARCHAR(32) NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pairings_code ON device_pairings(code);
+CREATE INDEX IF NOT EXISTS idx_pairings_expires ON device_pairings(expires_at);
+
+CREATE TABLE IF NOT EXISTS groups (
+    id VARCHAR(64) PRIMARY KEY,
+    display_name VARCHAR(255) NOT NULL UNIQUE,
+    external_id VARCHAR(255) NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS group_members (
+    group_id VARCHAR(64) NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+    user_id VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (group_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS audit_records (
+    id BIGSERIAL PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL DEFAULT '',
+    action VARCHAR(64) NOT NULL,
+    resource VARCHAR(255) NOT NULL DEFAULT '',
+    details TEXT NOT NULL DEFAULT '',
+    ip_address VARCHAR(64) NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_user_created ON audit_records(user_id, created_at);
+
+CREATE TABLE IF NOT EXISTS server_settings (
+    key VARCHAR(128) PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMPTZ NOT NULL
+);
+`,
+	},
+	{
+		Version: 2,
+		Name:    "one_time_auth_challenges",
+		SQLite: `
+CREATE TABLE IF NOT EXISTS mfa_challenges (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mfa_challenges_expires ON mfa_challenges(expires_at);
+`,
+		Postgres: `
+CREATE TABLE IF NOT EXISTS mfa_challenges (
+    token_hash VARCHAR(64) PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mfa_challenges_expires ON mfa_challenges(expires_at);
+`,
+	},
+	{
+		Version:  3,
+		Name:     "totp_last_counter",
+		SQLite:   `ALTER TABLE users ADD COLUMN totp_last_counter INTEGER NOT NULL DEFAULT 0;`,
+		Postgres: `ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_last_counter BIGINT NOT NULL DEFAULT 0;`,
+	},
+	{
+		Version: 4,
+		Name:    "mfa_credential_snapshot",
+		SQLite: `DELETE FROM mfa_challenges;
+ALTER TABLE mfa_challenges ADD COLUMN password_hash TEXT NOT NULL DEFAULT '';`,
+		Postgres: `DELETE FROM mfa_challenges;
+ALTER TABLE mfa_challenges ADD COLUMN password_hash TEXT NOT NULL DEFAULT '';`,
+	},
+	{
+		// Pairings live 90 seconds, so dropping rows on upgrade loses nothing. The anonymous
+		// verify route no longer accepts the guessable 6-digit code; only the 24-byte QR secret.
+		Version: 5,
+		Name:    "pairing_secret_only",
+		SQLite: `DROP TABLE IF EXISTS device_pairings;
+CREATE TABLE device_pairings (
+    secret TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL DEFAULT '',
+    device_name TEXT NOT NULL DEFAULT '',
+    platform TEXT NOT NULL DEFAULT '',
+    push_token TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at DATETIME NOT NULL,
+    expires_at DATETIME NOT NULL,
+    authenticated_at DATETIME NOT NULL
+);
+CREATE INDEX idx_pairings_expires ON device_pairings(expires_at);`,
+		Postgres: `DROP TABLE IF EXISTS device_pairings;
+CREATE TABLE device_pairings (
+    secret VARCHAR(64) PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL DEFAULT '',
+    device_name VARCHAR(255) NOT NULL DEFAULT '',
+    platform VARCHAR(32) NOT NULL DEFAULT '',
+    push_token TEXT NOT NULL DEFAULT '',
+    status VARCHAR(32) NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    authenticated_at TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX idx_pairings_expires ON device_pairings(expires_at);`,
+	},
+	{
+		// sso_sid ties a session to the identity provider's login. sso_logouts fences a sid,
+		// and sso_subject_logouts a subject's logins issued before cutoff, that back-channel
+		// logout ended, so a callback still in flight cannot revive them.
+		Version: 6,
+		Name:    "backchannel_logout",
+		SQLite: `ALTER TABLE sessions ADD COLUMN sso_sid TEXT NOT NULL DEFAULT '';
+CREATE INDEX idx_sessions_sso_sid ON sessions(sso_sid) WHERE sso_sid <> '';
+CREATE TABLE sso_logouts (
+    sid TEXT PRIMARY KEY,
+    expires_at DATETIME NOT NULL
+);
+CREATE TABLE sso_subject_logouts (
+    provider TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    cutoff DATETIME NOT NULL,
+    expires_at DATETIME NOT NULL,
+    PRIMARY KEY (provider, subject)
+);`,
+		Postgres: `ALTER TABLE sessions ADD COLUMN IF NOT EXISTS sso_sid TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_sessions_sso_sid ON sessions(sso_sid) WHERE sso_sid <> '';
+CREATE TABLE IF NOT EXISTS sso_logouts (
+    sid TEXT PRIMARY KEY,
+    expires_at TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sso_subject_logouts (
+    provider TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    cutoff TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (provider, subject)
+);`,
+	},
+	{
+		// A session from before migration 6 has no sid, so no back-channel logout can reach
+		// it. Sign out every SSO session once; local password sessions stay. Pairings now
+		// carry their parent's sid; SSO pairings from before cannot, so they are dropped too.
+		Version: 7,
+		Name:    "drop_unreachable_sso_sessions",
+		SQLite: `DELETE FROM sessions WHERE sso_sid = '' AND user_id IN (SELECT id FROM users WHERE sso_provider <> 'local');
+DELETE FROM device_pairings WHERE user_id IN (SELECT id FROM users WHERE sso_provider <> 'local');
+ALTER TABLE device_pairings ADD COLUMN sso_sid TEXT NOT NULL DEFAULT '';`,
+		Postgres: `DELETE FROM sessions WHERE sso_sid = '' AND user_id IN (SELECT id FROM users WHERE sso_provider <> 'local');
+DELETE FROM device_pairings WHERE user_id IN (SELECT id FROM users WHERE sso_provider <> 'local');
+ALTER TABLE device_pairings ADD COLUMN IF NOT EXISTS sso_sid TEXT NOT NULL DEFAULT '';`,
+	},
+	{
+		// QR device pairing had no client. Drop its rows: they held push tokens and secrets.
+		Version:  8,
+		Name:     "drop_device_pairings",
+		SQLite:   `DROP TABLE IF EXISTS device_pairings;`,
+		Postgres: `DROP TABLE IF EXISTS device_pairings;`,
+	},
+	{
+		// scim_managed scopes SCIM to the accounts it created, and stays set when a KyIdentity
+		// sign-in adopts one.
+		Version: 9,
+		Name:    "scim_scope",
+		SQLite: `ALTER TABLE users ADD COLUMN scim_managed INTEGER NOT NULL DEFAULT 0;
+UPDATE users SET scim_managed = 1 WHERE sso_provider = 'scim';`,
+		Postgres: `ALTER TABLE users ADD COLUMN IF NOT EXISTS scim_managed BOOLEAN NOT NULL DEFAULT FALSE;
+UPDATE users SET scim_managed = TRUE WHERE sso_provider = 'scim';`,
+	},
+	{
+		// sso_directory_events holds the newest directory-webhook timestamp applied per
+		// subject, so a replayed or late event cannot undo a newer change.
+		Version: 10,
+		Name:    "directory_event_order",
+		SQLite: `CREATE TABLE IF NOT EXISTS sso_directory_events (
+    provider TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    last_timestamp INTEGER NOT NULL,
+    PRIMARY KEY (provider, subject)
+);`,
+		Postgres: `CREATE TABLE IF NOT EXISTS sso_directory_events (
+    provider TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    last_timestamp BIGINT NOT NULL,
+    PRIMARY KEY (provider, subject)
+);`,
+	},
+	{
+		Version: 11,
+		Name:    "replica_security",
+		SQLite: `CREATE TABLE security_windows (
+    key TEXT PRIMARY KEY,
+    hits INTEGER NOT NULL,
+    expires_at BIGINT NOT NULL
+);
+CREATE INDEX idx_security_windows_expiry ON security_windows(expires_at);
+CREATE TABLE spent_challenges (
+    salt TEXT PRIMARY KEY,
+    expires_at BIGINT NOT NULL
+);
+CREATE INDEX idx_spent_challenges_expiry ON spent_challenges(expires_at);`,
+		Postgres: `CREATE TABLE security_windows (
+    key TEXT PRIMARY KEY,
+    hits INTEGER NOT NULL,
+    expires_at BIGINT NOT NULL
+);
+CREATE INDEX idx_security_windows_expiry ON security_windows(expires_at);
+CREATE TABLE spent_challenges (
+    salt TEXT PRIMARY KEY,
+    expires_at BIGINT NOT NULL
+);
+CREATE INDEX idx_spent_challenges_expiry ON spent_challenges(expires_at);`,
+	},
+}
+
+// EnsureUsernameIndex builds the case-insensitive unique index on usernames when existing
+// data allows it. Lookups already compare LOWER(username), so two rows differing only in case
+// make sign-in pick one arbitrarily. When such rows exist nothing is renamed: the index is
+// skipped, every clash is returned for the caller to log, and the store refuses new
+// case-variant names itself. It runs on every start, so the index appears once an operator
+// resolves the clashes.
+func EnsureUsernameIndex(ctx context.Context, db *sql.DB) (clashes [][]string, err error) {
+	rows, err := db.QueryContext(ctx, `SELECT username FROM users WHERE LOWER(username) IN
+ (SELECT LOWER(username) FROM users GROUP BY LOWER(username) HAVING COUNT(1) > 1) ORDER BY LOWER(username), username`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	groups := map[string]int{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		key := strings.ToLower(name)
+		i, ok := groups[key]
+		if !ok {
+			i = len(clashes)
+			groups[key] = i
+			clashes = append(clashes, nil)
+		}
+		clashes[i] = append(clashes[i], name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(clashes) > 0 {
+		return clashes, nil
+	}
+	_, err = db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_ci ON users (LOWER(username))`)
+	return nil, err
+}
+
+// Run executes all pending migrations for the specified database driver.
+func Run(ctx context.Context, db *sql.DB, driver string) error {
+	driver = strings.ToLower(driver)
+	if driver == "postgresql" {
+		driver = "postgres"
+	}
+
+	// Create schema_migrations table
+	initTableQuery := `
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    applied_at DATETIME NOT NULL
+);`
+	if driver == "postgres" {
+		initTableQuery = `
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    applied_at TIMESTAMPTZ NOT NULL
+);`
+	}
+
+	if _, err := db.ExecContext(ctx, initTableQuery); err != nil {
+		return fmt.Errorf("failed to init schema_migrations: %w", err)
+	}
+
+	for _, m := range registry {
+		var exists int
+		err := db.QueryRowContext(ctx, "SELECT COUNT(1) FROM schema_migrations WHERE version = $1", m.Version).Scan(&exists)
+		if err != nil {
+			// Try SQLite positional ? parameter if $1 failed
+			err = db.QueryRowContext(ctx, "SELECT COUNT(1) FROM schema_migrations WHERE version = ?", m.Version).Scan(&exists)
+			if err != nil {
+				return fmt.Errorf("failed to check migration version %d: %w", m.Version, err)
+			}
+		}
+
+		if exists > 0 {
+			continue
+		}
+
+		ddl := m.SQLite
+		if driver == "postgres" {
+			ddl = m.Postgres
+		}
+
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("failed to begin migration tx for v%d: %w", m.Version, err)
+		}
+
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("failed executing migration v%d (%s): %w", m.Version, m.Name, err)
+		}
+
+		recordQuery := "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)"
+		if driver == "postgres" {
+			recordQuery = "INSERT INTO schema_migrations (version, name, applied_at) VALUES ($1, $2, $3)"
+		}
+
+		if _, err := tx.ExecContext(ctx, recordQuery, m.Version, m.Name, time.Now().UTC()); err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("failed to record migration v%d: %w", m.Version, err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("failed to commit migration v%d: %w", m.Version, err)
+		}
+	}
+
+	return nil
+}
+
+// Querier is what history validation reads through: a *sql.DB or a *sql.Tx.
+type Querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// ValidateHistory identifies a scaffold database before a maintenance command can
+// initialize or upgrade it. Future or discontinuous histories need their owning adapter.
+func ValidateHistory(ctx context.Context, db Querier) error {
+	_, err := validateHistory(ctx, db)
+	return err
+}
+
+// ValidateCurrentHistory is ValidateHistory that also requires every scaffold migration, so
+// the schema is exactly the one this build creates.
+func ValidateCurrentHistory(ctx context.Context, db Querier) error {
+	n, err := validateHistory(ctx, db)
+	if err == nil && n != len(registry) {
+		err = fmt.Errorf("scaffold migration history is not current")
+	}
+	return err
+}
+
+func validateHistory(ctx context.Context, db Querier) (int, error) {
+	rows, err := db.QueryContext(ctx, "SELECT version, name FROM schema_migrations ORDER BY version")
+	if err != nil {
+		return 0, fmt.Errorf("source is not a recognized scaffold database")
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var version int
+		var name string
+		if err := rows.Scan(&version, &name); err != nil {
+			return 0, err
+		}
+		if n >= len(registry) || version != registry[n].Version || name != registry[n].Name {
+			return 0, fmt.Errorf("unsupported scaffold migration history")
+		}
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if n == 0 {
+		return 0, fmt.Errorf("source has no scaffold migration history")
+	}
+	return n, nil
+}

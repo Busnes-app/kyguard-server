@@ -1,0 +1,187 @@
+
+# DOX framework
+
+- DOX is highly performant AGENTS.md hierarchy installed here
+- Agent must follow DOX instructions across any edits
+
+## Core Contract
+
+- AGENTS.md files are binding work contracts for their subtrees
+- Work products, source materials, instructions, records, assets, and durable docs must stay understandable from the nearest applicable AGENTS.md plus every parent AGENTS.md above it
+
+## Read Before Editing
+
+1. Read the root AGENTS.md
+2. Identify every file or folder you expect to touch
+3. Walk from the repository root to each target path
+4. Read every AGENTS.md found along each route
+5. If a parent AGENTS.md lists a child AGENTS.md whose scope contains the path, read that child and continue from there
+6. Use the nearest AGENTS.md as the local contract and parent docs for repo-wide rules
+7. If docs conflict, the closer doc controls local work details, but no child doc may weaken DOX
+
+Do not rely on memory. Re-read the applicable DOX chain in the current session before editing.
+
+## Update After Editing
+
+Every meaningful change requires a DOX pass before the task is done.
+
+Update the closest owning AGENTS.md when a change affects:
+
+- purpose, scope, ownership, or responsibilities
+- durable structure, contracts, workflows, or operating rules
+- required inputs, outputs, permissions, constraints, side effects, or artifacts
+- user preferences about behavior, communication, process, organization, or quality
+- AGENTS.md creation, deletion, move, rename, or index contents
+
+Update parent docs when parent-level structure, ownership, workflow, or child index changes. Update child docs when parent changes alter local rules. Remove stale or contradictory text immediately. Small edits that do not change behavior or contracts may leave docs unchanged, but the DOX pass still must happen.
+
+## Hierarchy
+
+- Root AGENTS.md is the DOX rail: project-wide instructions, global preferences, durable workflow rules, and the top-level Child DOX Index
+- Child AGENTS.md files own domain-specific instructions and their own Child DOX Index
+- Each parent explains what its direct children cover and what stays owned by the parent
+- The closer a doc is to the work, the more specific and practical it must be
+
+## Child Doc Shape
+
+- Create a child AGENTS.md when a folder becomes a durable boundary with its own purpose, rules, responsibilities, workflow, materials, or quality standards
+- Work Guidance must reflect the current standards of the project or user instructions; if there are no specific standards or instructions yet, leave it empty
+- Verification must reflect an existing check; if no verification framework exists yet, leave it empty and update it when one exists
+
+Default section order:
+- Purpose
+- Ownership
+- Local Contracts
+- Work Guidance
+- Verification
+- Child DOX Index
+
+## Style
+
+- Keep docs concise, current, and operational
+- Document stable contracts, not diary entries
+- Put broad rules in parent docs and concrete details in child docs
+- Prefer direct bullets with explicit names
+- Do not duplicate rules across many files unless each scope needs a local version
+- Delete stale notes instead of explaining history
+- Trim obvious statements, repeated rules, misplaced detail, and warnings for risks that no longer exist
+
+## Closeout
+
+1. Re-check changed paths against the DOX chain
+2. Update nearest owning docs and any affected parents or children
+3. Refresh every affected Child DOX Index
+4. Remove stale or contradictory text
+5. Run existing verification when relevant
+6. Report any docs intentionally left unchanged and why
+
+## User Preferences
+- SQLite remains a first-class single-server default. PostgreSQL migration is an explicit,
+  verified maintenance command; multi-host replicas and worker election require no Kubernetes.
+- KyIdentity directory synchronization uses its SCIM connector; the incompatible webhook is retired. The legacy HMAC-secret config remains accepted with a startup warning. Per-app `admin` roles must be assigned before upgrade; empty `roles` means ordinary user. SCIM username adoption refuses a different nonempty `externalId` with 409.
+- Bootstrap passwords and passwords installed by `init-admin` must be replaced before privileged use. Operator resets atomically revoke sessions. Untouched existing accounts are not retroactively flagged.
+
+When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md
+
+- REUSE: `REUSE.toml` labels every file; `LICENSES/` holds the texts. Vendored fonts keep
+  OFL-1.1 with their own copyright, and `web/dist/assets/*.js` names the bundled
+  dependencies' licenses (MIT AND ISC today); re-check it against `web/package-lock.json`
+  when production dependencies change. CI runs `reuse lint`.
+
+- Container network IP configuration belongs to Compose: the optional
+  `docker-compose.static-ip.yml` overlay requires `KY_CONTAINER_IP` and `KY_NETWORK_SUBNET`.
+  Preserve existing overlays when updating `COMPOSE_FILE`; the base keeps automatic addressing.
+
+## Verification
+
+CI (`.github/workflows/ci.yml`) runs on every push and every non-draft pull request (drafts skip until marked ready):
+- `make lint` equivalent: gofmt, `go vet`, `go mod tidy`/`verify`
+- `go test -race` with coverage on SQLite, and the same suite against PostgreSQL 17
+- Frontend vitest suite, then typecheck/build plus a check that committed `web/dist` matches source (it is embedded in the binary)
+- `govulncheck` and `npm run audit`: strict production audit plus full high/critical audit,
+  with the single dated development-tool exception in `docs/NPM-AUDIT.md`
+- `scripts/smoke-test.sh`: runs the built binary and asserts CLI, auth, session, and SPA behavior
+- `scripts/test_ky_init.py`: runs the initializer against the current Compose template;
+  a product gets its own overridable recovery service label, and a changed template
+  refuses before creating target files. Runs in `make smoke` and the hosted smoke job.
+- Docker image build and container HTTP check
+- Chromium regressions against the built server: production CSP/worker, themes, responsive layout and keyboard dialogs; the browser job gates publishing.
+- On a push to `master` that passes every job (`reuse` included in `publish.needs`), `publish` pushes the exact image the Docker check ran against (handed over as an artifact, no rebuild) to `ghcr.io/busnes-app/ky-server-base:<commit sha>`, attests it and verifies the attestation pinned to this workflow on `master`; `promote` then moves `:latest` to that digest, only at the tip of `master`, and asserts the tag resolves to the attested digest. `docker-compose.yml` names the published image and never builds; source installs add `docker-compose.build.yml` to the `COMPOSE_FILE` chain in `.env` (overlay tags `ky_server_base:local`) so every compose command, recovery docs included, uses the local build.
+
+- `replicas` (`needs: docker`): `scripts/check-replicas-compose.py` renders the replica overlay merges, then `e2e/compose_test.go` (`KY_E2E_COMPOSE=1`) drives `docker-compose.replicas.yml` with the exact image the `docker` job tested (its `tested-image` artifact, no rebuild): replica SIGKILL and graceful stop under load, elected-worker death, the shared capsule archive across retention, `down`/`up` and scaling, PostgreSQL pause (every in-flight request answered within 10 s) and stop, shared lockout/logout and a PostgreSQL restore drill with the runbook's own commands. It is in `publish.needs`.
+
+Run the same checks locally with `make ci` (`notes-check tidy-check lint test-race test-web audit-web smoke`); add `make test-postgres` when a Postgres instance is available and `make test-replicas` (Docker) for the replica failure tests.
+Release changes require a new Current source summary and upgrade impact in
+`CHANGELOG.md`, including dependency, CI and documentation-only publications.
+Archive the previous shipped summary under its known commit. `make notes-check`
+uses Python 3 and compares against `HEAD^`; CI fetches two commits so the parent
+is present. Review prose accuracy separately; the gate checks presence/freshness.
+Run the full race suites with `GODEBUG=fips140=on` too; CI covers SQLite and
+PostgreSQL. `python3 scripts/check-strong-crypto-compose.py` verifies actual
+overlay merges with synthetic inputs and starts no containers.
+
+## Child DOX Index
+
+- [internal/worker/AGENTS.md](internal/worker/AGENTS.md): Built-in scheduled-worker election and failover.
+- [internal/config/AGENTS.md](internal/config/AGENTS.md): Configuration management and environment loader.
+- [internal/store/AGENTS.md](internal/store/AGENTS.md): Pluggable database abstraction layer (SQLite & PostgreSQL).
+- [internal/crypto/AGENTS.md](internal/crypto/AGENTS.md): Cryptographic primitives (AES-256-GCM, HMAC, SHA-256, randomness, PKCE).
+- [internal/auth/AGENTS.md](internal/auth/AGENTS.md): Authentication, sessions, client addresses and CAPTCHA (MFA is KyIdentity's).
+- [internal/sso/AGENTS.md](internal/sso/AGENTS.md): Single Sign-On federation (KySignOn, OIDC, SAML 2.0).
+- [internal/scim/AGENTS.md](internal/scim/AGENTS.md): SCIM 2.0 user and group provisioning engine.
+- [internal/backup/AGENTS.md](internal/backup/AGENTS.md): Product-side adapters over `ky-primitives/recoveryclient`: payload collection, drill checks, settings and sealer glue.
+- [internal/testdb/AGENTS.md](internal/testdb/AGENTS.md): Test-only isolated database provisioning (SQLite or PostgreSQL).
+- [internal/api/AGENTS.md](internal/api/AGENTS.md): HTTP REST API endpoints, routing, and middleware.
+- [web/AGENTS.md](web/AGENTS.md): React 19 + TypeScript + Vite PWA frontend and KySecurity design system.
+
+`docs/REPLICAS.md` owns topology, shared secrets, health/drain, the Compose replica overlay
+(`docker-compose.replicas.yml`, `deploy/replicas/haproxy.cfg`), the shared-configuration check,
+the recovery key on replicas, worker failover, SQLite-to-PostgreSQL migration and the product
+rollout contract. Application replicas never make PostgreSQL highly available; docs must not
+say otherwise. Replicas share no data directory; the capsule archive (`./backups`) is the one
+shared directory, because every write and prune in it runs under `backup-run`.
+
+`cmd/server` supplies scheduled jobs to `internal/worker`, which elects one owner using
+`store.Coordination().WithLock("scheduled-worker")`. SQLite keeps local in-memory security;
+PostgreSQL persists admission and replay state. Schema migration and bootstrap are serialized; on
+PostgreSQL `bootstrap` also checks the shared-configuration fingerprint (`cmd/server/replica.go`,
+fields in `internal/config/replica.go`) and startup syncs `recovery.pub` from the pin
+(`backup.SyncRecoveryKey`), refusing to start on either mismatch.
+Manual and scheduled backup runs share `backup-run` ownership. SQLite server/migration
+processes exclude each other with `store.WithSQLiteInstance`.
+
+`cmd/server` owns the scheduler: `backupLoop` builds the `RunConfig` once and returns with
+`scheduler disabled: ...` if that fails, because a run that never stamps its attempt would log
+and audit the same failure every minute forever. Shutdown interrupts backup work instead of
+waiting it out. On SIGTERM `gracefulStop` marks the server draining (`/readyz` 503), cancels the
+loop's context and calls `api.Server.StopDetached()`, keeps serving for `readinessDrainDelay`
+(5s), then calls `httpServer.Shutdown`; `backup.Run` aborts the snapshot or
+upload, hands the attempt stamp back so the run is due again on the next start, and returns
+`backup.ErrInterrupted`, which is audited. `runServer` then waits on the loop's `done` channel
+and `api.Server.WaitDetached()` so the receipt, key pin and audit writes land before the store
+closes. Both waits run under one `backupWaitTimeout` context (10s) -- a context, not a timer
+channel, which delivers once and would leave the second wait unbounded; the HTTP drain is
+`shutdownTimeout` (5s). With the drain delay the sum must stay within 20s, inside Kubernetes' default 30s
+termination grace, and below `docker-compose.yml`'s `stop_grace_period` (30s);
+`TestShutdownBudgetFitsTheGracePeriods` keeps them in step. Past the deadline the work is
+abandoned with a log line rather than killed silently.
+
+The KyRecovery wire contract is `kyrecovery-server/zero_code_pairing_handoff_spec.md` (v2.0.0, sealed-capsule deposit); the product half is `ky-primitives/recoveryclient`, wired through `internal/backup` and `internal/api` so every server built on this base inherits it. Operator documents: `docs/DISASTER-RECOVERY.md` (disaster recovery, every `KY_BACKUP_*` variable, the LAN DNS override) and `docs/RESTORE.md` (the restore runbook, proven against a scratch 2-of-3 kit). `restore` turns the restored database's backup schedule off (owner decision: a restored capsule never deposits on its own), deletes every restored session and the replica fingerprint, in one transaction (`prepareRestoredDatabase`). PostgreSQL capsules restore through `migrate-postgres` into an empty database.
+
+Contributor documents: `CONTRIBUTING.md` (process, test policy, coding standard and the CI job enforcing each) and `docs/ASSURANCE-CASE.md` (threat model, trust boundaries, weaknesses table); a change that moves a trust boundary or security requirement updates the assurance case in the same pull request.
+
+`docs/INTERFACES.md` owns the public HTTP, CLI and environment reference. Update it
+when externally observable inputs, outputs, permissions or configuration change;
+describe implemented scaffold behavior and explicitly identify unwired helpers.
+
+`docs/STRONG-CRYPTO.md` owns the supported key/TLS profile and migration. The
+opt-in Compose overlay preserves existing image/build, DNS, network and storage
+settings while replacing the public HTTP port with loopback. Never regenerate
+retained encryption/recovery keys to satisfy the profile.
+
+`docs/NPM-AUDIT.md` owns frontend audit scope, temporary advisory acceptance and removal.
+Keep new advisories/production exposure failing; exception expiry requires reviewed changes.
+
+`scripts/ky-init.sh` owns product scaffolding: app names must be valid KyRecovery service
+labels. Preserve Compose's `KY_APP_NAME` override while replacing its default with the
+product name; refuse an unknown template before creating the target.

@@ -1,0 +1,69 @@
+# Early warning, not a merge gate: it builds and tests this consumer against the
+# ky-primitives default branch via a go.mod replace, answering "the next time we bump
+# ky-primitives, will it break us?". Scheduled and manual only -- a failure here is caused
+# by a change in another repository, so it never blocks a pull request.
+name: ky-primitives compatibility (early warning)
+
+on:
+  schedule:
+    - cron: '51 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compat:
+    name: Build against ky-primitives default branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Both checkouts use persist-credentials: false -- nothing after this runs git
+      # against a remote, so leaving an auth header in .git/config would only widen what
+      # the build and test steps below can read. ky-primitives is public, so this workflow
+      # needs and references no repository secret.
+      - name: Check out this repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: consumer
+          persist-credentials: false
+
+      - name: Check out ky-primitives default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Busnes-app/ky-primitives
+          path: ky-primitives
+          persist-credentials: false
+
+      # cache: false. setup-go's post-step would save caches written by an unreviewed
+      # default branch of another repository into the scope ci.yml's merge gates restore
+      # from. This job runs once a day and can build cold.
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: stable
+          check-latest: true
+          cache: false
+
+      # go mod tidy: the default branch may require newer versions of shared dependencies
+      # (for example golang.org/x/crypto) than this repository's go.mod pins. A real
+      # version bump would update go.mod the same way, so this is version skew, not a
+      # break. Without tidy, go build stops at "updates to go.mod needed" and the check
+      # never reaches the API it is meant to watch.
+      - name: Point this repository at that checkout
+        working-directory: consumer
+        run: |
+          go mod edit -replace github.com/Busnes-app/ky-primitives=../ky-primitives
+          go mod tidy
+
+      - name: Build
+        working-directory: consumer
+        run: go build ./...
+
+      - name: Test
+        working-directory: consumer
+        run: go test -count=1 ./...
+
+      - name: Explain the failure
+        if: failure()
+        run: |
+          echo "::error::EARLY WARNING, NOT A MERGE GATE. Your pull request did not cause this. ky_server_base no longer builds or tests against the ky-primitives default branch, so the next version bump will break it. Fix it here, or in ky-primitives, before that bump -- no branch in this repository is blocked in the meantime."

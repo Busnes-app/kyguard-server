@@ -1,0 +1,33 @@
+{
+  "name": "ky-server-base-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:browser": "playwright test",
+    "prebuild": "node src/ky-ui/check-vendor.mjs",
+    "pretest": "node src/ky-ui/check-vendor.mjs",
+    "audit": "node --test ../scripts/npm-audit.test.mjs && node ../scripts/npm-audit.mjs"
+  },
+  "dependencies": {
+    "lucide-react": "^1.77.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1",
+    "@testing-library/react": "^16.3.0",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "jsdom": "^31.0.1",
+    "typescript": "~7.0.2",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.1"
+  }
+}

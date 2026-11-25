@@ -1,0 +1,371 @@
+# Restoring a Busnes.app server from a capsule
+
+This is the procedure for bringing a server built on this scaffold back from a `.kycap`
+backup after the original is gone. It needs three things, held by three different parties by
+design:
+
+| Thing | Who has it |
+|---|---|
+| The capsule (`.kycap`) | KyRecovery, or the local backup directory, or a downloaded copy |
+| k custodian cards | The custodians from the suite ceremony (k is usually 2 of 3) |
+| A machine to restore on | You |
+
+Nobody can do this alone. KyRecovery cannot open a capsule. One custodian cannot. The server
+that made the backup never could. That is the point, and it is also why you should run this
+procedure once as a drill before you ever need it.
+
+The `docker compose` commands below use the base file alone, which runs the published
+image. Source install: confirm the `COMPOSE_FILE` line in `.env` contains `docker-compose.build.yml`
+before the first command; extra overlays beside it, such as `docker-compose.lan-dns.yml`, are
+fine (the quickstart in `README.md` adds it). Check: `grep '^COMPOSE_FILE=' .env | grep -q
+docker-compose.build.yml && echo ok`. Otherwise a restore silently pulls a different binary than
+the one you built and are running.
+Published install: never restore onto a floating `:latest`; the step before the restore
+command pins and verifies a digest.
+
+## What a capsule holds
+
+Everything a fresh server needs to be the old one:
+
+| Path in the capsule | What it is |
+|---|---|
+| `data/ky_server.db` | The whole database: users, sessions, SCIM groups, audit log, settings, the sealed KyRecovery token |
+| `data/encryption.key` | 32 bytes. The KyRecovery pairing token (and any retired TOTP secret) is encrypted under it |
+| `data/recovery.pub` | The suite recovery public key, so the restored server comes back pinned (present when the backup had a key) |
+| `config/settings.json` | App name, URL, port, database driver. For your reference when re-deploying; nothing reads it |
+
+The restored directory is the live directory in the clear. Treat it like the running server's
+`data/`.
+
+Both drivers produce the same capsule. On SQLite the collector snapshots the file with
+`VACUUM INTO`; on PostgreSQL it copies every scaffold table from one read-only transaction into
+a SQLite file, so `data/ky_server.db` is a SQLite database either way and Steps 1 and 2 are the
+same. Steps 3 and 4 below put it back on SQLite; [Restoring a PostgreSQL deployment](#restoring-a-postgresql-deployment)
+moves it into an empty PostgreSQL database instead. A derived product with extra tables or
+columns gets no capsule until it ships its own adapter; the backup refuses rather than seal
+part of the database.
+
+## Before you start
+
+- **Pick the capsule.** In the KyRecovery dashboard, open Capsules, find the newest one for
+  this service (the app name, `Busnes.app` unless `KY_APP_NAME` was set) that is not flagged
+  corrupt, and note its `capsule_id`, `created_at` and `digest`. You will compare these after
+  the restore. From a local backup directory the file is `<escaped app name>.<capsule-id>.kycap`
+  (`Busnes_2eapp.cap-Busnes.app-<n>.kycap` by default); the newest is the one to use unless
+  you have a reason.
+- **Gather k custodians.** Each card carries one share, a single line beginning `ky2-`. They
+  type or paste it themselves; do not collect the shares in a file, a chat, or an email. Two
+  shares in one place is the suite key in one place.
+- **Prepare an empty directory** on a machine you trust, ideally the one that will run the
+  restored server. The restore refuses a directory that is not empty.
+
+## Step 1: open the capsule
+
+With the binary (from a release, or `go build ./cmd/server`):
+
+```bash
+ky_server_base restore -capsule Busnes_2eapp.cap-XXXXXXXX.kycap -to ./restored
+```
+
+`-service` defaults to `KY_APP_NAME`, then `Busnes.app`. Pass it only when the backup was made
+under a different app name; the capsule's service name must match or the restore stops before
+reading a share. Older Compose installs used the literal `Busnes.app Base`; restore their
+local capsules with `-service 'Busnes.app Base'`, even after the runtime name changes.
+The encryption and recovery keys stay the same.
+
+For a published-image install, and always on a fresh recovery machine, pin the commit you
+intend to run (normally the one that made the backup, or the current tip) to a digest you have
+verified before it reads a single share (`gh` must be logged in). Name the commit yourself.
+Tags are movable, `:<commit sha>` included, so the chain also checks that the attestation records
+your commit as its source: the guarantee is the commit you named, not whatever the tag points at. The
+chain stops at the first failure and renames a same-directory staging file over `.env` only
+if the filtered copy was written in full, so your secrets are never truncated. The pin persists
+in `.env` after the drill: see the README's upgrade note for moving off it. Images built before 2026-09-16 can no longer be verified by name: the owner they were attested under is not held by this project, so do not point `--repo` or `--cert-identity` at it. Pin a commit built after that date, or build that commit from source with `docker-compose.build.yml`.
+
+```bash
+sha=<full commit sha you intend to run, e.g. $(git rev-parse origin/master)>
+d=$(docker buildx imagetools inspect ghcr.io/busnes-app/ky-server-base:$sha --format '{{.Manifest.Digest}}') \
+  && gh attestation verify "oci://ghcr.io/busnes-app/ky-server-base@$d" --repo Busnes-app/ky-server-base \
+       --cert-identity https://github.com/Busnes-app/ky-server-base/.github/workflows/ci.yml@refs/heads/master \
+  && [ "$(gh attestation verify "oci://ghcr.io/busnes-app/ky-server-base@$d" --repo Busnes-app/ky-server-base \
+       --cert-identity https://github.com/Busnes-app/ky-server-base/.github/workflows/ci.yml@refs/heads/master \
+       --format json --jq '.[0].verificationResult.statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit')" = "$sha" ] \
+  && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KY_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
+      && echo "KY_IMAGE=ghcr.io/busnes-app/ky-server-base@$d" >> "$t" && mv "$t" .env) \
+  && grep -qxF "KY_IMAGE=ghcr.io/busnes-app/ky-server-base@$d" .env
+```
+
+Then, in the same shell (the check compares against `$d`), refuse to go on unless the image in
+effect is exactly that digest. A source install passes on its `ky_server_base:local` build instead,
+since `docker-compose.build.yml` wins over the pin, which is what a source install wants. The
+two refusal messages are distinct on purpose: a broken invocation is not an unpinned image.
+
+```bash
+imgs=$(docker compose config --images) || { echo 'refusing: compose could not resolve the image'; false; }
+printf '%s\n' "$imgs" | grep -qxF "ghcr.io/busnes-app/ky-server-base@$d" || printf '%s\n' "$imgs" | grep -qxF 'ky_server_base:local' \
+  || { echo "refusing: image in effect is '$imgs', not the digest verified above"; false; }
+```
+
+With Docker Compose, from the repository directory, mount the capsule and an empty target
+directory into a one-off container. Create the target yourself at mode 700 and run the
+container as your own user, so what comes out is owned by you and not by root. The image's
+entrypoint is the binary, so the subcommand goes straight after the service name; `--no-deps`
+keeps the real server down:
+
+```bash
+mkdir -m 700 restored
+docker compose run --rm --no-deps --user "$(id -u):$(id -g)" \
+  -v "$PWD/Busnes_2eapp.cap-XXXXXXXX.kycap:/in.kycap:ro" \
+  -v "$PWD/restored:/restored" \
+  app restore -capsule /in.kycap -to /restored
+```
+
+The bare binary needs none of this: it creates a missing target itself at mode 700.
+
+The command prompts:
+
+```
+Paste custodian shares, one per line, then Ctrl-D:
+```
+
+Each custodian enters their share on its own line. After the k-th, press Ctrl-D. Shares are
+read from stdin only, never from the command line, because argv is world-readable and lands
+in shell history.
+
+Only for a rehearsal with synthetic test shares, never with real cards, stdin can be a file.
+Delete it afterwards; a file holding k shares is the suite key in a file.
+
+On success it prints the authenticated manifest:
+
+```
+Restored 4 files from capsule cap-Busnes.app-1788605720094118543
+  service:      Busnes.app (v1.0.0)
+  created:      2026-09-05T12:15:20Z
+  recovery key: 886ff52c...
+  payload hash: 8a053985...
+Scheduled deposits are OFF in the restored copy. Turn them back on in Backup & recovery once this server is the one in service.
+```
+
+**Check it against KyRecovery's record.** The capsule ID and `created` must match the
+deposit record you noted. Opening has already proved the bytes are intact and were sealed to
+the suite key; matching the ID and time against the blind store's record is what proves this
+is the capsule you meant, not an older one someone substituted.
+
+Failures you may see, and what they mean:
+
+| Message | Meaning |
+|---|---|
+| `capsule is for service "Busnes.app", this instance is "X"` | `-service` or `KY_APP_NAME` names something else. Override `-service` only if the backup was made under a different app name |
+| `shamir: fewer shares than the threshold requires` | Fewer than k valid lines were read. Check for a missed line or a truncated paste |
+| `restore target directory is not empty` | Use an empty directory. The restore never overwrites |
+| a decrypt or integrity error | Wrong shares (from a different ceremony), a share mistyped, or a damaged file. Re-download and retry with the custodians |
+
+## Step 2: check what came out
+
+```bash
+find restored -type f -printf '%m %p\n'
+```
+
+Expect three or four files, all mode `600`, under `restored/data` and `restored/config`.
+`cat restored/config/settings.json` shows the app URL and port the old server ran with.
+
+## Step 3: put it in service
+
+**Docker Compose (the normal deployment).** The data directory is the bind mount `./data`
+in the compose project. It must be empty before the copy, for the same reason Step 1 demands
+an empty directory: a capsule carries `ky_server.db` but never its `-wal` and `-shm`
+sidecars, and a write-ahead log left over from the old database would be replayed into the
+restored one at first open, mixing two databases.
+
+```bash
+docker compose down
+sudo ls -A data | wc -l
+```
+
+(`data/` is root-owned, mode 0700 after an earlier restore, so list it as root: an unprivileged
+`ls` there prints `0` for a full directory.)
+
+That must print `0`. If it does not, the old directory still holds data, and you keep a copy
+of it before anything else: it holds every change made after the capsule was sealed, and it
+is the only record Step 5 can walk. The container runs as root, so the files are root-owned;
+copy as root into a directory you create at mode 700:
+
+```bash
+mkdir -m 700 old-data
+sudo cp -a data/. old-data/ && sudo ls -A old-data | wc -l
+```
+
+The count must equal the count above and the command must exit 0. `old-data/` is now the
+old live directory in the clear, with the same key the capsule holds; it is removed in
+"Afterwards", not before Step 5 is done.
+
+Only with the copy confirmed, empty the directory. This is irreversible:
+
+```bash
+sudo sh -c 'rm -rf data/* data/.[!.]*'
+sudo ls -A data | wc -l
+```
+
+With `0` confirmed, copy the restored files in. `restore` has already deleted the restored
+sessions and said how many: they are database rows, so every session cookie minted before the
+capsule, including one revoked or stolen since, would otherwise sign in again the moment the
+server listens. Everyone signs in again. The files come out of Step 1 owned by you, but the shipped container
+runs as root and refuses an `encryption.key` it does not own, so hand them to root (or to the
+UID of a `user:` override, if you run one; on rootless Docker or Podman, where container root
+is your own UID, leave out the `chown`). The `chmod` comes first: `cp -a` gives `data/` the
+restored directory's mode 0700, so once root owns it your shell can no longer list
+`data/*`. Then start; the chain stops before the start if any step fails:
+
+```bash
+sudo cp -a restored/data/. data/ && sudo chmod 600 data/* && sudo chown -R 0:0 data \
+  && docker compose up -d
+```
+
+`restore` has also turned scheduled deposits off in the restored copy and said so: it may
+be a drill or a migration beside a server still in service, and two servers depositing under
+one pairing would alternate KyRecovery's newest capsule between two databases. It removed the
+replica configuration record too, so a restored PostgreSQL deployment records its own.
+
+Keep `KY_APP_URL` and `KY_APP_NAME` identical to the old deployment, from
+`config/settings.json`: the app name is what every capsule is sealed under and what
+KyRecovery pinned for the pairing token.
+
+The restored `encryption.key` is the key; the file form is the one to use. If the old
+deployment supplied `KY_ENCRYPTION_KEY` by environment instead, the environment wins when
+both are present, so either remove that variable so the file is read, or keep supplying the
+same value from wherever the old deployment kept it. Never print a key to a terminal or type
+one on a command line: it lands in scrollback, session recordings and shell history. If you
+must produce the hex form, write it straight into the compose project's `.env` with
+`umask 077` and nothing else on stdout.
+
+**Bare binary.** Point `KY_DATA_DIR` at `restored/data`, set `KY_APP_URL` and `KY_APP_NAME`
+as before, and start.
+
+## Step 4: prove it
+
+1. Open the app URL and sign in with an existing admin account.
+2. Open Backup & recovery. If the backup had a key, the recovery key shows as pinned with the
+   same key ID as before; compare it with the ceremony card. If the backup was paired, the
+   sealed token came across in the database, so the restored server can deposit again
+   without re-pairing. Run the drill to prove the restored data seals. Only once this server
+   is the one in service (the old one is gone or stopped for good), turn the schedule back on
+   and click Back up now: that deposit proves `encryption.key` is right, because the sealed
+   KyRecovery token only opens under it. If the screen says the key is missing,
+   `data/recovery.pub` did not come across; re-pair, which is refused unless KyRecovery hands
+   back the same key.
+3. Check the audit log: the last events before the restore are there, followed by your
+   sign-in.
+
+## Step 5: decide what to trust
+
+The restore proves the service works. It does not make the restored state current or safe.
+Everything comes back as of the capsule's `created_at`: users, passwords, SCIM state,
+sessions. Anything you revoked or changed after that moment is undone.
+
+1. Sessions: `restore` deleted the restored ones before the server started. There is no
+   per-user control in the UI and no global revoke. After hardware loss that is enough.
+2. Walk the old audit log in `old-data/ky_server.db` from `created_at` to the moment the old
+   server was lost (the restored server's log stops at `created_at`), and re-apply what
+   happened after the capsule: disabled accounts, rotated passwords, SCIM changes.
+3. If the reason for the restore was a suspected compromise rather than hardware loss, treat
+   the restored secrets as exposed and rotate the ones that can be rotated. A restore from
+   before a compromise brings the attacker's access back with the service unless you do this.
+
+   **Never rotate `encryption.key`.** The KyRecovery pairing token is encrypted under it.
+   Remove it and the pairing is gone for good, on a server you just recovered.
+
+   What can be rotated, and how:
+
+   - `KY_SESSION_SECRET` signs the proof-of-work login challenge, nothing durable. Replace it
+     with `openssl rand -hex 32` written straight into `.env`, not echoed, then
+     `docker compose up -d`.
+   - `KY_SCIM_TOKEN` is the SCIM bearer. Replace it the same way and give the new value to the
+     identity provider. If it was never set, the server mints a fresh one at every start.
+   - The KyRecovery pairing token: ask the KyRecovery admin to revoke this service and pair
+     again from the screen; the same key comes back, so the pairing is accepted.
+
+   Then confirm with a Back up now so the recovered server has a capsule that reflects the
+   rotation.
+
+## Restoring a PostgreSQL deployment
+
+Only existing commands are used, and the old database is never written. Application replicas
+share one PostgreSQL; this restores its contents, it does not make PostgreSQL highly
+available.
+
+1. Stop every replica (`docker compose stop app`, or each host's service). Mixed old and
+   restored servers on one pairing would alternate KyRecovery's newest capsule.
+2. Run Steps 1 and 2 above into an **empty** directory: `restore -capsule <file> -to <dir>`
+   with the shares on stdin. It prints that scheduled deposits are off, how many sessions it
+   deleted and that the replica configuration record is gone.
+3. Provision an **empty** database or schema and keep its DSN in a mode-0600 file as
+   `KY_MIGRATE_POSTGRES_DSN`, never on a command line. With the bundled PostgreSQL of the
+   replica overlay (no host port), create it in the container and write the file without
+   echoing the password:
+
+   ```bash
+   docker compose up -d --wait postgres
+   docker compose exec postgres createdb -U ky_server ky_server_restored
+   (umask 077; printf 'KY_MIGRATE_POSTGRES_DSN=postgres://ky_server:%s@postgres:5432/ky_server_restored?sslmode=disable\n' \
+     "$(sed -n 's/^KY_POSTGRES_PASSWORD=//p' .env)" > migration.env)
+   ```
+
+   Then check, and copy. Mount `restored` **writable**: the command takes a lock and makes a
+   private snapshot beside the database. Running as your own user keeps those files yours:
+
+   ```bash
+   docker compose run --rm --no-deps --user "$(id -u):$(id -g)" --env-from-file migration.env \
+     -v "$PWD/restored:/restored" app migrate-postgres --source /restored/data/ky_server.db --check
+   docker compose run --rm --no-deps --user "$(id -u):$(id -g)" --env-from-file migration.env \
+     -v "$PWD/restored:/restored" app migrate-postgres --source /restored/data/ky_server.db
+   ```
+
+   A target with any row in it is refused and left as it was. A capsule from a deployment
+   pinned before replica records existed gets its record from `restored/data/recovery.pub`;
+   if the capsule pins a key but has no `recovery.pub`, the command refuses before copying
+   and says how to repair it.
+4. Install the restored encryption key on every replica as `KY_ENCRYPTION_KEY`, written
+   straight into each `.env` without echoing it:
+
+   ```bash
+   (umask 077; printf 'KY_ENCRYPTION_KEY=%s\n' "$(cat restored/data/encryption.key)" >> .env)
+   ```
+
+   Remove any older `KY_ENCRYPTION_KEY` line first. A bare-binary replica can use the file
+   as its `data/encryption.key` instead. `recovery.pub` needs no copying: each replica writes
+   it from the database before its first backup, and refuses to start if a stale file there
+   names another key. Point `KY_DB_DSN` at the new database and remove `migration.env`.
+5. Start **one** replica (`KY_REPLICAS=1 docker compose up -d --wait`) and verify as in
+   Step 4: sign in, the recovery key ID, the drill, the audit log. Then run
+   `docker compose up -d --wait` to start the configured replica count; each checks the shared configuration against the
+   record the first one wrote and refuses to start, naming the fields, if it differs.
+6. Only once these servers are the ones in service, turn the schedule back on in Backup &
+   recovery and click Back up now.
+
+Rollback: before the first write to the new database, point the replicas back at the
+previous DSN (the old database is untouched) and drop the scratch target. After the new
+database has accepted writes, going back would lose them; plan a reverse migration instead.
+
+## Afterwards
+
+- Delete the `restored/` directory once the server runs from its own copy, and `old-data/`
+  once Step 5 is done. Both are the live directory in the clear, key included. Files in
+  `old-data/` are root-owned after the copy, so `sudo rm -rf old-data`.
+- The custodians' cards are unchanged; a restore does not consume them. If a card was
+  exposed during the restore (read aloud, photographed, pasted anywhere shared), that is a
+  key compromise for the whole suite, not for one server: run a new ceremony.
+- Make a backup from the restored server so the newest capsule reflects the recovery.
+
+## Drill it
+
+Run Steps 1 and 2 against the latest capsule on a scratch machine once a quarter, with the
+real custodians and their real cards, and then delete the output. The in-app drill proves the
+capsule format restores; only this proves the cards do.
+
+The in-app drill and `backup-drill` CLI validate the recipe from the capsule actually opened,
+including required files, read-only SQLite integrity and environment-variable presence.
+A malformed recipe fails the drill. Concurrent drills on one data directory are refused
+(HTTP 409 or a CLI error); retry after the active drill finishes. The OS releases the lock
+if the process exits. Keep `data/drill.lock` in place; it holds no secret and must not be
+removed to bypass a running drill. Opened scratch data stays under `data/drill` with 0700
+permissions and is removed when the drill returns.

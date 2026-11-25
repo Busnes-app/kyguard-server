@@ -1,0 +1,155 @@
+import React, { useState } from 'react';
+import { Key, AlertCircle, LogIn } from 'lucide-react';
+import { CaptchaWidget } from '../components/CaptchaWidget';
+import { ThemeSwitcher } from '../components/ThemeSwitcher';
+
+interface LoginProps {
+  onSuccess: (user: any) => void;
+  appName: string;
+}
+
+export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
+  const [username, setUsername] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
+  const [captchaToken, setCaptchaToken] = useState<string>('');
+  const [captchaRound, setCaptchaRound] = useState<number>(0);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string>('');
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+
+    try {
+      const resp = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username,
+          password,
+          captcha_token: captchaToken || undefined,
+        }),
+      });
+
+      const data = await resp.json();
+      if (!resp.ok) {
+        throw new Error(data.error || 'Login failed');
+      }
+
+      if (data.authenticated) {
+        onSuccess(data.user);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Login failed');
+      // The token may have expired while the tab slept; solve a fresh one for the retry.
+      setCaptchaToken('');
+      setCaptchaRound((n) => n + 1);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        minHeight: '100vh',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '20px',
+        background: 'var(--bg)',
+      }}
+    >
+      <div style={{ position: 'absolute', top: 20, right: 20 }}>
+        <ThemeSwitcher />
+      </div>
+
+      <div style={{ width: '100%', maxWidth: '420px' }}>
+        <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+          <div
+            style={{
+              display: 'inline-flex',
+              padding: '12px',
+              background: 'var(--accent-soft)',
+              borderRadius: '12px',
+              color: 'var(--accent)',
+              marginBottom: '12px',
+            }}
+          >
+            <img src="/app-icon.png" width={56} height={56} alt="" />
+          </div>
+          <h1 style={{ fontSize: '24px', fontWeight: 'bold' }}>{appName || 'Busnes.app'}</h1>
+          <p style={{ color: 'var(--ink)', fontSize: '14px', marginTop: '4px' }}>Cloud Mobile First Base Platform</p>
+        </div>
+
+        <div className="panel">
+          {error && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                background: 'rgba(239, 68, 68, 0.1)',
+                border: '1px solid var(--danger)',
+                borderRadius: '6px',
+                padding: '10px',
+                color: 'var(--danger)',
+                fontSize: '13px',
+                marginBottom: '16px',
+              }}
+            >
+              <AlertCircle size={16} />
+              <span>{error}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleLogin}>
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', fontSize: '13px', color: 'var(--ink)', marginBottom: '6px' }}>Username</label>
+              <input
+                type="text"
+                autoFocus
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="admin"
+                required
+              />
+            </div>
+
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ display: 'block', fontSize: '13px', color: 'var(--ink)', marginBottom: '6px' }}>Password</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••••••"
+                required
+              />
+            </div>
+
+            <CaptchaWidget key={captchaRound} onToken={setCaptchaToken} />
+
+            {/* Disabled until the security check is solved (about a second): submitting earlier is refused. */}
+            <button type="submit" style={{ width: '100%', justifyContent: 'center', marginTop: '8px' }} disabled={loading || !captchaToken}>
+              <LogIn size={16} />
+              <span>{loading ? 'Signing in...' : 'Sign In'}</span>
+            </button>
+
+            <div style={{ marginTop: '20px', borderTop: '1px solid var(--line)', paddingTop: '16px' }}>
+              <a
+                href="/api/sso/kysignon/login"
+                className="btn btn-secondary"
+                style={{ width: '100%', justifyContent: 'center', textDecoration: 'none' }}
+              >
+                <Key size={16} style={{ color: 'var(--accent)' }} />
+                <span>Continue with Single Sign On</span>
+              </a>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+};

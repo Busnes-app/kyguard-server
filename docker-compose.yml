@@ -1,0 +1,104 @@
+services:
+  app:
+    # The published, attested image. `pull` moves to the newest one; `up` uses what is
+    # present, otherwise pulls. This file never builds: a source build would occupy this
+    # name with unattested bytes, so it lives in docker-compose.build.yml under a local tag.
+    # Source installs add docker-compose.build.yml to the COMPOSE_FILE chain in .env (other overlays
+    # may sit beside it); Compose reads it before every command. An explicit -f list replaces it
+    # outright, so never mix the two.
+    # To run only what CI attested, pin the commit you chose by digest and verify it first (gh
+    # logged in). Tags are movable, :<commit sha> included, so the digest comes from the tag but
+    # the guarantee comes from the attestation: it must verify against this workflow on master
+    # AND record your commit as its source, or the chain stops. The new .env is staged in this
+    # directory and renamed atomically over the old one only if the filtered copy was written
+    # in full, so a failed check, an unreadable .env or a short write never replaces your
+    # secrets. Re-run with a newer sha to move; delete the KY_IMAGE line to follow :latest
+    # again. A source install is unaffected: the build overlay's image wins over this pin.
+#   Images built before 2026-09-16 cannot be verified by name any more (their owner is no longer held by this project); pin a later commit or build from source with docker-compose.build.yml.
+    #   sha=<full commit sha you intend to run, e.g. $(git rev-parse origin/master)>
+    #   d=$(docker buildx imagetools inspect ghcr.io/busnes-app/ky-server-base:$sha --format '{{.Manifest.Digest}}') \
+    #     && gh attestation verify "oci://ghcr.io/busnes-app/ky-server-base@$d" --repo Busnes-app/ky-server-base \
+    #          --cert-identity https://github.com/Busnes-app/ky-server-base/.github/workflows/ci.yml@refs/heads/master \
+    #     && [ "$(gh attestation verify "oci://ghcr.io/busnes-app/ky-server-base@$d" --repo Busnes-app/ky-server-base \
+    #          --cert-identity https://github.com/Busnes-app/ky-server-base/.github/workflows/ci.yml@refs/heads/master \
+    #          --format json --jq '.[0].verificationResult.statement.predicate.buildDefinition.resolvedDependencies[0].digest.gitCommit')" = "$sha" ] \
+    #     && (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env && { grep -v '^KY_IMAGE=' .env || [ $? -eq 1 ]; } > "$t" \
+    #         && echo "KY_IMAGE=ghcr.io/busnes-app/ky-server-base@$d" >> "$t" && mv "$t" .env) \
+    #     && grep -qxF "KY_IMAGE=ghcr.io/busnes-app/ky-server-base@$d" .env
+    image: ${KY_IMAGE:-ghcr.io/busnes-app/ky-server-base:latest}
+    pull_policy: missing
+    container_name: ky_server_base
+    restart: unless-stopped
+    # Covers cmd/server's readinessDrainDelay (5s at 503), shutdownTimeout (5s HTTP drain) and
+    # backupWaitTimeout (10s for an interrupted backup to record its outcome). Docker's
+    # default is 10s.
+    stop_grace_period: 30s
+    # /readyz is 503 while the database is unreachable or the server is draining. busybox wget
+    # is in the image; no extra binary.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "3", "-O", "/dev/null", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    ports:
+      - "8080:8080"
+    environment:
+      - KY_PORT=8080
+      - KY_HOST=0.0.0.0
+      # Also the KyRecovery service label; keep an existing valid identity unchanged.
+      - KY_APP_NAME=${KY_APP_NAME:-Busnes.app}
+      - KY_APP_URL=${KY_APP_URL:-http://localhost:8080}
+      - KY_DB_DRIVER=sqlite
+      - KY_DATA_DIR=/app/data
+      # Disaster recovery. Sealed capsules land in KY_BACKUP_DIR (empty = no local copies);
+      # the schedule below is only the default the admin screen overrides. KY_DNS lives in
+      # docker-compose.lan-dns.yml, never here.
+      - KY_BACKUP_DIR=${KY_BACKUP_DIR-/app/backups}
+      - KY_BACKUP_KEEP=${KY_BACKUP_KEEP:-7}
+      - KY_BACKUP_DEPOSIT_INTERVAL=${KY_BACKUP_DEPOSIT_INTERVAL:-24h}
+      - KY_BACKUP_ALLOW_PRIVATE_RECOVERY=${KY_BACKUP_ALLOW_PRIVATE_RECOVERY:-false}
+      - KY_SSO_ENABLED=true
+      - KY_SCIM_ENABLED=true
+      # Read from .env, so rotating either there and running `docker compose up -d` takes
+      # effect. Left empty, the server mints a fresh one at every start. PostgreSQL replicas:
+      # follow docs/REPLICAS.md Rotation (accept-replica-config first), or every replica
+      # refuses to start.
+      - KY_SESSION_SECRET=${KY_SESSION_SECRET:-}
+      - KY_SCIM_TOKEN=${KY_SCIM_TOKEN:-}
+    # Every other setting in docs/INTERFACES.md is read from .env: KY_KYSIGNON_*,
+    # KY_SSO_AUTO_PROVISION, and KY_TRUSTED_PROXIES set to the reverse proxy container's own
+    # address when one fronts this service, e.g. KY_TRUSTED_PROXIES=172.18.0.2/32 (never a
+    # whole bridge range like 172.16.0.0/12, which trusts every other container; 0.0.0.0/0
+    # and ::/0 are refused). The entries above win over .env (KY_DB_DRIVER=sqlite included:
+    # PostgreSQL needs this file or an overlay changed, not just .env); an overlay's env_file
+    # wins over it.
+    # KY_RATE_LIMIT_EXEMPT_NETWORKS lists office networks (e.g. 203.0.113.0/24) that skip the
+    # per-address sign-in limit; never the proxy's address, which would exempt everyone.
+    # The optional form needs Compose 2.24.0 or later.
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data:/app/data
+      - ./backups:/app/backups
+
+  # Optional PostgreSQL service for enterprise heavy DB mode
+  postgres:
+    image: postgres:17-alpine
+    container_name: ky_postgres
+    restart: unless-stopped
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: ky_server
+    # Loopback only: the password above is public, and Docker's published ports bypass the
+    # host firewall. The app reaches it over the compose network.
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

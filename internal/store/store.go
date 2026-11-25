@@ -1,0 +1,132 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"time"
+)
+
+var (
+	ErrNotFound       = errors.New("record not found")
+	ErrAlreadyExists  = errors.New("record already exists")
+	ErrSessionExpired = errors.New("session expired")
+	// ErrConflict means the record changed since it was read; re-read and retry.
+	ErrConflict = errors.New("record changed concurrently")
+	// ErrSSOSessionEnded means the identity provider already ended the login being signed in.
+	ErrSSOSessionEnded = errors.New("SSO session already ended")
+)
+
+// Store defines the unified storage contract implemented across SQLite, PostgreSQL, and MySQL.
+type Store interface {
+	Users() UserStore
+	Sessions() SessionStore
+	Groups() GroupStore
+	Audit() AuditStore
+	Settings() SettingsStore
+	Coordination() CoordinationStore
+
+	// SnapshotToSQLite copies a PostgreSQL database, as of one transaction, into a new SQLite
+	// file; ErrSnapshotSchema for a schema this build does not know.
+	SnapshotToSQLite(ctx context.Context, dest string) error
+
+	Driver() string
+	Ping(ctx context.Context) error
+	Close() error
+}
+
+// CoordinationStore owns the state that must agree across application replicas.
+type CoordinationStore interface {
+	TakeAttempt(ctx context.Context, key string, limit int, window time.Duration) (expires int64, allowed bool, err error)
+	ReleaseAttempt(ctx context.Context, key string, expires int64) error
+	SpendChallenge(ctx context.Context, salt string, expires int64) (bool, error)
+	CleanExpired(ctx context.Context) error
+	// WithLock runs work on the winner. Connection loss cancels work when its next
+	// probe detects it (within about two seconds); it does not fence database writes.
+	// Irreversible writes need their own database invariant. A losing contender returns false, nil.
+	WithLock(ctx context.Context, name string, work func(context.Context) error) (bool, error)
+}
+
+// UserStore defines repository operations for accounts.
+type UserStore interface {
+	CreateUser(ctx context.Context, u *User) error
+	GetUserByID(ctx context.Context, id string) (*User, error)
+	GetUserByUsername(ctx context.Context, username string) (*User, error)
+	GetUserByEmail(ctx context.Context, email string) (*User, error)
+	GetUserBySSO(ctx context.Context, provider, subject string) (*User, error)
+	UpdateUser(ctx context.Context, u *User) error
+	// UpdateUserProfile writes only username, email, display name, role and status, so a
+	// directory sync working from a stale read cannot undo a concurrent password reset or SSO
+	// link. It applies only while role and status are still prevRole and prevStatus
+	// (the values the caller read), returning ErrConflict otherwise, so a stale read cannot put
+	// back a privilege a concurrent write revoked. When it changes either, it deletes the
+	// user's sessions in the same transaction.
+	UpdateUserProfile(ctx context.Context, u *User, prevRole, prevStatus string) error
+	// LinkSSOIdentity moves an account from fromProvider to toProvider, keeping its subject;
+	// ErrConflict when the account is no longer on fromProvider or no longer has subject.
+	LinkSSOIdentity(ctx context.Context, id, subject, fromProvider, toProvider string) error
+	// TakeOverForSCIM is UpdateUserProfile that also marks the account SCIM-managed, in the
+	// same statement, and applies only while it is an unmanaged "kysignon" row with subject
+	// u.SSOSubject (ErrConflict otherwise): SCIM taking over an account KyIdentity sign-in
+	// created, all or nothing.
+	TakeOverForSCIM(ctx context.Context, u *User, prevRole, prevStatus string) error
+	// UpdateUserRole writes only the role, as a compare-and-swap on prevRole and u.Status,
+	// deleting the user's sessions in the same transaction when it changes; a concurrent
+	// profile edit is never written back.
+	UpdateUserRole(ctx context.Context, u *User, prevRole string) error
+	// UpdateSCIMProfile is UpdateUserProfile that also compares the subject read
+	// (prevSubject, ErrConflict otherwise) and, while the account is still "scim", writes
+	// u.SSOSubject (the SCIM externalId) in the same statement.
+	UpdateSCIMProfile(ctx context.Context, u *User, prevRole, prevStatus, prevSubject string) error
+	ResetAdminPassword(ctx context.Context, userID, newHash string) error
+	CompletePasswordChange(ctx context.Context, userID, oldHash, newHash, ip string) error
+	DeleteUser(ctx context.Context, id string) error
+	ListUsers(ctx context.Context, offset, limit int, search string) ([]*User, int, error)
+	// ListSCIMUsers is ListUsers restricted to accounts SCIM created (SCIMManaged).
+	ListSCIMUsers(ctx context.Context, offset, limit int, search string) ([]*User, int, error)
+	CountUsers(ctx context.Context) (int, error)
+}
+
+// SessionStore defines repository operations for active login sessions.
+type SessionStore interface {
+	CreateSession(ctx context.Context, s *Session, expectedPasswordHash string) error
+	GetSession(ctx context.Context, tokenHash string) (*Session, error)
+	DeleteSession(ctx context.Context, tokenHash string) error
+	DeleteUserSessions(ctx context.Context, userID string) error
+	// EndSSOSubject ends the provider subject's sessions whose credentials were verified
+	// before cutoff and fences that subject's earlier logins until fenceUntil.
+	EndSSOSubject(ctx context.Context, provider, subject string, cutoff, fenceUntil time.Time) error
+	// EndSSOSession ends every session of an SSO login and fences its sid until fenceUntil.
+	EndSSOSession(ctx context.Context, sid string, fenceUntil time.Time) error
+	CleanExpiredSessions(ctx context.Context) error
+}
+
+// GroupStore defines repository operations for SCIM and RBAC groups.
+type GroupStore interface {
+	CreateGroup(ctx context.Context, g *Group) error
+	GetGroupByID(ctx context.Context, id string) (*Group, error)
+	GetGroupByName(ctx context.Context, name string) (*Group, error)
+	UpdateGroup(ctx context.Context, g *Group) error
+	DeleteGroup(ctx context.Context, id string) error
+	ListGroups(ctx context.Context, offset, limit int) ([]*Group, int, error)
+	AddGroupMember(ctx context.Context, groupID, userID string) error
+	RemoveGroupMember(ctx context.Context, groupID, userID string) error
+	GetUserGroups(ctx context.Context, userID string) ([]*Group, error)
+}
+
+// AuditStore logs security events.
+type AuditStore interface {
+	LogAudit(ctx context.Context, r *AuditRecord) error
+	ListAuditRecords(ctx context.Context, offset, limit int) ([]*AuditRecord, int, error)
+}
+
+// SettingsStore handles persistent key-value configuration.
+type SettingsStore interface {
+	GetSetting(ctx context.Context, key string) (string, error)
+	SetSetting(ctx context.Context, key, val string) error
+	// UpdateSettings commits related writes and removals together.
+	UpdateSettings(ctx context.Context, values map[string]string, deleteKeys ...string) error
+	// SetSettingIfAbsent preserves an existing value and returns the value actually stored.
+	SetSettingIfAbsent(ctx context.Context, key, val string) (string, error)
+	DeleteSetting(ctx context.Context, key string) error
+	GetAllSettings(ctx context.Context) (map[string]string, error)
+}
