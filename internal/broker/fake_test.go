@@ -234,7 +234,7 @@ type wrapCP struct {
 	intent  func(ctx context.Context, raw []byte) error
 	reserve func(ctx context.Context, account, op pqcrypto.UUID, reported pqcrypto.Counter) (pqcrypto.Counter, error)
 	sync    func(ctx context.Context, req brokerproto.SyncRequest) (*brokerproto.SyncReply, error)
-	account func(ctx context.Context, id pqcrypto.UUID, after pqcrypto.Counter) (*brokerproto.AccountState, error)
+	account func(ctx context.Context, id pqcrypto.UUID, after pqcrypto.Counter, more bool) (*brokerproto.AccountState, error)
 	// receiptsErr fails every receipts delivery while set.
 	receiptsErr error
 }
@@ -267,9 +267,9 @@ func (w *wrapCP) Sync(ctx context.Context, req brokerproto.SyncRequest) (*broker
 	return w.ControlPlane.Sync(ctx, req)
 }
 
-func (w *wrapCP) SyncAccount(ctx context.Context, id pqcrypto.UUID, after pqcrypto.Counter) (*brokerproto.AccountState, error) {
+func (w *wrapCP) SyncAccount(ctx context.Context, id pqcrypto.UUID, after pqcrypto.Counter, more bool) (*brokerproto.AccountState, error) {
 	if w.account != nil {
-		return w.account(ctx, id, after)
+		return w.account(ctx, id, after, more)
 	}
-	return w.ControlPlane.SyncAccount(ctx, id, after)
+	return w.ControlPlane.SyncAccount(ctx, id, after, more)
 }

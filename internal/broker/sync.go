@@ -66,8 +66,8 @@ func (m *Machine) syncOne(ctx context.Context, id pqcrypto.UUID) error {
 		return err
 	}
 	after := a.HighestCopied()
-	for {
-		st, err := m.CP.SyncAccount(ctx, id, after)
+	for first := true; ; first = false {
+		st, err := m.CP.SyncAccount(ctx, id, after, !first)
 		if err != nil {
 			return err
 		}

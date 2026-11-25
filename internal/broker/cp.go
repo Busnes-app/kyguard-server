@@ -11,7 +11,7 @@ import (
 // broker checks everything it receives.
 type ControlPlane interface {
 	Sync(ctx context.Context, req brokerproto.SyncRequest) (*brokerproto.SyncReply, error)
-	SyncAccount(ctx context.Context, account pqcrypto.UUID, afterVersion pqcrypto.Counter) (*brokerproto.AccountState, error)
+	SyncAccount(ctx context.Context, account pqcrypto.UUID, afterVersion pqcrypto.Counter, more bool) (*brokerproto.AccountState, error)
 	Reserve(ctx context.Context, account, op pqcrypto.UUID, reported pqcrypto.Counter) (pqcrypto.Counter, error)
 	StoreEnvelope(ctx context.Context, op pqcrypto.UUID, envelope []byte) error
 	Intent(ctx context.Context, intent []byte) error
@@ -30,7 +30,7 @@ func (c channelCP) Sync(ctx context.Context, req brokerproto.SyncRequest) (*brok
 	return &r, c.c.Call(ctx, brokerproto.MsgSync, req, &r)
 }
 
-func (c channelCP) SyncAccount(ctx context.Context, account pqcrypto.UUID, afterVersion pqcrypto.Counter) (*brokerproto.AccountState, error) {
+func (c channelCP) SyncAccount(ctx context.Context, account pqcrypto.UUID, afterVersion pqcrypto.Counter, more bool) (*brokerproto.AccountState, error) {
 	var r brokerproto.AccountState
 	return &r, c.c.Call(ctx, brokerproto.MsgSyncAccount, brokerproto.SyncAccountRequest{AccountID: account, AfterVersion: afterVersion}, &r)
 }
