@@ -10,6 +10,9 @@ import (
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto/canonical"
 )
 
+// ErrNotCandidate means the envelope is not the requester's candidate for this account.
+var ErrNotCandidate = errors.New("broker: the envelope is not an enrollment candidate of this account")
+
 // ErrEnrollmentOpen means another enrollment of the account has not finished.
 var ErrEnrollmentOpen = errors.New("broker: an enrollment of this account is still open")
 
@@ -53,8 +56,14 @@ func (m *Machine) Enroll(ctx context.Context, txRaw, envRaw []byte) error {
 	if a.Enrollment.Open() {
 		return ErrEnrollmentOpen
 	}
-	if _, err := m.Trust.VerifyEnvelope(envRaw, pqcrypto.EnvelopeContext{New: true, Enroll: tx}); err != nil {
+	v, err := m.Trust.VerifyEnvelope(envRaw, pqcrypto.EnvelopeContext{New: true, Enroll: tx})
+	if err != nil {
 		return err
+	}
+	// Only a user-signed candidate of this account by the requester (VerifyEnvelope binds
+	// those to the transaction); a broker-signed envelope of any account is not one.
+	if v.RotationEnvelope() || v.Scope != tx.Scope || v.Signer != tx.RequesterPrincipalID {
+		return ErrNotCandidate
 	}
 	op, err := pqcrypto.RequestOpID(tx.RequestID, 0)
 	if err != nil {

@@ -405,3 +405,41 @@ func TestCandidateWithAForeignRecipientIsRefused(t *testing.T) {
 		t.Fatal("touched the target or journaled a refused candidate")
 	}
 }
+
+// Security review of #15: a broker-signed envelope of another account, even at the
+// reserved version and under a valid enroll over its digest, is refused before any login.
+func TestAnotherAccountsEnvelopeIsNotACandidate(t *testing.T) {
+	r := newEnrollRig(t, false)
+	m := r.machine()
+	defer m.J.Close()
+	other := r.cp.Account(func(p *pqcrypto.PolicyManifest) { p.EnrollerPrincipalIDs = []pqcrypto.UUID{r.alice.ID} })
+	if err := m.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	reqID := pqtest.UUID()
+	op, _ := pqcrypto.RequestOpID(reqID, 0)
+	v, err := r.cp.Store.Vault().ReserveEnrollment(context.Background(), string(r.pol.AccountID), string(op), 0, time.Now().UTC(), 15*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := r.cliTrust()
+	opol, od := tr.Policy(other.AccountID)
+	h := pqcrypto.Header{Type: pqcrypto.TypeEnvelope, DeploymentID: r.cp.Dep.ID, Epoch: opol.Epoch, Scope: pqcrypto.Scope{Kind: pqcrypto.ScopeAccount, ID: other.AccountID}, SignerRole: pqcrypto.RoleBroker}
+	env, err := pqcrypto.Seal(h, pqcrypto.KindManaged, pqtest.UUID(), pqcrypto.Counter(v), od.Hex(), 0, time.Now(), []byte("other-account-Passw0rd"),
+		[]pqcrypto.SealTo{{Type: pqcrypto.RecipientBroker, ID: string(r.B.ID), Pub: r.B.Enc.Public().Bytes()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pqcrypto.Sign(env, pqcrypto.RoleBroker, r.B.Sig)
+	ed, _ := pqcrypto.ObjDigest(env)
+	pol, _ := tr.Policy(r.pol.AccountID)
+	_, tx := r.cp.Dep.Tx(t, pol, r.B.ID, r.alice, pqcrypto.Action{ActionType: pqcrypto.ActionEnroll, EnvelopeDigest: ed.Hex(), SecretVersion: pqcrypto.Counter(v)}, time.Now())
+	tx.RequestID, tx.Signatures = reqID, nil
+	pqcrypto.Sign(tx, pqcrypto.RoleUser, r.alice.Sig)
+	if err := m.Enroll(context.Background(), pqtest.Canon(t, tx), pqtest.Canon(t, env)); !errors.Is(err, broker.ErrNotCandidate) {
+		t.Fatalf("got %v", err)
+	}
+	if len(r.target.logins) != 0 || r.account(m).Enrollment != nil {
+		t.Fatal("logged in or journaled")
+	}
+}

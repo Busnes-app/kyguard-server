@@ -130,8 +130,13 @@ func (s *Server) handleSubmitEnrollment(w http.ResponseWriter, r *http.Request) 
 		if tx.Action.ActionType != pqcrypto.ActionEnroll || tx.RequestID != requestID || tx.Scope.ID != account {
 			return pqcrypto.ErrNotAllowed
 		}
-		v, err = tr.VerifyEnvelope(req.Envelope, pqcrypto.EnvelopeContext{New: true, Enroll: tx})
-		return err
+		if v, err = tr.VerifyEnvelope(req.Envelope, pqcrypto.EnvelopeContext{New: true, Enroll: tx}); err != nil {
+			return err
+		}
+		if v.RotationEnvelope() || v.Scope != tx.Scope || v.Signer != tx.RequesterPrincipalID {
+			return pqcrypto.ErrNoEnroll // only the requester's user-signed candidate for this account
+		}
+		return nil
 	})
 	var perr pqcrypto.Error
 	if errors.As(err, &perr) {
