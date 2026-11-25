@@ -95,6 +95,9 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 - SCIM syncs `title` and the Enterprise User extension's `department` and `manager`
   into read-only user attributes (spec §8.2); deleting a SCIM user leaves its accounts
   unowned.
+- Policy drafts (spec §3.3, §10): admins draft an account's next policy; the Control
+  Plane checks it as it would admit it, Custodians fetch it with its pinned target, sign
+  it in `kyguard-cli` and post it back, and it is admitted only at quorum.
 
 ### Upgrade impact
 
@@ -120,6 +123,7 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 - The module declares `go 1.27.0` (for `crypto/mldsa`); builds need Go 1.27, as the pinned
   `go1.27.4` toolchain already provides.
 - Migration 200 adds `attribute_definitions` and `attribute_values`; no data migrates.
+- Migration 201 adds `policy_drafts`; no data migrates.
 
 ## Maintaining notes
 
