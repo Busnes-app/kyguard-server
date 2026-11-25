@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/Busnes-app/ky-primitives/capsule"
-	"github.com/Busnes-app/ky-primitives/password"
 	"github.com/Busnes-app/ky-primitives/recoveryclient"
 	"github.com/Busnes-app/ky-primitives/recoverykey"
 	"github.com/Busnes-app/kyguard-server/internal/api"
@@ -177,22 +176,18 @@ func TestPostgresBackupRestoreDrill(t *testing.T) {
 	if err := bootstrap(ctx, cfg, st); err != nil {
 		t.Fatal(err)
 	}
-	hash, err := password.Hash("drill-password-0123")
-	if err != nil {
-		t.Fatal(err)
-	}
 	must := func(err error) {
 		t.Helper()
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	must(st.Users().CreateUser(ctx, &store.User{ID: "u_drill", Username: "drill", PasswordHash: hash, Role: "user", Status: "active", SSOProvider: "local"}))
+	drill := newTestBreakGlass(t, cfg, st, "drill")
 	must(st.Users().CreateUser(ctx, &store.User{ID: "u_scim", Username: "member", Role: "user", Status: "active", SSOProvider: "scim", SSOSubject: "ext", SCIMManaged: true}))
 	must(st.Groups().CreateGroup(ctx, &store.Group{ID: "g_staff", DisplayName: "Staff"}))
 	must(st.Groups().AddGroupMember(ctx, "g_staff", "u_scim"))
-	must(st.Sessions().CreateSession(ctx, &store.Session{TokenHash: "live-session", UserID: "u_drill", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}, hash))
-	must(st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: "u_drill", Action: "drill.seed"}))
+	must(st.Sessions().CreateSession(ctx, &store.Session{TokenHash: "live-session", UserID: drill.ID, CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}, drill.Hash))
+	must(st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: drill.ID, Action: "drill.seed"}))
 	must(st.Settings().SetSetting(ctx, "theme", "busnes"))
 	key, _, shares := throwawayKit(t)
 	pinKey(t, cfg, st, key)
@@ -219,7 +214,7 @@ func TestPostgresBackupRestoreDrill(t *testing.T) {
 	dest := testdb.Config(t)
 	report, err := store.MigrateToPostgres(ctx, restoredDB, dest, false)
 	must(err)
-	if report.Rows["users"] != 3 { // the bootstrap admin, drill and member
+	if report.Rows["users"] != 2 || report.Rows["mfa_factors"] != 1 { // drill (break-glass) and member
 		t.Fatalf("migrated rows %v", report.Rows)
 	}
 
@@ -258,9 +253,10 @@ func TestPostgresBackupRestoreDrill(t *testing.T) {
 	if _, err := restoredSt.Sessions().GetSession(ctx, "live-session"); err == nil {
 		t.Fatal("a session minted before the capsule survived the restore")
 	}
-	restoredCfg.Captcha.Provider = "none" // the login check here is the password, not the puzzle
+	restoredCfg.Captcha.Provider = "none" // the login check here is the password and code, not the puzzle
 	srv := api.NewServer(&restoredCfg, restoredSt)
-	body, _ := json.Marshal(map[string]string{"username": "drill", "password": "drill-password-0123"})
+	// The factor restored with the database and key: its secret still opens and verifies.
+	body, _ := json.Marshal(map[string]string{"username": "drill", "password": drill.Password, "totp_code": drill.Code(t)})
 	req := httptest.NewRequest("POST", "/api/auth/login", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

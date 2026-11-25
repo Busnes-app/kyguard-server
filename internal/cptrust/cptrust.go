@@ -95,7 +95,7 @@ func (c *Trust) Submit(ctx context.Context, raw []byte, actor, ip string) (rec *
 		rec, err := c.tr.Accept(raw)
 		if errors.Is(err, pqcrypto.ErrEquivocation) {
 			typ, _ := pqcrypto.PeekType(raw)
-			log.Printf("[TRUST] ALERT: equivocating %s manifest refused", typ)
+			log.Printf("[TRUST] ALERT: equivocating %s manifest refused", logType(typ))
 			if aerr := c.st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: actor, Action: "trust.equivocation", Resource: "manifest:" + typ, Details: "severity=critical", IPAddress: ip}); aerr != nil {
 				return nil, false, aerr
 			}
@@ -119,4 +119,19 @@ func (c *Trust) Submit(ctx context.Context, raw []byte, actor, ip string) (rec *
 			return nil, false, err
 		}
 	}
+}
+
+// manifestTypes are the manifest types a log line may name.
+var manifestTypes = []string{pqcrypto.TypeBootstrap, pqcrypto.TypeCustodianSet, pqcrypto.TypeRecoveryKey,
+	pqcrypto.TypePool, pqcrypto.TypePolicy, pqcrypto.TypeKeyEnrollment}
+
+// logType returns typ only when it is a known manifest type, so no submitted text reaches
+// the log.
+func logType(typ string) string {
+	for _, k := range manifestTypes {
+		if k == typ {
+			return k
+		}
+	}
+	return "unknown"
 }

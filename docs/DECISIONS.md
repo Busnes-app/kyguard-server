@@ -3,10 +3,10 @@
 Readings of `docs/SPEC.md` taken during the Phase 0/1A build where the spec is silent or
 contradicts itself. Each names its section. The most secure reading wins.
 
-1. §13 Phase 0, §7.4 (bootstrap removal order). The scaffold PR leaves `ensureBootstrapAdmin`
-   and `init-admin` in place; the break-glass PR removes them together with adding
-   `kyguard-server break-glass create`. Removing them first would leave no way to create an
-   admin, and the smoke, Docker, browser and replica CI jobs all sign in as one.
+1. §13 Phase 0, §7.4 (bootstrap removal order). `ensureBootstrapAdmin` and `init-admin` are
+   removed in the same PR that adds `kyguard-server break-glass create`. Removing them first
+   would leave no way to create an admin, and the smoke, Docker, browser and replica CI jobs
+   all sign in as one.
 2. §7.2 (SAML removal). `/saml/*` is registered as an explicit 404 rather than deleted
    outright, because the SPA fallback answers every unknown non-API path with 200
    (acceptance test 15 requires 404).

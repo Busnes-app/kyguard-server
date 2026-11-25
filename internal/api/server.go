@@ -38,6 +38,7 @@ type Server struct {
 	config     *config.Config
 	store      store.Store
 	sessions   *auth.SessionManager
+	factors    *auth.Factors
 	kysignon   *sso.KySignOnClient
 	oidc       *sso.GenericOIDCClient
 	scim       *scim.Server
@@ -158,6 +159,10 @@ const attemptsCap = 10000
 
 func NewServer(cfg *config.Config, st store.Store) *Server {
 	sessions := auth.NewSessionManager(st, cfg.Security)
+	factors, err := auth.NewFactors(st, cfg.Security.EncryptionKey)
+	if err != nil {
+		panic("api: " + err.Error()) // config.LoadFromEnv always supplies a 32-byte key
+	}
 	kysignon := sso.NewKySignOnClient(cfg.SSO, st)
 	oidc := sso.NewGenericOIDCClient(cfg.SSO, st)
 	scimSrv := scim.NewServer(st, cfg.SCIM, cfg.Server.AppURL)
@@ -167,6 +172,7 @@ func NewServer(cfg *config.Config, st store.Store) *Server {
 		config:   cfg,
 		store:    st,
 		sessions: sessions,
+		factors:  factors,
 		kysignon: kysignon,
 		oidc:     oidc,
 		scim:     scimSrv,
@@ -317,6 +323,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/auth/logout", s.handleLogout)
 	s.mux.HandleFunc("/api/auth/me", s.handleMe)
 	s.mux.HandleFunc("/api/auth/change-password", s.handleChangePassword)
+	s.mux.HandleFunc("POST /api/auth/break-glass/reason", s.handleBreakGlassReason)
 
 	// SSO
 	s.mux.HandleFunc("/api/sso/kysignon/login", s.handleKySignOnLogin)
@@ -357,10 +364,11 @@ func (s *Server) routes() {
 	s.mux.Handle("/", web.Handler())
 }
 
-// requireAdmin rejects requests without a valid session, or with a non-admin one.
+// requireAdmin rejects requests without a valid session, or with a non-admin one, and a
+// break-glass session that has not yet given its reason (spec §7.4).
 func (s *Server) requireAdmin(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		user, _, err := s.sessions.AuthenticateRequest(r)
+		user, sess, err := s.sessions.AuthenticateRequest(r)
 		if err != nil {
 			if errors.Is(err, auth.ErrPasswordChangeRequired) {
 				s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "Change your password before continuing", "code": "password_change_required"})
@@ -371,6 +379,10 @@ func (s *Server) requireAdmin(h http.HandlerFunc) http.HandlerFunc {
 		}
 		if user.Role != "admin" {
 			s.writeError(w, http.StatusForbidden, "Administrator role required")
+			return
+		}
+		if user.AccountType == store.AccountBreakGlass && sess.BreakGlassReason == "" {
+			s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "State the reason for this break-glass session first", "code": "break_glass_reason_required"})
 			return
 		}
 		h(w, r)
@@ -489,6 +501,18 @@ func sameOrigin(origin, appURL string) bool {
 	}
 	o, err := url.Parse(origin)
 	return err == nil && o.Scheme == a.Scheme && o.Host == a.Host
+}
+
+// detachedWriteTimeout bounds a write that must not be cut short by the client leaving: it
+// keeps going after a disconnect, but a stalled database cannot hold it past this.
+const detachedWriteTimeout = 5 * time.Second
+
+// detachedWrite runs write on a context the client disconnecting does not cancel, bounded by
+// detachedWriteTimeout.
+func detachedWrite(r *http.Request, write func(context.Context) error) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), detachedWriteTimeout)
+	defer cancel()
+	return write(ctx)
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, status int, data any) {
