@@ -40,6 +40,7 @@ type Server struct {
 	scim       *scim.Server
 	recovery   recoveryClient
 	mux        *http.ServeMux
+	registered []Route
 	attemptsMu sync.Mutex
 	attempts   map[string]attemptWindow
 	powSpent   *auth.PoWSpent
@@ -297,59 +298,64 @@ func (s *Server) allowPerIP(r *http.Request, bucket string, limit int, window ti
 	return s.allowAttempt(bucket+":"+auth.RateLimitKey(ip), limit, window)
 }
 
+// routes registers every main-mux route through route, with its spec §7.5 class.
 func (s *Server) routes() {
+	f := func(h http.HandlerFunc) http.Handler { return h }
 	// Probes are unauthenticated and say only ok/ready/unready; a proxy may keep them internal.
 	// A GET pattern also answers HEAD.
-	s.mux.HandleFunc("GET /livez", s.handleLivez)
-	s.mux.HandleFunc("GET /readyz", s.handleReadyz)
+	s.route(ClassPublic, "GET /livez", f(s.handleLivez))
+	s.route(ClassPublic, "GET /readyz", f(s.handleReadyz))
 
 	// Auth
-	s.mux.HandleFunc("/api/auth/pow-challenge", s.handlePoWChallenge)
-	s.mux.HandleFunc("/api/auth/login", s.handleLogin)
-	s.mux.HandleFunc("/api/auth/logout", s.handleLogout)
-	s.mux.HandleFunc("/api/auth/me", s.handleMe)
-	s.mux.HandleFunc("/api/auth/change-password", s.handleChangePassword)
-	s.mux.HandleFunc("POST /api/auth/break-glass/reason", s.handleBreakGlassReason)
-	s.mux.HandleFunc("POST /api/auth/stepup/totp", s.handleStepupTOTP)
-	s.mux.HandleFunc("POST /api/auth/stepup/enroll", s.handleStepupEnroll)
-	s.mux.HandleFunc("POST /api/auth/stepup/enroll/confirm", s.handleStepupEnrollConfirm)
+	s.route(ClassPublic, "/api/auth/pow-challenge", f(s.handlePoWChallenge))
+	s.route(ClassPublic, "/api/auth/login", f(s.handleLogin))
+	s.route(ClassPending, "/api/auth/logout", f(s.handleLogout))
+	s.route(ClassPending, "/api/auth/me", f(s.handleMe))
+	s.route(ClassPending, "POST /api/auth/stepup/totp", f(s.handleStepupTOTP))
+	s.route(ClassPending, "POST /api/auth/stepup/enroll", f(s.handleStepupEnroll))
+	s.route(ClassPending, "POST /api/auth/stepup/enroll/confirm", f(s.handleStepupEnrollConfirm))
+	s.route(ClassSession, "POST /api/auth/change-password", f(s.handleChangePassword))
+	s.route(ClassSession, "POST /api/auth/break-glass/reason", f(s.handleBreakGlassReason))
 
 	// SSO
-	s.mux.HandleFunc("/api/sso/kysignon/login", s.handleSSOLogin("kysignon"))
-	s.mux.HandleFunc("/api/sso/kysignon/callback", s.handleSSOCallback("kysignon"))
-	s.mux.HandleFunc("/api/sso/oidc/login", s.handleSSOLogin("oidc"))
-	s.mux.HandleFunc("/api/sso/oidc/callback", s.handleSSOCallback("oidc"))
-	s.mux.HandleFunc("POST /api/sso/kysignon/backchannel-logout", s.handleKySignOnBackchannelLogout)
+	s.route(ClassPublic, "/api/sso/kysignon/login", f(s.handleSSOLogin("kysignon")))
+	s.route(ClassPublic, "/api/sso/kysignon/callback", f(s.handleSSOCallback("kysignon")))
+	s.route(ClassPublic, "/api/sso/oidc/login", f(s.handleSSOLogin("oidc")))
+	s.route(ClassPublic, "/api/sso/oidc/callback", f(s.handleSSOCallback("oidc")))
+	s.route(ClassMachine, "POST /api/sso/kysignon/backchannel-logout", f(s.handleKySignOnBackchannelLogout))
 
-	// Feature 0 KyBackup & Restore Drills. Capsules carry site data and keys: admins only.
-	// Method patterns: only the declared method reaches a handler. Export is a POST so the
-	// CSRF check covers a download that carries the whole instance.
-	s.mux.HandleFunc("POST /api/backup/drill", s.requireAdmin(s.handleBackupDrill))
-	s.mux.HandleFunc("POST /api/backup/export-capsule", s.requireAdmin(s.handleExportCapsule))
-	s.mux.HandleFunc("POST /api/backup/pair-remote", s.tracked(s.requireAdmin(s.handlePairRemoteRecovery)))
-	s.mux.HandleFunc("POST /api/backup/deposit", s.tracked(s.requireAdmin(s.handleRunBackup)))
-	s.mux.HandleFunc("DELETE /api/backup/pairing", s.requireAdmin(s.handleUnpair))
-	s.mux.HandleFunc("POST /api/backup/pin-key", s.tracked(s.requireAdmin(s.handlePinKey)))
-	s.mux.HandleFunc("PUT /api/backup/schedule", s.requireAdmin(s.handleSetSchedule))
-	s.mux.HandleFunc("GET /api/backup/status", s.requireAdmin(s.handleBackupStatus))
+	// Backup and recovery. Capsules carry site data and keys: admins only, with a step-up
+	// in the last five minutes. Method patterns: only the declared method reaches a handler.
+	// Export is a POST so the CSRF check covers a download that carries the whole instance.
+	s.route(ClassSession, "POST /api/backup/drill", f(s.requireAdmin(s.handleBackupDrill)), fresh(StepupWindow))
+	s.route(ClassSession, "POST /api/backup/export-capsule", f(s.requireAdmin(s.handleExportCapsule)), fresh(StepupWindow))
+	s.route(ClassSession, "POST /api/backup/pair-remote", f(s.requireAdmin(s.handlePairRemoteRecovery)), fresh(StepupWindow), detached())
+	s.route(ClassSession, "POST /api/backup/deposit", f(s.requireAdmin(s.handleRunBackup)), fresh(StepupWindow), detached())
+	s.route(ClassSession, "DELETE /api/backup/pairing", f(s.requireAdmin(s.handleUnpair)), fresh(StepupWindow))
+	s.route(ClassSession, "POST /api/backup/pin-key", f(s.requireAdmin(s.handlePinKey)), fresh(StepupWindow), detached())
+	s.route(ClassSession, "PUT /api/backup/schedule", f(s.requireAdmin(s.handleSetSchedule)), fresh(StepupWindow))
+	s.route(ClassSession, "GET /api/backup/status", f(s.requireAdmin(s.handleBackupStatus)))
 
-	// Settings & Theme. The read endpoint tiers its own payload by role.
-	s.mux.HandleFunc("/api/settings", s.handleGetSettings)
-	s.mux.HandleFunc("/api/settings/theme", s.requireAdmin(s.handleSetTheme))
-	s.mux.HandleFunc("GET /api/settings/rate-limit-networks", s.requireAdmin(s.handleGetExemptNetworks))
-	s.mux.HandleFunc("PUT /api/settings/rate-limit-networks", s.requireAdmin(s.handleSetExemptNetworks))
+	// Settings & Theme. The read endpoint tiers its own payload: private fields need an
+	// active session, so it is public here.
+	s.route(ClassPublic, "/api/settings", f(s.handleGetSettings))
+	s.route(ClassSession, "/api/settings/theme", f(s.requireAdmin(s.handleSetTheme)))
+	s.route(ClassSession, "GET /api/settings/rate-limit-networks", f(s.requireAdmin(s.handleGetExemptNetworks)))
+	s.route(ClassSession, "PUT /api/settings/rate-limit-networks", f(s.requireAdmin(s.handleSetExemptNetworks)))
 
-	// Directory: the account list behind the Directory & SCIM screen. Read-only.
-	s.mux.HandleFunc("GET /api/admin/users", s.requireAdmin(s.handleListUsers))
+	// Directory: the account list behind the Directory & SCIM screen, and an SSO user's
+	// factor reset (a fresh code in the request, spec §7.3 rule 6).
+	s.route(ClassSession, "GET /api/admin/users", f(s.requireAdmin(s.handleListUsers)))
+	s.route(ClassSession, "DELETE /api/admin/users/{id}/factor", f(s.requireAdmin(s.handleDeleteFactor)))
 
-	// SCIM 2.0 routes
-	s.scim.RegisterRoutes(s.mux)
+	// SCIM 2.0: its bearer token is checked in ServeHTTP before the mux.
+	s.scim.RegisterRoutes(func(pattern string, h http.Handler) { s.route(ClassMachine, pattern, h) })
 
 	// SAML is removed (spec §7.2); keep its old paths out of the SPA fallback.
-	s.mux.Handle("/saml/", http.NotFoundHandler())
+	s.route(ClassPublic, "/saml/", http.NotFoundHandler())
 
 	// Embedded React PWA Frontend
-	s.mux.Handle("/", web.Handler())
+	s.route(ClassPublic, "/", web.Handler())
 }
 
 // requireAdmin rejects requests without a valid session, or with a non-admin one, and a

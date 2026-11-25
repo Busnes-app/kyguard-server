@@ -29,7 +29,7 @@ func scopedSCIM(t *testing.T) (store.Store, func(method, path string, body any) 
 func scimFor(st store.Store, issuer string) func(method, path string, body any) *httptest.ResponseRecorder {
 	srv := scim.NewServer(st, config.SCIMConfig{Enabled: true, BearerToken: "tok", Issuer: issuer}, "http://localhost:8080")
 	mux := http.NewServeMux()
-	srv.RegisterRoutes(mux)
+	srv.RegisterRoutes(mux.Handle)
 	h := srv.AuthMiddleware(mux)
 	return func(method, path string, body any) *httptest.ResponseRecorder {
 		var raw []byte

@@ -51,3 +51,8 @@ contradicts itself. Each names its section. The most secure reading wins.
    becomes the factor's `last_counter`, so it cannot be replayed.
 14. §7.3 rule 2 (12 hours). The active SSO session lifetime is the constant `SSOSessionTTL`,
    not configurable; `KY_SESSION_TTL` style overrides are not offered.
+15. §7.5 (broker listener). The classification test covers the main mux only; the broker
+   listener (`/broker/v1/*`, §4.1) is Phase 1A work and the test must be extended to it there.
+16. §7.3 rule 6 (re-step-up). An active session refreshes its step-up with a code at
+   `/api/auth/stepup/totp`, the same route a pending session uses. Break-glass sessions start
+   stepped up at sign-in, so backup actions in their last 25 minutes need a fresh code too.

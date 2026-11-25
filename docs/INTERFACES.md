@@ -80,6 +80,8 @@ Sources: [auth handlers](../internal/api/auth_handlers.go),
 | POST `/api/auth/login` | Anonymous JSON: `username`, `password`, `totp_code` (all required, else 400), optional `captcha_token`. Break-glass accounts only: an SSO account with a correct password gets 403 | 200 authenticated user and session/CSRF cookies; the session is active, stepped up and ends 30 minutes later |
 | GET `/api/auth/me` | Optional session, pending included; no body | 200 `{"authenticated":false}` or `{"authenticated":true,"user":User}`; a pending session adds `stepup: {required, enrolled, can_enroll}`, a break-glass session `break_glass: {reason, expires_at}` |
 | POST `/api/auth/stepup/totp` | Pending SSO session; JSON `{"code":"123456"}`; cookie CSRF applies | 200 `{"authenticated":true}` and new session/CSRF cookies: the pending session is deleted and a new active one issued; 401 for a refused code, an expired pending session or a login the IdP ended |
+| POST `/api/auth/stepup/totp` (active session) | Active session; JSON `{"code":"123456"}` | 200 `{"stepped_up":true}`; refreshes the session's step-up time for routes with a window |
+| DELETE `/api/admin/users/{id}/factor` | Administrator; JSON `{"code":"123456"}`, the administrator's own current code | 200 `{"factor_reset":true}`: the SSO user's factor and sessions are gone and the next sign-in enrolls again; 404 for break-glass or factor-less accounts; audited `admin.factor_reset` (`severity=critical`) |
 | POST `/api/auth/stepup/enroll` | Pending SSO session of a user with no factor, whose ID token asserted MFA; no body | 200 `{"secret","otpauth_uri"}`; 403 without IdP MFA (audited `auth.enrollment_blocked`, `severity=critical`); 409 when a factor exists |
 | POST `/api/auth/stepup/enroll/confirm` | The same pending session; JSON `{"code":"123456"}` from the offered secret | As `/stepup/totp`, storing the factor in the same transaction |
 | POST `/api/auth/break-glass/reason` | Break-glass session (403 otherwise); JSON `{"reason":"…"}`, 1–500 characters; cookie CSRF applies | 200 `{"recorded":true}`; 409 when the session already has one; audited `break_glass.reason` |
@@ -106,7 +108,9 @@ original ID-token `iat`, so back-channel logout reaches it; the pending token ne
 active. Codes are single-use; five failed codes end the pending session, and past ten failed
 codes per user in 15 minutes every code fails, even a correct one. Every failure is audited
 (`auth.stepup_failed`). A user without a factor may enroll one only when the ID token asserted
-MFA.
+MFA. Backup actions (drill, export, pairing, deposit, unpair, pin, schedule) also need a
+step-up in the last five minutes: otherwise 403 `{"code":"stepup_stale"}`, cleared by a code at
+`/api/auth/stepup/totp`.
 
 Local sign-in is for break-glass accounts only (spec §7.4). They are created on the host
 with `kyguard-server break-glass create` and carry a TOTP factor (`mfa_factors`, sealed under
