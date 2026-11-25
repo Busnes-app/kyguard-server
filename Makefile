@@ -10,6 +10,7 @@ build:
 	@echo "==> Compiling kyguard-server binary..."
 	@go build -o kyguard-server ./cmd/server
 	@go build -o kyguard-cli ./cmd/cli
+	@GOOS=linux go build -o kyguard-broker ./cmd/broker
 
 test:
 	@echo "==> Running test suite..."
@@ -67,4 +68,4 @@ docker-build:
 	@docker build -t kyguard-server .
 
 clean:
-	@rm -rf kyguard-server kyguard-cli web/dist web/node_modules coverage.out
+	@rm -rf kyguard-server kyguard-cli kyguard-broker web/dist web/node_modules coverage.out
