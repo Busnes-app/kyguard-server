@@ -118,6 +118,13 @@ func TestEnterpriseUserAttributes(t *testing.T) {
 		t.Fatalf("manager sub-attribute changed the manager: %v", a)
 	}
 
+	// The extension object as a PATCH path is refused by the SCIM library (invalidPath), so
+	// it can never succeed without syncing.
+	if w := do("PATCH", "/scim/v2/Users/"+res.ID, map[string]any{"schemas": []string{scim.SchemaPatchOp}, "Operations": []map[string]any{
+		{"op": "add", "path": scim.SchemaEnterpriseUser, "value": map[string]any{"department": "Legal"}}}}); w.Code != http.StatusBadRequest {
+		t.Fatalf("extension path: %d %s", w.Code, w.Body)
+	}
+
 	// A PUT is the whole resource: what it omits is cleared.
 	if w := do("PUT", "/scim/v2/Users/"+res.ID, map[string]any{"schemas": []string{scim.SchemaUser}, "userName": "erin", "active": true, "externalId": "erin-1",
 		"title": "DBA"}); w.Code != http.StatusOK {
