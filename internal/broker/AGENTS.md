@@ -24,16 +24,19 @@ the wire and TLS are `internal/brokerproto`'s.
   from the pinned bundle), `descriptors` (by digest) and `accounts` (one JSON `Account` per
   account: the chain copy of §3.7, the version high-water mark, health, quarantine, schedule
   floor inputs and the latest `Run`). Every `Save` is one fsynced bbolt transaction.
-- Rotation (`machine.go`, §4.2–§4.4): reserve → seal and sign `P_new` → journal `prepared`
+- Rotation (`machine.go`, §4.2–§4.4): journal `reserving` → reserve → seal and sign `P_new` → journal `prepared`
   → store the envelope → log in with `P_old` and read the baseline → inside
   `Session.Change`'s commit callback journal the intent, wait for the Control Plane
   acknowledgement (`AckTimeout`, 30 s) and journal `ack_received` → the write. After the
   connection closes, the one `P_new` probe is journaled before it is sent; anything but
   success quarantines. There is no timer abort and no abort after `ack_received`.
-- `Recover` (startup, every reconnect): no `ack_received` → `abort` (`restart_before_send`);
+- `Recover` (startup, every reconnect): `reserving` → reserve again under the same operation
+  ID and abort it (a refusal means nothing was reserved); no `ack_received` → `abort` (`restart_before_send`);
   `ack_received` → `write_outcome_unknown` and the one probe; a recorded probe without a
   result → quarantine; journaled receipts not acknowledged → re-sent; a health report
-  that failed (`Account.Unreported`) → re-sent. It never writes.
+  not acknowledged (`Account.Unreported`) → re-sent. It never writes.
+- Health changes only through `setHealth`, which sets `Unreported` in the same journal save;
+  only an acknowledged `report` clears it (DECISIONS 73).
 - A run with unacknowledged receipts is never replaced: `start` re-sends them first and
   returns `ErrBlocked` if that fails (DECISIONS 63).
 - `Sync` accepts manifests only through `Trust.Accept` (rollback and forks alerted, never

@@ -2,7 +2,6 @@ package broker
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -82,12 +81,7 @@ func (m *Machine) syncOne(ctx context.Context, id pqcrypto.UUID) error {
 		}
 		next := from
 		for _, c := range st.Chains {
-			var v struct {
-				V pqcrypto.Counter `json:"secret_version"`
-			}
-			if json.Unmarshal(c.Envelope, &v) == nil && v.V > next {
-				next = v.V
-			}
+			next = max(next, versionOf(c.Envelope))
 		}
 		if next == from {
 			return errors.New("broker: sync page with no progress")

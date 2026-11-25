@@ -201,3 +201,14 @@ contradicts itself. Each names its section. The most secure reading wins.
 71. §3.5 (duplicate completion). A completion whose receipts are all already stored is a
     retry and changes no derived state (current envelope, run state, lock). The current
     envelope only ever moves to a higher `secret_version`.
+72. §3.4, §4.2 (reservation recovery). An attempt is journaled `reserving`, with the highest
+    version seen so far, before the broker asks for a version. Recovery (or the next
+    rotation) reserves again under the same operation ID; the Control Plane returns that
+    operation's own reservation, which is accepted if it is above the version seen before
+    and above every envelope the broker holds, even when sync has since copied it into the
+    high-water mark. The run is then sealed, stored and aborted (`restart_before_send`) so
+    the lock is released. A refusal means nothing was reserved and the run ends with
+    nothing to send. `reserving` is a journal state, not a §4.2 state, and blocks the account.
+73. §8.1 (health delivery). Every health change sets `Unreported` in the same journal save,
+    and only an acknowledged report clears it, so a crash between the save and the report
+    still leaves the health to be sent by `Recover`.

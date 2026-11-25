@@ -27,6 +27,10 @@ const (
 	StateDependenciesComplete = "dependencies_complete"
 	StateReleaseAuthorized    = "release_authorized"
 	StateAborted              = "aborted"
+	// StateReserving is journaled before the Control Plane is asked for a version, so a
+	// reservation never exists without a local run. It is not a §4.2 state: the run becomes
+	// prepared, or aborted with nothing to send when the Control Plane refused.
+	StateReserving = "reserving"
 )
 
 // Health values (§8.1) the broker reports.
@@ -73,6 +77,9 @@ type Run struct {
 	Due           time.Time        `json:"due"`
 	State         string           `json:"state"`
 	SecretVersion pqcrypto.Counter `json:"secret_version"`
+	// SeenBefore is the highest version the broker had seen before it reserved; a version the
+	// Control Plane returns for this operation must be above it.
+	SeenBefore    pqcrypto.Counter `json:"seen_before,omitempty"`
 	NewEnvelope   pqcrypto.B64     `json:"new_envelope"`
 	OldEnvelopeID pqcrypto.UUID    `json:"old_envelope_id,omitempty"`
 	// Intent is the canonical mutating intent once journaled; AckReceived is journaled

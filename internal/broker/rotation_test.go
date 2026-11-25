@@ -253,11 +253,59 @@ func TestReservedVersionMustBeAboveTheHighestSeen(t *testing.T) {
 	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); !errors.Is(err, broker.ErrStaleVersion) {
 		t.Fatalf("got %v", err)
 	}
-	if a := r.account(m); a.Run != nil {
+	if a := r.account(m); a.Run.State != broker.StateReserving || len(a.Run.NewEnvelope) > 0 || a.HighestVersion != 1 {
 		t.Fatalf("journaled %+v", a.Run)
 	}
 	if _, writes := r.target.state(); writes != 0 {
 		t.Fatal("wrote")
+	}
+}
+
+// A reservation the Control Plane committed while the broker never journaled its reply
+// (a crash or a lost response) is settled after sync and recovery: the same operation's
+// version is accepted, aborted with nothing written, its lock released, and rotation
+// resumes (security review of #11).
+func TestACommittedReservationWithoutAPreparedRunIsSettled(t *testing.T) {
+	r := newRig(t)
+	real := r.cpw
+	w := &wrapCP{ControlPlane: real}
+	w.reserve = func(ctx context.Context, account, op pqcrypto.UUID, reported pqcrypto.Counter) (pqcrypto.Counter, error) {
+		if _, err := real.Reserve(ctx, account, op, reported); err != nil {
+			return 0, err
+		}
+		return 0, errors.New("connection lost") // the reply never reaches the journal
+	}
+	r.cpw = w
+	m := r.machine()
+	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); err == nil {
+		t.Fatal("rotate succeeded without a reservation reply")
+	}
+	op := r.account(m).Run.OperationID
+	if r.cpLock() != string(op) {
+		t.Fatalf("lock %q, want the reserving run %s", r.cpLock(), op)
+	}
+	m.J.Close()
+	w.reserve = nil
+	m2 := r.machine()
+	defer m2.J.Close()
+	if err := m2.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m2.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	a := r.account(m2)
+	if a.Run.OperationID != op || a.Run.State != broker.StateAborted || !a.Run.Sent || r.cpLock() != "" {
+		t.Fatalf("run %+v lock %q", a.Run, r.cpLock())
+	}
+	if _, writes := r.target.state(); writes != 0 {
+		t.Fatal("a settled reservation wrote to the target")
+	}
+	if err := m2.Rotate(context.Background(), r.pol.AccountID, 0, due); err != nil {
+		t.Fatalf("rotation after settling: %v", err)
+	}
+	if a := r.account(m2); a.Run.State != broker.StateReleaseAuthorized || a.Run.Attempt != 1 {
+		t.Fatalf("next run %+v", a.Run)
 	}
 }
 
