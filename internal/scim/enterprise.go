@@ -98,7 +98,7 @@ func fromPatch(ops []protocol.PatchOperation) attrChanges {
 		}
 		var key string
 		switch {
-		case uri == "" && name == "title":
+		case (uri == "" || strings.EqualFold(uri, SchemaUser)) && name == "title":
 			key = "title"
 		case strings.EqualFold(uri, SchemaEnterpriseUser) && name == "department":
 			key = "department"

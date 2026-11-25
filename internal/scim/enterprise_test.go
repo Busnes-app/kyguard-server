@@ -125,6 +125,12 @@ func TestEnterpriseUserAttributes(t *testing.T) {
 		t.Fatalf("extension path: %d %s", w.Code, w.Body)
 	}
 
+	// title with the core schema URI is the same attribute.
+	patch(map[string]any{"op": "replace", "path": scim.SchemaUser + ":title", "value": "Principal DBA"})
+	if a := attrs(res.ID); a["title"] != "Principal DBA" {
+		t.Fatalf("schema-qualified title %v", a)
+	}
+
 	// A PUT is the whole resource: what it omits is cleared.
 	if w := do("PUT", "/scim/v2/Users/"+res.ID, map[string]any{"schemas": []string{scim.SchemaUser}, "userName": "erin", "active": true, "externalId": "erin-1",
 		"title": "DBA"}); w.Code != http.StatusOK {
