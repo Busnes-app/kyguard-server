@@ -324,6 +324,9 @@ func (s *session) Change(ctx context.Context, oldPassword, newPassword []byte, c
 			return fmt.Errorf("sshpasswd: passwd reported success and then failed: %v", waitErr)
 		case <-time.After(s.timeout):
 			return errors.New("sshpasswd: passwd did not exit")
+		case <-ctx.Done():
+			s.c.Close() // the write may have landed: ambiguous, never a refusal
+			return fmt.Errorf("sshpasswd: passwd did not exit: %w", ctx.Err())
 		}
 	case 1: // asked again after the retype: rejected, nothing written
 		return fmt.Errorf("%w: passwd rejected the new password: %q", broker.ErrRefused, t.tail())
