@@ -25,6 +25,9 @@ Owns `/broker/v1/*`. It is never mounted on the main mux. Signed-object rules ar
   token, stores the broker and a `pending` pairing intent in one transaction; the intent ends
   `complete` only if the response was written and flushed, otherwise `outcome_unknown`
   (audited). Never re-deliver a lost pairing response.
+- One channel per broker: a reconnect replaces the map entry under the listener lock and
+  closes the old connection after unlocking. Never block (a close handshake, a write) while
+  holding it.
 - `CreateCA` never replaces existing files; `LoadCA` refuses a key that is not the
   certificate's.
 

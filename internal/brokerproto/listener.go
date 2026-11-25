@@ -203,11 +203,13 @@ func (l *Listener) handleChannel(w http.ResponseWriter, r *http.Request) {
 	if l.conns == nil {
 		l.conns = map[pqcrypto.UUID]*websocket.Conn{}
 	}
-	if old := l.conns[id]; old != nil {
-		old.Close(websocket.StatusPolicyViolation, "replaced by a newer connection")
-	}
+	old := l.conns[id]
 	l.conns[id] = c
 	l.mu.Unlock()
+	if old != nil {
+		// Close waits up to 5s for the peer's close frame; never under l.mu.
+		go old.Close(websocket.StatusPolicyViolation, "replaced by a newer connection")
+	}
 	defer func() {
 		l.mu.Lock()
 		if l.conns[id] == c {
