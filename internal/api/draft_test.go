@@ -122,6 +122,15 @@ func TestPolicyDraftSigning(t *testing.T) {
 	if len(ready) != 1 || ready[0]["status"] != "ready" {
 		t.Fatalf("interrupted draft %v", ready)
 	}
+	// Admitted, but stopped before the draft was removed: the draft stays ready and a retry
+	// removes it instead of calling it stale.
+	if w := postJSON(srv, admin, "/api/manifests", both); w.Code != http.StatusCreated {
+		t.Fatalf("admit: %d %s", w.Code, w.Body)
+	}
+	created(t, sendJSON(srv, user, "GET", "/api/policy-drafts", ""), &ready)
+	if len(ready) != 1 || ready[0]["status"] != "ready" {
+		t.Fatalf("admitted draft %v", ready)
+	}
 	created(t, sendJSON(srv, user, "POST", sigPath, string(both)), &res)
 	if res["accepted"] != true {
 		t.Fatalf("not accepted at quorum: %v", res)

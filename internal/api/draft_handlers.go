@@ -166,7 +166,8 @@ func (s *Server) viewDraft(tr *pqcrypto.Trust, d *store.PolicyDraft, account str
 		v.Signatures = len(sigs.Signatures)
 	}
 	switch err := tr.Check(d.Object); {
-	case err == nil: // fully signed; an earlier admission was interrupted, so a retry admits it
+	case err == nil, tr.PolicyByDigest(pqcrypto.HexID(d.Digest)) != nil:
+		// fully signed, or admitted before its draft was removed: a retry finishes it
 		v.Status = "ready"
 	case !errors.Is(err, pqcrypto.ErrThreshold):
 		v.Status = "stale"
@@ -276,8 +277,13 @@ func (s *Server) handleSignDraft(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	var complete bool
+	var complete, admitted bool
 	err = s.trust.View(ctx, func(tr *pqcrypto.Trust) error {
+		// An earlier admission stopped before it removed the draft: only cleanup is left.
+		if admitted = tr.PolicyByDigest(pqcrypto.HexID(d.Digest)) != nil; admitted {
+			complete = true
+			return nil
+		}
 		err := tr.Check(canon)
 		complete = err == nil
 		if errors.Is(err, pqcrypto.ErrThreshold) {
@@ -304,18 +310,22 @@ func (s *Server) handleSignDraft(w http.ResponseWriter, r *http.Request) {
 	// Keep the signed object first, by compare-and-swap on the object checked: a draft
 	// replaced or deleted meanwhile is never admitted, and an interrupted or failed admission
 	// leaves the signatures stored for a retry. Only an admitted policy consumes its draft.
-	if err := s.store.Drafts().SetDraftObject(ctx, d.ID, d.Object, canon, nil); errors.Is(err, store.ErrConflict) {
-		s.writeError(w, http.StatusConflict, "the draft changed meanwhile; fetch it again and re-sign")
-		return
-	} else if err != nil {
-		s.inventoryError(w, err, "policy draft")
-		return
+	prev := d.Object
+	if !admitted {
+		if err := s.store.Drafts().SetDraftObject(ctx, d.ID, d.Object, canon, nil); errors.Is(err, store.ErrConflict) {
+			s.writeError(w, http.StatusConflict, "the draft changed meanwhile; fetch it again and re-sign")
+			return
+		} else if err != nil {
+			s.inventoryError(w, err, "policy draft")
+			return
+		}
+		if _, _, err := s.trust.Submit(ctx, canon, s.actor(r), s.requestIP(r)); err != nil {
+			s.refuse(w, err)
+			return
+		}
+		prev = canon
 	}
-	if _, _, err := s.trust.Submit(ctx, canon, s.actor(r), s.requestIP(r)); err != nil {
-		s.refuse(w, err)
-		return
-	}
-	if err := s.store.Drafts().TakeDraft(ctx, d.ID, canon, audit); err != nil && !errors.Is(err, store.ErrConflict) {
+	if err := s.store.Drafts().TakeDraft(ctx, d.ID, prev, audit); err != nil && !errors.Is(err, store.ErrConflict) {
 		s.writeError(w, http.StatusInternalServerError, "policy accepted; the draft could not be removed")
 		return
 	}
