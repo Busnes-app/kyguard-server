@@ -415,13 +415,14 @@ func (s *Server) handleDeleteAttribute(w http.ResponseWriter, r *http.Request) {
 // SCIM-sourced attributes are read-only here (§8.2): the store refuses them.
 func (s *Server) handleSetAttributeValue(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Value string `json:"value"`
+		Value *string `json:"value"`
 	}
-	if err := decodeStrict(r, &req); err != nil {
-		s.writeError(w, http.StatusBadRequest, "value is required")
+	// value must be present: "" clears, but a missing or null value is a mistake, not a delete.
+	if err := decodeStrict(r, &req); err != nil || req.Value == nil {
+		s.writeError(w, http.StatusBadRequest, "value is required (\"\" clears it)")
 		return
 	}
-	value := strings.TrimSpace(req.Value)
+	value := strings.TrimSpace(*req.Value)
 	if value != "" {
 		var ok bool
 		if value, ok = cleanText(value, 256); !ok {

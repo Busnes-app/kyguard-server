@@ -142,6 +142,11 @@ func TestAttributeDefinitionsAndValues(t *testing.T) {
 	if w := sendJSON(srv, admin, "PUT", "/api/attributes/"+tier.ID+"/values/"+acct.ID, `{"value":"gold"}`); w.Code != http.StatusOK {
 		t.Fatalf("set value: %d %s", w.Code, w.Body)
 	}
+	for _, body := range []string{`{}`, `{"value":null}`} {
+		if w := sendJSON(srv, admin, "PUT", "/api/attributes/"+tier.ID+"/values/"+acct.ID, body); w.Code != http.StatusBadRequest {
+			t.Fatalf("%s cleared the value: %d", body, w.Code)
+		}
+	}
 	if w := sendJSON(srv, admin, "PATCH", "/api/attributes/"+tier.ID, `{"label":"Tier","enum_values":["silver"]}`); w.Code != http.StatusConflict {
 		t.Fatalf("removed a value in use: %d", w.Code)
 	}
