@@ -393,7 +393,7 @@ func TestUnavailablePinIsReportedNotGuessed(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := backup.Run(context.Background(), cfg, rc, st, &recordingDepositor{}); !errors.Is(err, backup.ErrRecoveryKeyUnavailable) {
+			if _, err := backup.Run(context.Background(), cfg, rc, st, &recordingDepositor{}, nil); !errors.Is(err, backup.ErrRecoveryKeyUnavailable) {
 				t.Fatalf("backup run: %v, want ErrRecoveryKeyUnavailable, not a silent skip", err)
 			}
 		})
