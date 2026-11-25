@@ -144,11 +144,14 @@ func (a *App) serve(ctx context.Context, j *Journal, k *Keys, id pqcrypto.UUID, 
 		return err
 	}
 	m := &Machine{J: j, Trust: tr, Keys: k, ID: id, CP: NewChannelCP(conn), Connectors: a.Connectors}
-	if err := m.Sync(cctx); err != nil {
-		log.Printf("[BROKER] sync: %v", err)
-	}
-	if err := m.Recover(cctx); err != nil {
-		log.Printf("[BROKER] recovery: %v", err)
+	start := func(ctx context.Context) error { return errors.Join(m.Sync(ctx), m.Recover(ctx)) }
+	if err := start(cctx); err != nil {
+		// Retried while the channel is open, so unfinished work never waits for the next
+		// reconnect (Guide on #11). The retries end before serve returns.
+		log.Printf("[BROKER] start-up: %v", err)
+		done := make(chan struct{})
+		defer func() { cancel(); <-done }()
+		go func() { defer close(done); retry(cctx, time.Second, start) }()
 	}
 	for msg := range conn.Pushes {
 		switch msg.Type {
@@ -162,4 +165,21 @@ func (a *App) serve(ctx context.Context, j *Journal, k *Keys, id pqcrypto.UUID, 
 		}
 	}
 	return errors.New("channel closed")
+}
+
+// retry runs f after wait, doubling the wait up to a minute, until f succeeds or ctx ends.
+func retry(ctx context.Context, wait time.Duration, f func(context.Context) error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		err := f(ctx)
+		if err == nil {
+			return
+		}
+		log.Printf("[BROKER] start-up retry: %v", err)
+		wait = min(2*wait, time.Minute)
+	}
 }
