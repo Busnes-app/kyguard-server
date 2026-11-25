@@ -214,3 +214,38 @@ func TestConcurrentReconcilersSettleOnce(t *testing.T) {
 		t.Fatalf("%d outcome records for %d intents", n, intents)
 	}
 }
+
+// A reconciler that read an empty note before Settle noted the outcome must not end the
+// intent outcome_unknown: the note stays replayable even when Settle's own append then fails.
+func TestReconcilerDoesNotStrandANoteWrittenAfterItsRead(t *testing.T) {
+	st, exec := intentsStore(t)
+	ctx := context.Background()
+	if err := st.Audit().LogAudit(ctx, &store.AuditRecord{Action: "seed"}); err != nil {
+		t.Fatal(err)
+	}
+	id, err := st.Intents().Begin(ctx, "pairing", "kyrecovery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The owner notes its outcome, then its append fails.
+	exec(`UPDATE audit_chain_head SET head_hash = '` + strings.Repeat("f", 64) + `'`)
+	if err := st.Intents().Settle(ctx, id, store.IntentComplete, &store.AuditRecord{UserID: "usr_admin", Action: "admin.backup_pair", Resource: "kyrecovery"}); err == nil {
+		t.Fatal("settle with a broken chain succeeded")
+	}
+	exec(`DELETE FROM audit_chain_head`)
+	exec(`DELETE FROM audit_records`)
+	// The reconciler read the intent before the note existed.
+	err = store.SettleAsReconciler(st, ctx, id, "", store.IntentUnknown, &store.AuditRecord{UserID: "system", Action: "operation.outcome_unknown"})
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("stale reconciler settled a noted intent: %v", err)
+	}
+	if got := intentState(t, st, id); got != store.IntentPending {
+		t.Fatalf("intent is %s, want pending", got)
+	}
+	if n, err := st.Intents().Reconcile(ctx, "pairing", 0); err != nil || n != 1 {
+		t.Fatalf("reconcile: %d %v", n, err)
+	}
+	if got := lastActions(t, st); len(got) != 1 || got[0] != "admin.backup_pair" {
+		t.Fatalf("records %v, want the noted admin.backup_pair", got)
+	}
+}

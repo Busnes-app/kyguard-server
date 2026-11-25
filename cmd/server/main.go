@@ -307,6 +307,9 @@ func backupLoop(ctx context.Context, cfg *config.Config, st store.Store, client 
 		if err := st.Sessions().CleanExpiredSessions(ctx); err != nil {
 			log.Printf("[WORKER] session cleanup: %v", err)
 		}
+		if err := backup.ReconcileStale(ctx, st); err != nil {
+			log.Printf("[WORKER] %v", err)
+		}
 		_, err := st.Coordination().WithLock(ctx, "backup-run", func(ctx context.Context) error {
 			// Read the schedule after winning, so a waiter cannot run a stale due job.
 			next, on, err := recoveryclient.NextRun(cfg.Backup.DepositInterval, backup.Settings(ctx, st.Settings()))
