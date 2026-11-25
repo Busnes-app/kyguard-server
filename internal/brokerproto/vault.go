@@ -123,10 +123,10 @@ func (l *Listener) syncAccount(ctx context.Context, tr *pqcrypto.Trust, b *store
 	if err != nil {
 		return nil, err
 	}
-	budget := SyncBudget
+	budget, newer := SyncBudget, 0
 	for _, c := range chains { // ascending secret_version
 		old := c.Envelope.SecretVersion <= uint64(req.AfterVersion)
-		if old && c.Envelope.EnvelopeID != a.CurrentEnvelopeID && terminated(c) {
+		if old && (req.Continue || (c.Envelope.EnvelopeID != a.CurrentEnvelopeID && terminated(c))) {
 			continue
 		}
 		cs := ChainState{Envelope: c.Envelope.Envelope, Receipts: []pqcrypto.B64{}}
@@ -135,11 +135,14 @@ func (l *Listener) syncAccount(ctx context.Context, tr *pqcrypto.Trust, b *store
 			cs.Receipts = append(cs.Receipts, r.Receipt)
 			size += encoded(r.Receipt)
 		}
-		if !old && size > budget && len(st.Chains) > 0 {
+		if !old && size > budget && newer > 0 {
 			st.More = true
 			break
 		}
 		budget -= size
+		if !old {
+			newer++ // a page with More always carries at least one newer chain
+		}
 		st.Chains = append(st.Chains, cs)
 	}
 	return st, nil
