@@ -2,18 +2,14 @@ package api_test
 
 import (
 	"bytes"
-	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 
-	"github.com/Busnes-app/ky-primitives/password"
 	"github.com/Busnes-app/kyguard-server/internal/api"
 	"github.com/Busnes-app/kyguard-server/internal/auth"
-	"github.com/Busnes-app/kyguard-server/internal/store"
 )
 
 // On https every cookie this server sets is a __Host- cookie (Secure, Path=/, no Domain), and
@@ -23,11 +19,7 @@ func TestHTTPSCookiesAreHostCookies(t *testing.T) {
 	srv, st, cfg := setupTestServer(t)
 	cfg.Security.CookieSecure, cfg.Security.HostCookies = true, true
 	srv = api.NewServer(cfg, st)
-	hash, _ := password.Hash("SuperSecretPass123!")
-	if err := st.Users().CreateUser(context.Background(), &store.User{ID: "usr_h", Username: "hana", PasswordHash: hash, Role: "user", Status: "active", SSOProvider: "local"}); err != nil {
-		t.Fatal(err)
-	}
-	body, _ := json.Marshal(map[string]string{"username": "hana", "password": "SuperSecretPass123!"})
+	body := newBreakGlass(t, srv, st, "hana").loginBody(t)
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(body)))
 	if w.Code != http.StatusOK {

@@ -16,10 +16,14 @@ import (
 func TestForcedPasswordReplacement(t *testing.T) {
 	srv, st, cfg := setupTestServer(t)
 	ctx := context.Background()
-	oldPassword, newPassword := "TemporaryPassword123!", "ReplacementPassword456!"
-	hash, _ := password.Hash(oldPassword)
-	user := &store.User{ID: "bootstrap", Username: "admin", PasswordHash: hash, Role: "admin", Status: "active", SSOProvider: "local", MustChangePassword: true}
-	if err := st.Users().CreateUser(ctx, user); err != nil {
+	bg := newBreakGlass(t, srv, st, "admin")
+	oldPassword, newPassword := bg.Password, "ReplacementPassword456!"
+	user, err := st.Users().GetUserByID(ctx, bg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user.MustChangePassword = true
+	if err := st.Users().UpdateUser(ctx, user); err != nil {
 		t.Fatal(err)
 	}
 	manager := auth.NewSessionManager(st, cfg.Security)
@@ -59,22 +63,22 @@ func TestForcedPasswordReplacement(t *testing.T) {
 	if w := call("GET", "/api/auth/me", "", true, true); !strings.Contains(w.Body.String(), `"must_change_password":true`) {
 		t.Fatal(w.Body)
 	}
-	body := func(old, new string) string {
-		b, _ := json.Marshal(map[string]string{"current_password": old, "new_password": new})
+	body := func(old, new, code string) string {
+		b, _ := json.Marshal(map[string]string{"current_password": old, "new_password": new, "totp_code": code})
 		return string(b)
 	}
-	if w := call("POST", "/api/auth/change-password", body(oldPassword, newPassword), true, false); w.Code != 403 {
+	if w := call("POST", "/api/auth/change-password", body(oldPassword, newPassword, "000000"), true, false); w.Code != 403 {
 		t.Fatal("missing CSRF accepted", w.Code)
 	}
 	for _, bad := range []struct {
 		old, new string
 		status   int
-	}{{oldPassword, "short", 400}, {oldPassword, oldPassword, 400}, {"incorrect", newPassword, 401}} {
-		if w := call("POST", "/api/auth/change-password", body(bad.old, bad.new), true, true); w.Code != bad.status {
+	}{{oldPassword, "Fifteen-chars-1", 400}, {oldPassword, oldPassword, 400}, {"incorrect", newPassword, 401}, {oldPassword, newPassword, 401}} {
+		if w := call("POST", "/api/auth/change-password", body(bad.old, bad.new, bg.WrongCode(t)), true, true); w.Code != bad.status {
 			t.Fatal(w.Code, w.Body)
 		}
 	}
-	if w := call("POST", "/api/auth/change-password", body(oldPassword, newPassword), true, true); w.Code != 200 {
+	if w := call("POST", "/api/auth/change-password", body(oldPassword, newPassword, bg.Code(t)), true, true); w.Code != 200 {
 		t.Fatal(w.Code, w.Body)
 	}
 	if w := call("GET", "/api/auth/me", "", false, true); strings.Contains(w.Body.String(), `"authenticated":true`) {
@@ -93,16 +97,11 @@ func TestForcedPasswordReplacement(t *testing.T) {
 	if _, _, err := manager.IssueSession(ctx, httptest.NewRecorder(), httptest.NewRequest("POST", "/api/auth/login", nil), user); err == nil {
 		t.Fatal("stale password login issued a session")
 	}
-	for _, tc := range []struct {
-		pass   string
-		status int
-	}{{oldPassword, 401}, {newPassword, 200}} {
-		b, _ := json.Marshal(map[string]string{"username": "admin", "password": tc.pass})
-		w := httptest.NewRecorder()
-		srv.ServeHTTP(w, httptest.NewRequest("POST", "/api/auth/login", strings.NewReader(string(b))))
-		if w.Code != tc.status {
-			t.Fatal("login after replacement", w.Code, w.Body)
-		}
+	if w := loginStatusFor(t, srv, "admin", oldPassword, "192.0.2.1:1"); w.Code != 401 {
+		t.Fatal("old password after replacement", w.Code, w.Body)
+	}
+	if w := loginWithCode(t, srv, "admin", newPassword, bg.Code(t), "192.0.2.1:1"); w.Code != 200 {
+		t.Fatal("new password after replacement", w.Code, w.Body)
 	}
 	audits, _, err := st.Audit().ListAuditRecords(ctx, 0, 100)
 	if err != nil {
@@ -161,8 +160,12 @@ func (s *resetDuringReadStore) Users() store.UserStore { return s.users }
 func TestRestrictedSessionCannotInheritClearedFlag(t *testing.T) {
 	_, st, cfg := setupTestServer(t)
 	ctx := context.Background()
-	u := &store.User{ID: "race", Username: "race", PasswordHash: "old", Status: "active", Role: "admin", SSOProvider: "local", MustChangePassword: true}
-	if err := st.Users().CreateUser(ctx, u); err != nil {
+	u := &store.User{ID: "race", Username: "race", PasswordHash: "old", Status: "active", Role: "admin"}
+	if err := st.MFA().CreateBreakGlass(ctx, u, &store.MFAFactor{ID: "mfa_race", SecretEnc: "sealed"}, &store.AuditRecord{Action: "break_glass.created"}); err != nil {
+		t.Fatal(err)
+	}
+	u.MustChangePassword = true
+	if err := st.Users().UpdateUser(ctx, u); err != nil {
 		t.Fatal(err)
 	}
 	manager := auth.NewSessionManager(st, cfg.Security)
@@ -171,7 +174,7 @@ func TestRestrictedSessionCannotInheritClearedFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 	users := &resetDuringReadUsers{UserStore: st.Users(), reset: func() {
-		if err := st.Users().CompletePasswordChange(ctx, u.ID, "old", "new", "127.0.0.1"); err != nil {
+		if err := st.Users().CompletePasswordChange(ctx, u.ID, "old", "new", "127.0.0.1", "mfa_race"); err != nil {
 			t.Fatal(err)
 		}
 	}}
@@ -183,30 +186,35 @@ func TestRestrictedSessionCannotInheritClearedFlag(t *testing.T) {
 	}
 }
 
-// Any local account can change its own password, not only one flagged for replacement; a
-// federated account has none to change.
-func TestPasswordChangeForLocalAccountsOnly(t *testing.T) {
+// A break-glass account changes its own password with the current one and a TOTP code; an
+// SSO account has none to change.
+func TestPasswordChangeForBreakGlassAccountsOnly(t *testing.T) {
 	for _, tc := range []struct {
-		name, provider string
-		want           int
-	}{{"unflagged local", "local", 200}, {"federated", "kysignon", 409}} {
+		name string
+		sso  bool
+		want int
+	}{{"break-glass", false, 200}, {"federated", true, 409}} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv, st, cfg := setupTestServer(t)
 			ctx := context.Background()
-			hash, err := password.Hash("CurrentPassword123!")
+			bg := newBreakGlass(t, srv, st, "user")
+			u, err := st.Users().GetUserByID(ctx, bg.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			u := &store.User{ID: "user", Username: "user", PasswordHash: hash, Status: "active", Role: "user", SSOProvider: tc.provider}
-			if err := st.Users().CreateUser(ctx, u); err != nil {
-				t.Fatal(err)
+			if tc.sso {
+				u = &store.User{ID: "usr_sso", Username: "sso", Status: "active", Role: "user", SSOProvider: "kysignon", SSOSubject: "s"}
+				if err := st.Users().CreateUser(ctx, u); err != nil {
+					t.Fatal(err)
+				}
 			}
 			manager := auth.NewSessionManager(st, cfg.Security)
 			_, token, err := manager.IssueSession(ctx, httptest.NewRecorder(), httptest.NewRequest("POST", "/api/auth/login", nil), u)
 			if err != nil {
 				t.Fatal(err)
 			}
-			req := httptest.NewRequest("POST", "/api/auth/change-password", strings.NewReader(`{"current_password":"CurrentPassword123!","new_password":"NewPassword123!"}`))
+			b, _ := json.Marshal(map[string]string{"current_password": bg.Password, "new_password": "NewPassword-123456", "totp_code": bg.Code(t)})
+			req := httptest.NewRequest("POST", "/api/auth/change-password", strings.NewReader(string(b)))
 			req.Header.Set("Authorization", "Bearer "+token)
 			w := httptest.NewRecorder()
 			srv.ServeHTTP(w, req)
