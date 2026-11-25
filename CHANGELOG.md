@@ -35,6 +35,9 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   counters capped at 2^63-1, unpadded base64url, the domain digest `D(obj)`, ML-DSA-65 +
   Ed25519 hybrid signatures, `sig_key_id`/`enc_key_id`, the payload and DEK-wrap AADs, the
   X-Wing HPKE DEK wrap, the AES-256-GCM payload and `opid`, with committed golden vectors.
+- KyGuard trust root and manifests (spec §3.2, §3.3, §3.7): the bootstrap bundle and its
+  fingerprint, the five Custodian-signed manifests with M-of-N and the per-`(type, scope.id)`
+  epoch and fork rules, and the target descriptor, as a verifier library with golden vectors.
 
 ### Upgrade impact
 

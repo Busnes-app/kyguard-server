@@ -38,3 +38,17 @@ contradicts itself. Each names its section. The most secure reading wins.
 10. §3.4 (`opid`). The first 16 digest bytes are formatted `8-4-4-4-12` lowercase hex with no
     UUID version or variant bits forced; the spec says only "formatted as a UUID", and
     forcing bits would discard digest entropy.
+11. §3.2 (scope). `scope.id` must equal the body's own ID: `deployment_id` for the custodian
+    set and recovery manifest, `pool_id`, `account_id` or `principal_id` otherwise.
+12. §3.2, §3.7 (signatures). Every signature on an object must resolve to a key of its stated
+    role and verify; one bad signature rejects the object even when M others verify.
+13. §3.7 rule 1 (successor manifests). A same-epoch, same-digest manifest is idempotent even
+    if re-signed (D excludes signatures); the first copy is kept. Between epochs:
+    the custodian set advances by exactly 1, so the chain from the bundle is complete; the
+    recovery key and topology are frozen (§9.4, D.7); pool members are never dropped or
+    changed, a revoked member never becomes active again, decommission records are kept and
+    name only revoked members; a key enrollment keeps its issuer and subject, keeps every
+    listed key and never re-activates a revoked one; a policy keeps its `account_kind`. A user
+    key may be enrolled to only one principal.
+14. §3.3 (policy shape). The six managed-only fields are absent on a vaulted policy and
+    present on a managed one; a vaulted policy has `rotation_schedule: null`.
