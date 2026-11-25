@@ -222,7 +222,7 @@ func (l *Listener) handleChannel(w http.ResponseWriter, r *http.Request) {
 	}()
 	dctx, stop := context.WithCancel(r.Context())
 	defer stop()
-	go l.drain(dctx, id, c)
+	go l.drain(dctx, l.Store.Vault(), id, c)
 	for {
 		_, data, err := c.Read(r.Context())
 		if err != nil {
@@ -259,7 +259,7 @@ func (l *Listener) Relay(ctx context.Context, broker pqcrypto.UUID, m Message, e
 }
 
 // drain sends the broker's queued pushes down c until ctx ends.
-func (l *Listener) drain(ctx context.Context, broker pqcrypto.UUID, c *websocket.Conn) {
+func (l *Listener) drain(ctx context.Context, vs store.VaultStore, broker pqcrypto.UUID, c *websocket.Conn) {
 	every := l.RelayPoll
 	if every <= 0 {
 		every = time.Second
@@ -267,7 +267,7 @@ func (l *Listener) drain(ctx context.Context, broker pqcrypto.UUID, c *websocket
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
-		ps, err := l.Store.Vault().TakePushes(ctx, string(broker), 16, time.Now())
+		ps, err := vs.TakePushes(ctx, string(broker), 16, time.Now())
 		if err != nil && ctx.Err() == nil {
 			log.Printf("[BROKER] queued pushes for %s: %v", broker, err)
 		}
