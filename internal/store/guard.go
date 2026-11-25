@@ -138,17 +138,12 @@ func (s *SQLStore) inTx(ctx context.Context, fn func(*sql.Tx) error) error {
 }
 
 // auditTx writes an audit record inside the caller's transaction, so the change and its
-// record commit or roll back together (§9.3). The chained append replaces this insert.
+// record commit or roll back together (§9.3), chained like every other record.
 func (s *SQLStore) auditTx(ctx context.Context, tx *sql.Tx, r *AuditRecord) error {
 	if r == nil {
 		return nil
 	}
-	if r.CreatedAt.IsZero() {
-		r.CreatedAt = time.Now().UTC()
-	}
-	_, err := tx.ExecContext(ctx, s.rebind(`INSERT INTO audit_records (user_id, action, resource, details, ip_address, created_at) VALUES (?, ?, ?, ?, ?, ?)`),
-		r.UserID, r.Action, r.Resource, r.Details, r.IPAddress, r.CreatedAt)
-	return err
+	return s.appendAudit(ctx, tx, r)
 }
 
 func (g guardStore) Bundle(ctx context.Context) (*BootstrapBundle, error) {

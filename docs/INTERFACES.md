@@ -146,6 +146,11 @@ after trimming surrounding whitespace). The current password must verify, then t
 (counted like a sign-in code). Limits are ten attempts per IP and five per account per minute.
 Success requires signing in again with the replacement.
 
+Every audit record is a link of a hash chain (spec §9.3): `seq`, `prev_hash` and `hash`
+(HMAC-SHA256 under a key derived from `data/encryption.key`) over action, user, resource,
+details, address and time, anchored in `audit_chain_head`. A request whose audit record cannot
+be written fails, and its change is rolled back with it.
+
 ## Settings
 
 Source: [settings handlers](../internal/api/settings_handlers.go).

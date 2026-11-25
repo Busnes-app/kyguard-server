@@ -16,18 +16,31 @@ import (
 
 // Open initializes and returns the configured database store backend.
 func Open(ctx context.Context, cfg config.DatabaseConfig) (Store, error) {
+	var s Store
+	var err error
 	driver := strings.ToLower(cfg.Driver)
 	switch driver {
 	case "sqlite", "sqlite3", "":
-		return openSQLite(ctx, cfg.DSN)
+		s, err = openSQLite(ctx, cfg.DSN, cfg.AuditKey)
 	case "postgres", "postgresql", "pgx":
-		return openPostgres(ctx, cfg.DSN, cfg.MaxOpenConns, cfg.MaxIdleConns, cfg.ConnMaxLifetime)
+		s, err = openPostgres(ctx, cfg.DSN, cfg.MaxOpenConns, cfg.MaxIdleConns, cfg.ConnMaxLifetime, cfg.AuditKey)
 	default:
 		return nil, fmt.Errorf("unsupported database driver: %q (supported: sqlite, postgres)", cfg.Driver)
 	}
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
-func openSQLite(ctx context.Context, dsn string) (Store, error) {
+func sqliteParam(dsn, param string) string {
+	if strings.Contains(dsn, "?") {
+		return dsn + "&" + param
+	}
+	return dsn + "?" + param
+}
+
+func openSQLite(ctx context.Context, dsn string, auditKey []byte) (Store, error) {
 	filePath, err := SQLitePath(dsn)
 	if err != nil {
 		return nil, err
@@ -41,11 +54,13 @@ func openSQLite(ctx context.Context, dsn string) (Store, error) {
 	}
 
 	if !strings.Contains(dsn, "_pragma") {
-		delim := "?"
-		if strings.Contains(dsn, "?") {
-			delim = "&"
-		}
-		dsn = fmt.Sprintf("%s%s_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)", dsn, delim)
+		dsn = sqliteParam(dsn, "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)")
+	}
+	// Every write transaction takes the write lock at BEGIN, so audit chain appends (which
+	// read the head and then write) serialize (spec §9.3). Added even when the DSN carries
+	// its own pragmas.
+	if !strings.Contains(dsn, "_txlock=") {
+		dsn = sqliteParam(dsn, "_txlock=immediate")
 	}
 
 	db, err := sql.Open("sqlite", dsn)
@@ -61,7 +76,7 @@ func openSQLite(ctx context.Context, dsn string) (Store, error) {
 		return nil, fmt.Errorf("failed to ping sqlite database: %w", err)
 	}
 
-	s, err := newSQLStore(ctx, db, "sqlite")
+	s, err := newSQLStore(ctx, db, "sqlite", auditKey)
 	if err != nil {
 		_ = db.Close()
 		return nil, err
@@ -70,12 +85,12 @@ func openSQLite(ctx context.Context, dsn string) (Store, error) {
 	return s, nil
 }
 
-func openPostgres(ctx context.Context, dsn string, maxOpen, maxIdle int, maxLifetime time.Duration) (Store, error) {
+func openPostgres(ctx context.Context, dsn string, maxOpen, maxIdle int, maxLifetime time.Duration, auditKey []byte) (Store, error) {
 	db, err := openPostgresDB(ctx, dsn, maxOpen, maxIdle, maxLifetime)
 	if err != nil {
 		return nil, err
 	}
-	s, err := newSQLStore(ctx, db, "postgres")
+	s, err := newSQLStore(ctx, db, "postgres", auditKey)
 	if err != nil {
 		_ = db.Close()
 	}

@@ -21,6 +21,7 @@ var notShared = map[string]string{
 	"Database.MaxIdleConns":    "per host",
 	"Database.ConnMaxLifetime": "per host",
 	"Security.EncryptionKey":   "the fingerprint's own key, checked separately",
+	"Database.AuditKey":        "derived from KY_ENCRYPTION_KEY",
 	"Security.HostCookies":     "derived from KY_APP_URL",
 	"Security.SessionTTL":      "constant",
 	"Security.TrustedProxies":  "per host",
@@ -32,6 +33,7 @@ var notShared = map[string]string{
 func TestEveryConfigFieldIsClassified(t *testing.T) {
 	base := Config{}
 	base.Security.EncryptionKey = make([]byte, 32)
+	base.Database.AuditKey = make([]byte, 32)
 	base.SCIM.Enabled = true // the token counts only while SCIM is on
 	want := ReplicaFingerprint(&base)
 	v := reflect.ValueOf(&base).Elem()
@@ -41,6 +43,7 @@ func TestEveryConfigFieldIsClassified(t *testing.T) {
 			name := section + "." + v.Field(i).Type().Field(j).Name
 			cfg := base
 			cfg.Security.EncryptionKey = append([]byte(nil), base.Security.EncryptionKey...)
+			cfg.Database.AuditKey = append([]byte(nil), base.Database.AuditKey...)
 			change(t, name, reflect.ValueOf(&cfg).Elem().Field(i).Field(j))
 			shared := !reflect.DeepEqual(ReplicaFingerprint(&cfg), want)
 			_, exempt := notShared[name]

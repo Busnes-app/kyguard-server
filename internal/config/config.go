@@ -1,7 +1,9 @@
 package config
 
 import (
+	"crypto/hkdf"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -66,6 +68,17 @@ type DatabaseConfig struct {
 	MaxOpenConns    int           `json:"max_open_conns"`
 	MaxIdleConns    int           `json:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `json:"conn_max_lifetime"`
+	// AuditKey is the audit chain's HMAC key (spec §9.3), derived from the encryption key
+	// with AuditChainKey. Without one the store refuses every audit write.
+	AuditKey []byte `json:"-"`
+}
+
+// AuditChainLabel is the HKDF label of the audit chain key (spec §9.3).
+const AuditChainLabel = "kyguard:auditchain"
+
+// AuditChainKey derives the 32-byte audit chain key from the deployment encryption key.
+func AuditChainKey(encryptionKey []byte) ([]byte, error) {
+	return hkdf.Key(sha256.New, encryptionKey, nil, AuditChainLabel, 32)
 }
 
 // SecurityConfig holds encryption keys, cookie secrets, and session settings.
@@ -199,6 +212,11 @@ func LoadFromEnv() (*Config, error) {
 		}
 	}
 
+	auditKey, err := AuditChainKey(encryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("audit chain key: %w", err)
+	}
+
 	depositInterval, err := getEnvDuration("KY_BACKUP_DEPOSIT_INTERVAL", 24*time.Hour)
 	if err != nil {
 		return nil, fmt.Errorf("KY_BACKUP_DEPOSIT_INTERVAL: %w", err)
@@ -255,6 +273,7 @@ func LoadFromEnv() (*Config, error) {
 			MaxOpenConns:    maxOpenConns,
 			MaxIdleConns:    getEnvInt("KY_DB_MAX_IDLE_CONNS", 5),
 			ConnMaxLifetime: 15 * time.Minute,
+			AuditKey:        auditKey,
 		},
 		Security: SecurityConfig{
 			SessionSecret:           sessionSecret,
