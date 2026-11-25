@@ -2,7 +2,9 @@ package broker_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -317,7 +319,7 @@ func TestSyncRefusesRollbackForksAndStaleChains(t *testing.T) {
 		}
 		req.ManifestsAfter += len(page.Manifests)
 	}
-	realAcct, err := r.cpw.SyncAccount(ctx, r.pol.AccountID, 0, false)
+	realAcct, err := r.cpw.SyncAccount(ctx, r.pol.AccountID, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +336,7 @@ func TestSyncRefusesRollbackForksAndStaleChains(t *testing.T) {
 	st.Chains[len(st.Chains)-1] = last
 	m.CP = &wrapCP{ControlPlane: r.cpw,
 		sync: func(context.Context, brokerproto.SyncRequest) (*brokerproto.SyncReply, error) { return &stale, nil },
-		account: func(context.Context, pqcrypto.UUID, pqcrypto.Counter, bool) (*brokerproto.AccountState, error) {
+		account: func(context.Context, pqcrypto.UUID, pqcrypto.Counter, pqcrypto.Counter) (*brokerproto.AccountState, error) {
 			return &st, nil
 		}}
 	r.alerts = nil
@@ -405,6 +407,32 @@ func TestSyncFollowsEveryPage(t *testing.T) {
 		if p, _ := m.Trust.Policy(id); p == nil {
 			t.Fatalf("policy of %s not synced", id)
 		}
+	}
+}
+
+// An account sync keeps its AfterVersion and continues from the highest version received
+// until the Control Plane has no more (security review of #10).
+func TestAccountSyncContinuesFromTheLastVersion(t *testing.T) {
+	r := newRig(t)
+	m := r.machine()
+	defer m.J.Close()
+	env := func(v pqcrypto.Counter) brokerproto.ChainState {
+		raw, _ := json.Marshal(struct {
+			V pqcrypto.Counter `json:"secret_version"`
+		}{v})
+		return brokerproto.ChainState{Envelope: raw, Receipts: []pqcrypto.B64{}}
+	}
+	var asked [][2]pqcrypto.Counter
+	m.CP = &wrapCP{ControlPlane: r.cpw, account: func(_ context.Context, id pqcrypto.UUID, after, from pqcrypto.Counter) (*brokerproto.AccountState, error) {
+		asked = append(asked, [2]pqcrypto.Counter{after, from})
+		st := &brokerproto.AccountState{AccountID: id, Chains: []brokerproto.ChainState{env(from + 1), env(from + 2)}, More: from < 4}
+		return st, nil
+	}}
+	if err := m.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(asked) != "[[1 0] [1 2] [1 4]]" { // the rig's broker holds version 1
+		t.Fatalf("requests (after, from) = %v", asked)
 	}
 }
 

@@ -65,9 +65,9 @@ func (m *Machine) syncOne(ctx context.Context, id pqcrypto.UUID) error {
 	if err != nil {
 		return err
 	}
-	after := a.HighestCopied()
-	for first := true; ; first = false {
-		st, err := m.CP.SyncAccount(ctx, id, after, !first)
+	after, from := a.HighestCopied(), pqcrypto.Counter(0)
+	for {
+		st, err := m.CP.SyncAccount(ctx, id, after, from)
 		if err != nil {
 			return err
 		}
@@ -80,7 +80,7 @@ func (m *Machine) syncOne(ctx context.Context, id pqcrypto.UUID) error {
 		if !st.More {
 			return nil
 		}
-		next := after
+		next := from
 		for _, c := range st.Chains {
 			var v struct {
 				V pqcrypto.Counter `json:"secret_version"`
@@ -89,10 +89,10 @@ func (m *Machine) syncOne(ctx context.Context, id pqcrypto.UUID) error {
 				next = v.V
 			}
 		}
-		if next == after {
+		if next == from {
 			return errors.New("broker: sync page with no progress")
 		}
-		after = next
+		from = next
 	}
 }
 
