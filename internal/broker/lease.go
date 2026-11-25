@@ -68,12 +68,15 @@ func (m *Machine) Tx(ctx context.Context, raw []byte) error {
 	if err != nil {
 		return err
 	}
-	tx, _, _, err := m.verifyTx(a, raw)
+	tx, _, chain, err := m.verifyTx(a, raw)
 	if err != nil {
 		return err
 	}
 	switch tx.Action.ActionType {
 	case pqcrypto.ActionVaultCheckout:
+		if err := m.sealedForTarget(ctx, a, chain); err != nil {
+			return err
+		}
 		return m.checkout(ctx, a, tx, raw)
 	case pqcrypto.ActionManualRotation:
 		return m.manualRotation(ctx, a, tx)
@@ -191,6 +194,9 @@ func (m *Machine) deliver(ctx context.Context, a *Account, c *Challenge, raw []b
 		return err
 	}
 	if err := blocked(a); err != nil {
+		return err
+	}
+	if err := m.sealedForTarget(ctx, a, chain); err != nil {
 		return err
 	}
 	now := m.now()
@@ -377,4 +383,24 @@ func (m *Machine) leaseAttemptEnded(a *Account, refused bool) {
 		l.NextAttemptAt = next
 		log.Printf("[BROKER] ALERT: account %s: lease cleanup refused; the checked-out credential stays live until %s", a.ID, next.Format(time.RFC3339))
 	}
+}
+
+// sealedForTarget refuses a checkout whose current envelope was sealed under a policy that
+// pins another descriptor: that credential never goes to the new target (§3.3).
+func (m *Machine) sealedForTarget(ctx context.Context, a *Account, chain *pqcrypto.Chain) error {
+	p, _ := m.Trust.Policy(a.ID)
+	if chain == nil || p == nil {
+		return ErrNoCurrent
+	}
+	if chain.Envelope.Policy.TargetDescriptorDigest == p.TargetDescriptorDigest {
+		return nil
+	}
+	if a.Health != HealthNeedsEnrollment {
+		a.Health, a.HealthReason = HealthNeedsEnrollment, "the target descriptor changed"
+		if err := m.J.Save(a); err != nil {
+			return err
+		}
+		m.report(ctx, a, "")
+	}
+	return ErrNeedsEnrollment
 }
