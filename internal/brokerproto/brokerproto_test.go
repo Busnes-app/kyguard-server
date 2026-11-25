@@ -449,3 +449,24 @@ func TestAChannelAfterCloseAllIsClosed(t *testing.T) {
 		t.Fatal("a channel registered after CloseAll")
 	}
 }
+
+// A CreateCA that fails after storing the key removes it, so init can be retried once the
+// problem is fixed (Guide on #8, "Partial Initialization"). A dangling symlink makes the
+// certificate's exclusive create fail after the key is written.
+func TestFailedCreateCACanBeRetried(t *testing.T) {
+	dir := t.TempDir()
+	cert := dir + "/" + brokerproto.CACertFile
+	if err := os.Symlink(dir+"/missing", cert); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := brokerproto.CreateCA(dir); err == nil {
+		t.Fatal("CreateCA wrote through a dangling symlink")
+	}
+	if _, err := os.Stat(dir + "/" + brokerproto.CAKeyFile); !os.IsNotExist(err) {
+		t.Fatalf("the key was left behind: %v", err)
+	}
+	os.Remove(cert)
+	if _, err := brokerproto.CreateCA(dir); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+}
