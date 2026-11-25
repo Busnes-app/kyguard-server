@@ -483,3 +483,37 @@ func TestAnotherAccountsEnvelopeIsNotACandidate(t *testing.T) {
 		t.Fatal("logged in or journaled")
 	}
 }
+
+// An accepted enrollment resumed after a restart, when sync has since applied a policy
+// that pins another target, fails without sending the credential anywhere (security review
+// of #15).
+func TestRecoveredEnrollmentFailsWhenTheTargetChanged(t *testing.T) {
+	r := newEnrollRig(t, false)
+	m := r.machine()
+	m.Hook = func(p string) error {
+		if p == "accept_ack" {
+			return errors.New("kill")
+		}
+		return nil
+	}
+	if _, err := r.enroll(m, initialPassword); !errors.Is(err, broker.ErrStopped) {
+		t.Fatal(err)
+	}
+	m.J.Close()
+	moveTarget(t, r.rig)
+	m2 := r.machine()
+	defer m2.J.Close()
+	if err := m2.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := m2.Trust.Policy(r.pol.AccountID); p.Epoch != 2 {
+		t.Fatalf("policy epoch %s", p.Epoch)
+	}
+	m2.Recover(context.Background())
+	if n := r.target.logins[initialPassword]; n != 0 || len(r.target.hosts) != 0 {
+		t.Fatalf("%d logins to %v", n, r.target.hosts)
+	}
+	if a := r.account(m2); a.Enrollment.Verified || r.current(m2) != nil {
+		t.Fatalf("enrollment %+v", a.Enrollment)
+	}
+}
