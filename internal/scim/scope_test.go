@@ -40,7 +40,7 @@ func scopedSCIM(t *testing.T, allowAdmin bool) (store.Store, func(method, path s
 	}
 }
 
-// SCIM sees and changes only the accounts it created: the local bootstrap admin and
+// SCIM sees and changes only the accounts it created: a local break-glass admin and
 // KyIdentity accounts are invisible to it, and it cannot grant admin unless allowed.
 func TestSCIMIsScopedToTheAccountsItManages(t *testing.T) {
 	st, do := scopedSCIM(t, false)

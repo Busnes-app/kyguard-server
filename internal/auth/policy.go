@@ -7,16 +7,17 @@ import (
 )
 
 var (
-	ErrPasswordTooShort = errors.New("password must be at least 12 characters")
+	ErrPasswordTooShort = errors.New("password must be at least 16 characters")
 	ErrInvalidUsername  = errors.New("username must be 3-64 alphanumeric characters, underscores, or hyphens")
 	ErrInvalidEmail     = errors.New("invalid email address format")
 	usernameRegex       = regexp.MustCompile(`^[a-zA-Z0-9_\-\.]{3,64}$`)
 	emailRegex          = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
 )
 
-// ValidatePassword ensures password satisfies standard KySecurity length policy (>= 12 chars).
+// ValidatePassword enforces the break-glass password policy, the only local passwords
+// KyGuard has: at least 16 characters (spec §7.4).
 func ValidatePassword(password string) error {
-	if len(strings.TrimSpace(password)) < 12 {
+	if len(strings.TrimSpace(password)) < 16 {
 		return ErrPasswordTooShort
 	}
 	return nil

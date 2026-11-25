@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Busnes-app/ky-primitives/password"
 	"github.com/Busnes-app/kyguard-server/internal/api"
 	"github.com/Busnes-app/kyguard-server/internal/auth"
 	"github.com/Busnes-app/kyguard-server/internal/config"
@@ -17,44 +16,14 @@ import (
 	"github.com/Busnes-app/kyguard-server/internal/store"
 )
 
-// loginAs creates a user with the given role and returns its session cookie.
+// loginAs returns a session cookie for a new account: a break-glass admin (signed in through
+// the real login, with a reason given) for role "admin", otherwise an SSO user.
 func loginAs(t *testing.T, srv *api.Server, st store.Store, username, role string) *http.Cookie {
 	t.Helper()
-
-	const testPassword = "SuperSecretPass123!"
-	hash, err := password.Hash(testPassword)
-	if err != nil {
-		t.Fatalf("hash password: %v", err)
+	if role == "admin" {
+		return newBreakGlass(t, srv, st, username).Login(t, srv)
 	}
-
-	err = st.Users().CreateUser(context.Background(), &store.User{
-		ID:           "usr_" + username,
-		Username:     username,
-		PasswordHash: hash,
-		Role:         role,
-		Status:       "active",
-		SSOProvider:  "local",
-	})
-	if err != nil {
-		t.Fatalf("create user: %v", err)
-	}
-
-	body, _ := json.Marshal(map[string]string{"username": username, "password": testPassword})
-	req := httptest.NewRequest("POST", "/api/auth/login", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("login as %s: got %d: %s", username, w.Code, w.Body.String())
-	}
-
-	for _, c := range w.Result().Cookies() {
-		if c.Name == auth.SessionCookieName {
-			return c
-		}
-	}
-	t.Fatalf("no session cookie for %s", username)
-	return nil
+	return ssoSession(t, st, username, role)
 }
 
 func do(t *testing.T, srv *api.Server, method, path string, cookie *http.Cookie) *httptest.ResponseRecorder {

@@ -13,6 +13,7 @@ export function ChangePassword({ onComplete, onLogout, onCancel }: ChangePasswor
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
+  const [totpCode, setTotpCode] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -25,17 +26,18 @@ export function ChangePassword({ onComplete, onLogout, onCancel }: ChangePasswor
     try {
       const response = await secureFetch('/api/auth/change-password', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword, totp_code: totpCode }),
       });
       if (!response.ok) {
         const body: unknown = await response.json();
         throw new Error(typeof body === 'object' && body !== null && 'error' in body && typeof body.error === 'string'
           ? body.error : 'Password change failed. Please try again.');
       }
-      setCurrentPassword(''); setNewPassword(''); setConfirmation('');
+      setCurrentPassword(''); setNewPassword(''); setConfirmation(''); setTotpCode('');
       onComplete();
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'Password change failed. Please try again.');
+      setTotpCode('');
     } finally { setBusy(false); }
   }
 
@@ -43,16 +45,19 @@ export function ChangePassword({ onComplete, onLogout, onCancel }: ChangePasswor
     <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 20 }}>
       <form onSubmit={submit} className="panel" style={{ width: '100%', maxWidth: 440 }}>
         <h1>Change your password</h1>
-        <p>{onCancel ? 'Use at least 12 characters.' : 'Replace your temporary password before continuing. Use at least 12 characters.'} You will sign in again afterward, and every other session is signed out.</p>
+        <p>{onCancel ? 'Use at least 16 characters.' : 'Replace your temporary password before continuing. Use at least 16 characters.'} You will sign in again afterward, and every other session is signed out.</p>
         <label htmlFor="current-password">Current password</label>
         <input id="current-password" type="password" autoComplete="current-password" required
           value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} />
         <label htmlFor="new-password">New password</label>
-        <input id="new-password" type="password" autoComplete="new-password" required minLength={12} maxLength={1024}
+        <input id="new-password" type="password" autoComplete="new-password" required minLength={16} maxLength={1024}
           value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
         <label htmlFor="confirm-password">Confirm new password</label>
-        <input id="confirm-password" type="password" autoComplete="new-password" required minLength={12} maxLength={1024}
+        <input id="confirm-password" type="password" autoComplete="new-password" required minLength={16} maxLength={1024}
           value={confirmation} onChange={(event) => setConfirmation(event.target.value)} />
+        <label htmlFor="totp-code">Authenticator code</label>
+        <input id="totp-code" type="text" inputMode="numeric" autoComplete="one-time-code" required pattern="[0-9]{6}" maxLength={6}
+          value={totpCode} onChange={(event) => setTotpCode(event.target.value.trim())} />
         {error && <p role="alert">{error}</p>}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 16 }}>
           <button type="submit" disabled={busy}>{busy ? 'Changing password…' : 'Change password'}</button>

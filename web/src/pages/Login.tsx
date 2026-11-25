@@ -11,6 +11,7 @@ interface LoginProps {
 export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
   const [username, setUsername] = useState<string>('');
   const [password, setPassword] = useState<string>('');
+  const [totpCode, setTotpCode] = useState<string>('');
   const [captchaToken, setCaptchaToken] = useState<string>('');
   const [captchaRound, setCaptchaRound] = useState<number>(0);
   const [loading, setLoading] = useState<boolean>(false);
@@ -28,6 +29,7 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
         body: JSON.stringify({
           username,
           password,
+          totp_code: totpCode,
           captcha_token: captchaToken || undefined,
         }),
       });
@@ -42,6 +44,7 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
+      setTotpCode(''); // a code is single-use; the next attempt needs a fresh one
       // The token may have expired while the tab slept; solve a fresh one for the retry.
       setCaptchaToken('');
       setCaptchaRound((n) => n + 1);
@@ -81,7 +84,7 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
             <img src="/app-icon.png" width={56} height={56} alt="" />
           </div>
           <h1 style={{ fontSize: '24px', fontWeight: 'bold' }}>{appName || 'KyGuard'}</h1>
-          <p style={{ color: 'var(--ink)', fontSize: '14px', marginTop: '4px' }}>Cloud Mobile First Base Platform</p>
+          <p style={{ color: 'var(--ink)', fontSize: '14px', marginTop: '4px' }}>Privileged access management</p>
         </div>
 
         <div className="panel">
@@ -125,6 +128,23 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••••••"
+                required
+              />
+            </div>
+
+            {/* Local sign-in is break-glass only, and always with the authenticator code. */}
+            <div style={{ marginBottom: '16px' }}>
+              <label htmlFor="totp-code" style={{ display: 'block', fontSize: '13px', color: 'var(--ink)', marginBottom: '6px' }}>Authenticator code</label>
+              <input
+                id="totp-code"
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                pattern="[0-9]{6}"
+                maxLength={6}
+                value={totpCode}
+                onChange={(e) => setTotpCode(e.target.value.trim())}
+                placeholder="123456"
                 required
               />
             </div>

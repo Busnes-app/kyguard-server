@@ -26,6 +26,7 @@ type Store interface {
 	Coordination() CoordinationStore
 	Guard() GuardStore
 	Vault() VaultStore
+	MFA() MFAStore
 
 	// SnapshotToSQLite copies a PostgreSQL database, as of one transaction, into a new SQLite
 	// file; ErrSnapshotSchema for a schema this build does not know.
@@ -79,8 +80,10 @@ type UserStore interface {
 	// (prevSubject, ErrConflict otherwise) and, while the account is still "scim", writes
 	// u.SSOSubject (the SCIM externalId) in the same statement.
 	UpdateSCIMProfile(ctx context.Context, u *User, prevRole, prevStatus, prevSubject string) error
-	ResetAdminPassword(ctx context.Context, userID, newHash string) error
-	CompletePasswordChange(ctx context.Context, userID, oldHash, newHash, ip string) error
+	// CompletePasswordChange replaces a break-glass account's password if it still has
+	// oldHash and factorID (whose code authorized the change) is still its factor, revoking
+	// every session and auditing in the same transaction.
+	CompletePasswordChange(ctx context.Context, userID, oldHash, newHash, ip, factorID string) error
 	DeleteUser(ctx context.Context, id string) error
 	ListUsers(ctx context.Context, offset, limit int, search string) ([]*User, int, error)
 	// ListSCIMUsers is ListUsers restricted to accounts SCIM created (SCIMManaged).
@@ -100,6 +103,9 @@ type SessionStore interface {
 	// EndSSOSession ends every session of an SSO login and fences its sid until fenceUntil.
 	EndSSOSession(ctx context.Context, sid string, fenceUntil time.Time) error
 	CleanExpiredSessions(ctx context.Context) error
+	// SetBreakGlassReason records the reason once, with its audit record in the same
+	// transaction; ErrConflict when one is already set.
+	SetBreakGlassReason(ctx context.Context, tokenHash, reason string, audit *AuditRecord) error
 }
 
 // GroupStore defines repository operations for SCIM and RBAC groups.
