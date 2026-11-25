@@ -23,17 +23,23 @@ type SQLStore struct {
 	audit    *auditStore
 	settings *settingsStore
 	lockPath string
+	auditKey []byte
 }
 
 // newSQLStore creates and initializes a SQLStore, running migrations automatically.
-func newSQLStore(ctx context.Context, db *sql.DB, driver string) (*SQLStore, error) {
+func newSQLStore(ctx context.Context, db *sql.DB, driver string, auditKey []byte) (*SQLStore, error) {
 	driver = strings.ToLower(driver)
 	if driver == "postgresql" {
 		driver = "postgres"
 	}
 
-	s := &SQLStore{db: db, driver: driver}
-	apply := func(ctx context.Context) error { return applySchema(ctx, db, driver) }
+	s := &SQLStore{db: db, driver: driver, auditKey: append([]byte(nil), auditKey...)}
+	// The records written before the audit chain are chained inside the migration that adds
+	// it, and nowhere else (adoptLegacyAudit).
+	apply := func(ctx context.Context) error {
+		_, err := applySchema(ctx, db, driver, map[int]func(context.Context, *sql.Tx) error{auditChainMigration: s.adoptLegacyAudit})
+		return err
+	}
 	if driver == "postgres" {
 		// Multiple replicas may start together. Keep schema changes under one owner.
 		for {
@@ -63,18 +69,19 @@ func newSQLStore(ctx context.Context, db *sql.DB, driver string) (*SQLStore, err
 	return s, nil
 }
 
-func applySchema(ctx context.Context, db *sql.DB, driver string) error {
-	if err := migrations.Run(ctx, db, driver); err != nil {
-		return fmt.Errorf("migration failure on driver %s: %w", driver, err)
+func applySchema(ctx context.Context, db *sql.DB, driver string, after map[int]func(context.Context, *sql.Tx) error) ([]int, error) {
+	applied, err := migrations.RunApplied(ctx, db, driver, after)
+	if err != nil {
+		return applied, fmt.Errorf("migration failure on driver %s: %w", driver, err)
 	}
 	clashes, err := migrations.EnsureUsernameIndex(ctx, db)
 	if err != nil {
-		return fmt.Errorf("case-insensitive username index: %w", err)
+		return applied, fmt.Errorf("case-insensitive username index: %w", err)
 	}
 	for _, names := range clashes {
 		log.Printf("[STORE] usernames differ only in letter case: %s. Sign-in picks one of them arbitrarily; rename or remove all but one. New case-variant names are refused.", strings.Join(names, ", "))
 	}
-	return nil
+	return applied, nil
 }
 
 func (s *SQLStore) Users() UserStore                { return s.users }
@@ -158,6 +165,9 @@ INSERT INTO users (
 		user.CreatedAt, user.UpdatedAt, lastLogin, user.AccountType, user.SSOIssuer,
 	); err != nil {
 		return uniqueErr(err)
+	}
+	if err := u.store.appendCtxAudit(ctx, tx); err != nil {
+		return err
 	}
 	return uniqueErr(tx.Commit())
 }
@@ -375,18 +385,29 @@ func (u *userStore) updateProfile(ctx context.Context, user *User, prevRole, pre
 			return err
 		}
 	}
+	if err := u.store.appendCtxAudit(ctx, tx); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
 func (u *userStore) LinkSSOIdentity(ctx context.Context, id, subject, fromProvider, toProvider string) error {
-	res, err := u.store.db.ExecContext(ctx, u.store.rebind(`UPDATE users SET sso_provider = ?, updated_at = ? WHERE id = ? AND sso_subject = ? AND sso_provider = ?`), toProvider, time.Now().UTC(), id, subject, fromProvider)
+	tx, err := u.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, u.store.rebind(`UPDATE users SET sso_provider = ?, updated_at = ? WHERE id = ? AND sso_subject = ? AND sso_provider = ?`), toProvider, time.Now().UTC(), id, subject, fromProvider)
 	if err != nil {
 		return err
 	}
 	if rows, _ := res.RowsAffected(); rows == 0 {
 		return ErrConflict
 	}
-	return nil
+	if err := u.store.appendCtxAudit(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (u *userStore) DeleteUser(ctx context.Context, id string) error {
@@ -673,8 +694,7 @@ func (u *userStore) revokePasswordGrants(ctx context.Context, tx *sql.Tx, userID
 	if _, err := tx.ExecContext(ctx, u.store.rebind("DELETE FROM sessions WHERE user_id = ?"), userID); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, u.store.rebind(`INSERT INTO audit_records (user_id, action, resource, details, ip_address, created_at) VALUES (?, ?, ?, ?, ?, ?)`), userID, "auth.password_changed", "user", details, ip, now)
-	return err
+	return u.store.appendAudit(ctx, tx, &AuditRecord{UserID: userID, Action: "auth.password_changed", Resource: "user", Details: details, IPAddress: ip, CreatedAt: now})
 }
 
 func (s *sessionStore) GetSession(ctx context.Context, tokenHash string) (*Session, error) {
@@ -949,17 +969,14 @@ func (a *auditStore) LogAudit(ctx context.Context, r *AuditRecord) error {
 	return tx.Commit()
 }
 
-// insertAudit writes r inside the caller's transaction, so a state change and its audit
-// record commit or fail together.
+// insertAudit appends r to the audit chain inside the caller's transaction (spec §9.3), so a
+// state change and its audit record commit or fail together. See appendAudit.
 func (s *SQLStore) insertAudit(ctx context.Context, tx *sql.Tx, r *AuditRecord) error {
-	if r.CreatedAt.IsZero() {
-		r.CreatedAt = time.Now().UTC()
-	}
-	_, err := tx.ExecContext(ctx, s.rebind(`
-INSERT INTO audit_records (user_id, action, resource, details, ip_address, created_at)
-VALUES (?, ?, ?, ?, ?, ?)
-`), r.UserID, r.Action, r.Resource, r.Details, r.IPAddress, r.CreatedAt)
-	return err
+	return s.appendAudit(ctx, tx, r)
+}
+
+func (a *auditStore) VerifyAuditChain(ctx context.Context) error {
+	return a.store.VerifyAuditChain(ctx)
 }
 
 func (a *auditStore) ListAuditRecords(ctx context.Context, offset, limit int) ([]*AuditRecord, int, error) {

@@ -125,11 +125,7 @@ func (s *Server) ssoAccount(r *http.Request, provider string, claims *sso.Identi
 	role := claims.LocalRole()
 	user, err := s.store.Users().GetUserBySSO(ctx, claims.Issuer, claims.Subject)
 	if err == nil && user.SSOProvider == "scim" {
-		var adopted bool
-		adopted, err = sso.AdoptSCIMUser(ctx, s.store.Users(), user, provider)
-		if adopted {
-			_ = s.store.Audit().LogAudit(ctx, &store.AuditRecord{UserID: user.ID, Action: "sso.scim_account_linked", Resource: user.Username, IPAddress: s.requestIP(r)})
-		}
+		_, err = sso.AdoptSCIMUser(store.WithAudit(ctx, &store.AuditRecord{UserID: user.ID, Action: "sso.scim_account_linked", Resource: user.Username, IPAddress: s.requestIP(r)}), s.store.Users(), user, provider)
 	}
 	if errors.Is(err, store.ErrNotFound) {
 		if !s.config.SSO.AutoProvision {
@@ -146,7 +142,7 @@ func (s *Server) ssoAccount(r *http.Request, provider string, claims *sso.Identi
 			SSOSubject:  claims.Subject,
 			SSOIssuer:   claims.Issuer,
 		}
-		err = s.store.Users().CreateUser(ctx, user)
+		err = s.store.Users().CreateUser(store.WithAudit(ctx, &store.AuditRecord{UserID: user.ID, Action: "sso.user_provisioned", Resource: user.Username, IPAddress: s.requestIP(r)}), user)
 		if errors.Is(err, store.ErrAlreadyExists) {
 			return nil, http.StatusConflict, fmt.Sprintf("An account named %q already exists here and is not linked to this sign-in. An administrator must rename or remove that account in its directory, or provision it through SCIM with your identity provider subject as its externalId.", claims.PreferredUsername)
 		}
@@ -166,12 +162,12 @@ func (s *Server) ssoAccount(r *http.Request, provider string, claims *sso.Identi
 	if user.Role != role {
 		prevRole := user.Role
 		user.Role = role
-		if err := s.store.Users().UpdateUserRole(ctx, user, prevRole); errors.Is(err, store.ErrConflict) {
+		rec := &store.AuditRecord{UserID: user.ID, Action: "sso.role_changed", Resource: user.Username, Details: fmt.Sprintf("from=%s to=%s", prevRole, role), IPAddress: s.requestIP(r)}
+		if err := s.store.Users().UpdateUserRole(store.WithAudit(ctx, rec), user, prevRole); errors.Is(err, store.ErrConflict) {
 			return nil, http.StatusConflict, "Your account changed while you were signing in. Sign in again."
 		} else if err != nil {
 			return nil, http.StatusInternalServerError, "Failed to update the account role"
 		}
-		_ = s.store.Audit().LogAudit(ctx, &store.AuditRecord{UserID: user.ID, Action: "sso.role_changed", Resource: user.Username, Details: fmt.Sprintf("from=%s to=%s", prevRole, role), IPAddress: s.requestIP(r)})
 	}
 	return user, 0, ""
 }
@@ -201,10 +197,15 @@ func (s *Server) handleKySignOnBackchannelLogout(w http.ResponseWriter, r *http.
 		s.writeError(w, http.StatusInternalServerError, "logout failed")
 		return
 	}
-	_ = s.store.Audit().LogAudit(r.Context(), &store.AuditRecord{
+	// A failed audit write fails the request; the provider retries, and a repeated logout is
+	// a harmless no-op that is audited then.
+	if err := s.store.Audit().LogAudit(r.Context(), &store.AuditRecord{
 		Action:    "auth.sso_backchannel_logout",
 		Resource:  "session",
 		IPAddress: s.requestIP(r),
-	})
+	}); err != nil {
+		s.writeError(w, http.StatusInternalServerError, "logout failed")
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }
