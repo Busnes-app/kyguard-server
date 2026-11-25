@@ -79,7 +79,12 @@ contradicts itself. Each names its section. The most secure reading wins.
    pin requests hold no shared lock, so startup and the next request of the same kind settle
    only intents older than 20 minutes (longer than any detached backup request). A pending
    intent settles to its noted outcome, else to `outcome_unknown` with a critical
-   `operation.outcome_unknown` record. A completed deposit supersedes every `outcome_unknown`
+   `operation.outcome_unknown` record. A noted outcome carries an HMAC under a key derived from
+   the audit chain key. The HMAC binds the operation ID, kind, subject, state and exact record,
+   and a note that fails it ends `outcome_unknown` with `operation.outcome_rejected`; its record
+   is never appended. Settling is one conditional `UPDATE`. Reconciliation moves only `pending`
+   intents, so concurrent reconcilers append once, and the owning process may still correct an
+   `outcome_unknown`. A completed deposit supersedes every `outcome_unknown`
    deposit, and a fresh capsule is sealed for each run, so lost bytes are never replayed.
 19b. §9.3 (states). Besides the spec's `pending`, `complete`, `outcome_unknown` and `superseded`,
    an intent can end `failed`: the effect was refused, or it happened and the local completion
