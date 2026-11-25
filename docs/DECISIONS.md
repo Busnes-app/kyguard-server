@@ -163,3 +163,23 @@ Numbered separately: these came from the parallel crypto stack.
     and draft paths are distinct, absent and in existing directories. It stages both files
     and links them into place without replacing anything; if the draft cannot be placed,
     the new key file is removed. A failed Control Plane submission keeps both files.
+33. §9.2 (trust tables). The Control Plane keeps every accepted manifest in one
+    `trust_manifests` table ordered by `seq` instead of five per-type tables: `Trust.Accept`
+    checks each manifest against the custodian set current at its turn, so replay needs one
+    global acceptance order. `bootstrap_bundles` holds the single imported bundle.
+34. §4.1, §9.4 (broker CA). The CA, listener and broker TLS keys are Ed25519. The CA lasts 20
+    years and broker certificates 10; renewal is later work, and revocation is the pool
+    manifest, not the certificate. `kyguard-server init` creates only the CA; the listener
+    leaf (1 year) is issued at every start, which §9.4 requires after restore anyway.
+35. §4.1 (broker identity in the certificate). `broker_id` is bound as the URI SAN
+    `urn:uuid:<broker_id>` and the subject CN; a random 128-bit value formatted as a UUID
+    with no version bits forced (as decision 10).
+36. §4.1 (channel admission). Besides `active` in the pool manifest, the presented
+    certificate's SHA-256 must equal the manifest's `mtls_cert_sha256`, so a second
+    internal-CA certificate for a listed `broker_id` is refused.
+37. §9.3 (pairing intent). The pairing intent ends `complete` only when the response was
+    written and flushed; a write error marks it `outcome_unknown` at once. Startup, and then
+    a loop every minute, marks intents still `pending` after 2 minutes `outcome_unknown`,
+    leaving younger ones to a replica that may still be answering.
+38. §9.2 (migration numbering). Broker-stack migrations take versions from 100 so the two
+    parallel stacks never reuse a version; they run after every Phase 0 migration.

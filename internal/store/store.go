@@ -24,6 +24,7 @@ type Store interface {
 	Audit() AuditStore
 	Settings() SettingsStore
 	Coordination() CoordinationStore
+	Guard() GuardStore
 	MFA() MFAStore
 
 	// SnapshotToSQLite copies a PostgreSQL database, as of one transaction, into a new SQLite

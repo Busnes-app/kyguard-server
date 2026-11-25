@@ -70,6 +70,13 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   the trust state run one at a time; `sign` checks the whole draft before releasing a
   signature and remembers what it signed; `enroll` creates the key file and its draft
   together or not at all.
+- Broker listener and pairing (spec §4.1): `kyguard-server init` creates the internal broker
+  CA and `import-bundle` installs the bootstrap bundle after checking its fingerprint.
+  Admins create broker pools and one-time, 10-minute pairing tokens. A separate TLS 1.3
+  listener on `KY_BROKER_LISTEN` pairs brokers and admits to its control channel only a
+  broker that a Custodian-signed pool manifest lists as active with that certificate.
+  `POST /api/manifests` admits Custodian-signed manifests on the Control Plane. Startup
+  refuses a broker CA that paired brokers did not pin.
 
 ### Upgrade impact
 
@@ -77,6 +84,11 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   no longer covers the removed `KY_SAML_*` settings.
 - New binary `kyguard-cli` (`go build ./cmd/cli`); `golang.org/x/term` is a new direct
   dependency and `golang.org/x/crypto` becomes direct (Argon2id).
+- Migration 100 adds the broker tables (`bootstrap_bundles`, `trust_manifests`,
+  `broker_pools`, `brokers`, `pairing_tokens`, `operation_intents`); no data migrates.
+  New settings `KY_BROKER_LISTEN` (default `:8443`), `KY_BROKER_HOSTNAME` (unset: listener
+  off) and `KY_MIN_BROKER_VERSION` are shared replica settings; `github.com/coder/websocket`
+  is a new dependency.
 - The module declares `go 1.27.0` (for `crypto/mldsa`); builds need Go 1.27, as the pinned
   `go1.27.4` toolchain already provides.
 
