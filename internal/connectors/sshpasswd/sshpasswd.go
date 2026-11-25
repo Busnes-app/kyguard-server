@@ -258,13 +258,18 @@ func (s *session) Change(ctx context.Context, oldPassword, newPassword []byte, c
 	}
 	t := newTranscript()
 	ss.Stdout, ss.Stderr = t, t
-	if err := ss.Start("LC_ALL=C passwd"); err != nil {
+	// Every blocking step is bounded by ctx and the timeout: start, each write, each prompt.
+	stop = s.bound(ctx)
+	err = ss.Start("LC_ALL=C passwd")
+	stop()
+	if err != nil {
 		return err
 	}
 	exited := make(chan struct{})
 	var waitErr error
 	go func() { waitErr = ss.Wait(); close(exited) }()
 	answer := func(p []byte) error {
+		defer s.bound(ctx)()
 		_, err := in.Write(append(append([]byte(nil), p...), '\n'))
 		return err
 	}
