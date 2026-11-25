@@ -208,7 +208,7 @@ func (m *Machine) deliver(ctx context.Context, a *Account, c *Challenge, raw []b
 	now := m.now()
 	a.Lease = &Lease{RequestID: tx.RequestID, Tx: c.Tx, TxDigest: d.Hex(), SecretVersion: tx.Action.SecretVersion, EncKeyID: tx.Action.EncKeyID,
 		PolicyDigest: tx.PolicyDigest, TargetDescriptorDigest: tx.Action.TargetDescriptorDigest,
-		OpenedAt: now, ExpiresAt: now.Add(time.Duration(tx.Action.CheckoutTTLSeconds) * time.Second), State: LeaseActive}
+		OpenedAt: now, ExpiresAt: now.Add(time.Duration(tx.Action.CheckoutTTLSeconds) * time.Second), State: LeaseActive, Delivering: true}
 	if err := m.J.SaveConsume(a, tx.RequestID, tx.ExpiresAt.Time); err != nil {
 		return err
 	}
@@ -252,7 +252,7 @@ func (m *Machine) deliver(ctx context.Context, a *Account, c *Challenge, raw []b
 	if err != nil {
 		return err
 	}
-	a.Lease.Delivery = &wrap // journaled, so a lost delivery is re-sent (flush)
+	a.Lease.Delivery, a.Lease.Delivering = &wrap, false // journaled, so a lost delivery is re-sent (flush)
 	if err := m.J.Save(a); err != nil {
 		return err
 	}
@@ -279,6 +279,14 @@ func (m *Machine) deliverWrap(ctx context.Context, a *Account) error {
 // flush re-sends what the Control Plane has not acknowledged for the account's lease: its
 // state and its delivery. Recover and every scheduler tick call it.
 func (m *Machine) flush(ctx context.Context, a *Account) {
+	// A lease opened whose wrap was never journaled delivered nothing: close it and tell
+	// the requester (Guide on #16, "Interrupted delivery").
+	if l := a.Lease; l != nil && l.State == LeaseActive && l.Delivering {
+		if err := m.endDelivery(ctx, a, "interrupted", false); err != nil {
+			log.Printf("[BROKER] interrupted lease %s not closed: %v", l.RequestID, err)
+		}
+		return
+	}
 	m.results(ctx, a)
 	if err := m.mirror(ctx, a); err != nil {
 		return
@@ -302,7 +310,9 @@ func (m *Machine) unflushed(ctx context.Context, a *Account) error {
 
 // endDelivery closes a lease that delivered nothing and, after a denied login, quarantines.
 func (m *Machine) endDelivery(ctx context.Context, a *Account, reason string, quarantine bool) error {
-	a.Lease.State, a.Lease.CloseReason, a.Lease.Mirrored, a.Lease.Delivery = LeaseClosed, reason, false, nil
+	a.Lease.State, a.Lease.CloseReason, a.Lease.Mirrored, a.Lease.Delivery, a.Lease.Delivering = LeaseClosed, reason, false, nil, false
+	// Journaled with the closure and re-sent until acknowledged (Guide on #16, "Lost outcome").
+	a.Results = append(a.Results, TxResult{RequestID: a.Lease.RequestID, Result: reason})
 	if quarantine {
 		log.Printf("[BROKER] ALERT: account %s quarantined: the current credential was denied at checkout", a.ID)
 		a.Quarantined = true
@@ -316,7 +326,10 @@ func (m *Machine) endDelivery(ctx context.Context, a *Account, reason string, qu
 	if err := m.applyDeferred(a); err != nil {
 		return err
 	}
-	return m.CP.TxResult(ctx, brokerproto.TxResultRequest{RequestID: a.Lease.RequestID, Result: reason})
+	if b, err := m.J.Account(a.ID); err == nil { // applyDeferred may have saved a newer record
+		m.results(ctx, b)
+	}
+	return nil
 }
 
 // checkinProof moves the lease to rotation_pending on a proof from the transaction's cnf

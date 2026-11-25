@@ -634,3 +634,57 @@ func TestManualRotationResultIsResent(t *testing.T) {
 		t.Fatalf("results %+v queued=%v", a.Results, a.Run.ResultQueued)
 	}
 }
+
+// A refusal at delivery whose result could not be sent is journaled with the lease's
+// closure and re-sent by the next tick (Guide on #16, "Lost outcome").
+func TestDeliveryRefusalResultIsResent(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	c.target.password = "changed-out-of-band"
+	c.m.CP = &failResults{ControlPlane: c.m.CP, n: 1}
+	co := c.open(600)
+	if _, res := c.delivery(co.RequestID); res != "" {
+		t.Fatalf("result %q despite the failed delivery", res)
+	}
+	if err := c.m.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, res := c.delivery(co.RequestID); res != broker.HealthAuthFailed {
+		t.Fatalf("result after the tick %q", res)
+	}
+}
+
+// A crash after the lease opened but before its wrap was journaled delivered nothing:
+// recovery closes the lease and reports it, so the account is not blocked until expiry
+// (Guide on #16, "Interrupted delivery").
+func TestInterruptedDeliveryClosesTheLease(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	co := c.checkoutTx(600)
+	if err := c.m.Tx(ctx, co.Tx); err != nil {
+		t.Fatal(err)
+	}
+	pop, err := co.Proof(c.challenge(co.RequestID), pqcrypto.PurposeDeliver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.m.Hook = func(p string) error {
+		if p == "lease_open" {
+			return errors.New("kill")
+		}
+		return nil
+	}
+	if err := c.m.Proof(ctx, co.RequestID, pop); !errors.Is(err, broker.ErrStopped) {
+		t.Fatalf("proof: %v", err)
+	}
+	c.m.Hook = nil
+	if err := c.m.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if l := c.account(c.m).Lease; l.State != broker.LeaseClosed || l.CloseReason != "interrupted" {
+		t.Fatalf("lease %+v", l)
+	}
+	if w, res := c.delivery(co.RequestID); w != nil || res != "interrupted" {
+		t.Fatalf("delivery=%v result=%q", w, res)
+	}
+}

@@ -103,6 +103,9 @@ type Lease struct {
 	Attempt                pqcrypto.Counter `json:"attempt"`
 	NextAttemptAt          time.Time        `json:"next_attempt_at"`
 	Mirrored               bool             `json:"mirrored,omitempty"` // the Control Plane holds this state
+	// Delivering is set when the lease opens and cleared with the wrap; a lease still
+	// delivering after a crash or a failed step delivered nothing (flush closes it).
+	Delivering bool `json:"delivering,omitempty"`
 	// Delivery is the checkout wrap until the Control Plane acknowledges it (ciphertext).
 	Delivery *pqcrypto.Recipient `json:"delivery,omitempty"`
 }
