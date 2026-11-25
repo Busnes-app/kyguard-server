@@ -548,10 +548,15 @@ func (v vaultStore) restore(ctx context.Context, tx *sql.Tx, accountID, op strin
 	if _, err := tx.ExecContext(ctx, v.s.rebind(`DELETE FROM rotation_locks WHERE account_id = ? AND operation_id = ?`), accountID, op); err != nil {
 		return err
 	}
+	return v.reinstate(ctx, tx, accountID, prev, prevVer)
+}
+
+// reinstate gives the lock back to the holder an enrollment displaced, if there was one.
+func (v vaultStore) reinstate(ctx context.Context, tx *sql.Tx, accountID string, prev sql.NullString, prevVer sql.NullInt64) error {
 	if !prev.Valid {
 		return nil
 	}
-	_, err = tx.ExecContext(ctx, v.s.rebind(`INSERT INTO rotation_locks (account_id, operation_id, secret_version, created_at) VALUES (?, ?, ?, ?)`),
+	_, err := tx.ExecContext(ctx, v.s.rebind(`INSERT INTO rotation_locks (account_id, operation_id, secret_version, created_at) VALUES (?, ?, ?, ?)`),
 		accountID, prev.String, prevVer.Int64, time.Now().UTC())
 	return err
 }
@@ -610,17 +615,21 @@ func nullVersion(holder string, v uint64) any {
 	return int64(v)
 }
 
-// expire restores the displaced holder of an account's expired reservation.
+// expire restores the displaced holder of an account's expired reservation. The state and
+// deadline check is the delete itself, so an acceptance that commits first keeps its lock
+// (PostgreSQL rechecks the WHERE after waiting on the accepting row).
 func (v vaultStore) expire(ctx context.Context, tx *sql.Tx, accountID string, now time.Time) error {
-	var op string
-	err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT operation_id FROM rotation_locks WHERE account_id = ? AND kind = 'enrollment' AND state = 'reserved' AND expires_at <= ?`), accountID, now).Scan(&op)
+	var prev sql.NullString
+	var prevVer sql.NullInt64
+	err := tx.QueryRowContext(ctx, v.s.rebind(`DELETE FROM rotation_locks WHERE account_id = ? AND kind = 'enrollment' AND state = 'reserved' AND expires_at <= ?
+RETURNING previous_operation_id, previous_secret_version`), accountID, now).Scan(&prev, &prevVer)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	return v.restore(ctx, tx, accountID, op)
+	return v.reinstate(ctx, tx, accountID, prev, prevVer)
 }
 
 func (v vaultStore) AcceptEnrollment(ctx context.Context, accountID, op string, now time.Time) error {

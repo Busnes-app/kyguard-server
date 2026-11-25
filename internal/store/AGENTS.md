@@ -70,7 +70,9 @@ Owns data models, store interfaces (`UserStore`, `SessionStore`, `GroupStore`, `
 - Enrollment (migration 102): `ReserveEnrollment` moves the lock to the enrollment
   operation (allowed with no lock or a quarantined account) and keeps the holder it
   displaced; a reservation still `reserved` after 15 minutes is restored by
-  `ExpireEnrollments` (and lazily, in its own transaction, before any reserve or accept);
+  `ExpireEnrollments` (and lazily, in its own transaction, before any reserve or accept)
+  through one conditional delete (`state = 'reserved'` and past expiry), so an acceptance
+  that commits first keeps the lock (`TestExpiryNeverReleasesAnAcceptanceItRaces`);
   `accepted` never expires; `Complete(..., LockRestore)` reinstates the displaced holder.
 
 ## Verification

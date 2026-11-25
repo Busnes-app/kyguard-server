@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -143,6 +144,121 @@ func TestEnrollmentReservation(t *testing.T) {
 	if op, _, _ := v.Lock(ctx, acct); op != "rot" {
 		t.Fatalf("restore gave %q", op)
 	}
+}
+
+// enrollingAccount is a quarantined account whose stuck rotation "rot" is displaced by the
+// reservation "enr", which expires at the returned deadline.
+func enrollingAccount(t *testing.T, v VaultStore, acct string) time.Time {
+	t.Helper()
+	ctx := context.Background()
+	if err := v.CreateAccount(ctx, &Account{ID: acct, AssetID: "as", Name: acct, AccountKind: "managed"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Reserve(ctx, acct, "rot", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.SetHealth(ctx, acct, "quarantined", ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := v.ReserveEnrollment(ctx, acct, "enr", 0, now, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	return now.Add(time.Minute)
+}
+
+// acceptedKeepsTheLock fails when an accepted enrollment no longer holds the account's lock.
+func acceptedKeepsTheLock(t *testing.T, v VaultStore, acct string) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := v.EnrollmentState(ctx, acct, "enr")
+	op, _, _ := v.Lock(ctx, acct)
+	if err != nil || st != "accepted" || op != "enr" {
+		t.Fatalf("%s: accepted, then state %q (%v) and lock %q", acct, st, err, op)
+	}
+}
+
+// An acceptance that started before the deadline and commits while expiry is between
+// finding the reservation and restoring the displaced lock keeps the lock (PR #15 review).
+// The acceptance is held open on the row so expiry runs into it deterministically.
+func TestExpiryNeverReleasesAnAcceptanceItRaces(t *testing.T) {
+	s, _ := guardStoreFor(t)
+	if s.driver != "postgres" {
+		t.Skip("SQLite has one writer connection; needs KY_TEST_POSTGRES_DSN")
+	}
+	v := s.Vault()
+	ctx := context.Background()
+	if err := v.CreateAsset(ctx, &Asset{ID: "as", Name: "host"}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := enrollingAccount(t, v, "ac")
+	accept, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer accept.Rollback()
+	if _, err := accept.ExecContext(ctx, `UPDATE rotation_locks SET state = 'accepted' WHERE account_id = 'ac' AND operation_id = 'enr' AND state = 'reserved'`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := v.ExpireEnrollments(ctx, deadline.Add(time.Second)); done <- err }()
+	for start := time.Now(); ; time.Sleep(5 * time.Millisecond) {
+		var waiting int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM pg_locks WHERE NOT granted`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			break
+		}
+		if time.Since(start) > 10*time.Second {
+			t.Fatal("expiry never waited on the acceptance")
+		}
+	}
+	if err := accept.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	acceptedKeepsTheLock(t, v, "ac")
+}
+
+// Acceptance just before the deadline races expiry just after it, many times: an
+// acceptance that succeeded always keeps the lock (PR #15 review).
+func TestAcceptRacingExpiry(t *testing.T) {
+	s, _ := guardStoreFor(t)
+	v := s.Vault()
+	ctx := context.Background()
+	if err := v.CreateAsset(ctx, &Asset{ID: "as", Name: "host"}); err != nil {
+		t.Fatal(err)
+	}
+	accepted := 0
+	for i := range 200 {
+		acct := fmt.Sprintf("ac%d", i)
+		deadline := enrollingAccount(t, v, acct)
+		var wg sync.WaitGroup
+		var aerr, eerr error
+		start := make(chan struct{})
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			aerr = v.AcceptEnrollment(ctx, acct, "enr", deadline.Add(-time.Second))
+		}()
+		go func() { defer wg.Done(); <-start; _, eerr = v.ExpireEnrollments(ctx, deadline.Add(time.Second)) }()
+		close(start)
+		wg.Wait()
+		if eerr != nil {
+			t.Fatal(eerr)
+		}
+		if aerr == nil {
+			accepted++
+			acceptedKeepsTheLock(t, v, acct)
+		} else if !errors.Is(aerr, ErrConflict) {
+			t.Fatal(aerr)
+		}
+	}
+	t.Logf("%d of 200 acceptances won the race", accepted)
 }
 
 // The paged chain queries read only the requested slice of an account's history (PR
