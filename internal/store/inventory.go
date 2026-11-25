@@ -57,6 +57,8 @@ type InventoryStore interface {
 	SetValue(ctx context.Context, definitionID, entityID, value, source string, audit *AuditRecord) error
 	// Values maps entity ID to attribute key to value for one entity type.
 	Values(ctx context.Context, entity string) (map[string]map[string]string, error)
+	// EntityValues maps attribute key to value for one entity.
+	EntityValues(ctx context.Context, entity, entityID string) (map[string]string, error)
 
 	// ForgetUser clears the user as account owner, deletes their attribute values and
 	// deletes the user, in one transaction (ErrNotFound for an unknown user, nothing changed).
@@ -525,7 +527,19 @@ func (s *SQLStore) applySCIMAttributes(ctx context.Context, tx *sql.Tx, userID s
 }
 
 func (v inventoryStore) Values(ctx context.Context, entity string) (map[string]map[string]string, error) {
-	rows, err := v.s.db.QueryContext(ctx, v.s.rebind(`SELECT v.entity_id, d.key, v.value FROM attribute_values v JOIN attribute_definitions d ON d.id = v.definition_id WHERE d.entity = ?`), entity)
+	return v.values(ctx, `d.entity = ?`, entity)
+}
+
+func (v inventoryStore) EntityValues(ctx context.Context, entity, entityID string) (map[string]string, error) {
+	out, err := v.values(ctx, `d.entity = ? AND v.entity_id = ?`, entity, entityID)
+	if err != nil || out[entityID] == nil {
+		return map[string]string{}, err
+	}
+	return out[entityID], nil
+}
+
+func (v inventoryStore) values(ctx context.Context, where string, args ...any) (map[string]map[string]string, error) {
+	rows, err := v.s.db.QueryContext(ctx, v.s.rebind(`SELECT v.entity_id, d.key, v.value FROM attribute_values v JOIN attribute_definitions d ON d.id = v.definition_id WHERE `+where), args...)
 	if err != nil {
 		return nil, err
 	}
