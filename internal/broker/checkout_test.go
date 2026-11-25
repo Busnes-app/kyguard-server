@@ -592,3 +592,45 @@ func TestUnacknowledgedCleanupReceiptsResendOnTheNextTick(t *testing.T) {
 		t.Fatalf("writes=%d run %s lease %s", writes, a.Run.State, a.Lease.State)
 	}
 }
+
+// failResults fails the next n result deliveries.
+type failResults struct {
+	broker.ControlPlane
+	n int
+}
+
+func (f *failResults) TxResult(ctx context.Context, r brokerproto.TxResultRequest) error {
+	if f.n > 0 {
+		f.n--
+		return errors.New("transient")
+	}
+	return f.ControlPlane.TxResult(ctx, r)
+}
+
+// A manual_rotation result that could not be delivered is journaled and re-sent by the
+// next tick, and by recovery after a restart (Guide on #16, "Lost results").
+func TestManualRotationResultIsResent(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	cp := c.m.CP
+	c.m.CP = &failResults{ControlPlane: cp, n: 1}
+	mr := c.tx(c.alice, pqcrypto.Action{ActionType: pqcrypto.ActionManualRotation})
+	if err := c.m.Tx(ctx, mr.Tx); err != nil {
+		t.Fatal(err)
+	}
+	if _, res := c.delivery(mr.RequestID); res != "" {
+		t.Fatalf("result %q despite the failed delivery", res)
+	}
+	if a := c.account(c.m); len(a.Results) != 1 {
+		t.Fatalf("%d results journaled", len(a.Results))
+	}
+	if err := c.m.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, res := c.delivery(mr.RequestID); res != "ok" {
+		t.Fatalf("result after the tick %q", res)
+	}
+	if a := c.account(c.m); len(a.Results) != 0 || !a.Run.ResultQueued {
+		t.Fatalf("results %+v queued=%v", a.Results, a.Run.ResultQueued)
+	}
+}
