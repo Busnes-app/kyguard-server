@@ -46,12 +46,44 @@ func TestEnrollmentRoutes(t *testing.T) {
 	pol.EnrollerPrincipalIDs = []pqcrypto.UUID{alice.ID}
 	submit(d.Signed(t, pol))
 
+	tr := d.Trust(t)
+	ms, _ := st.Guard().Manifests(ctx, 0)
+	for _, m := range ms {
+		tr.Accept(m.Manifest)
+	}
+	reserve := func(who *pqtest.Principal, id pqcrypto.UUID) []byte {
+		r, err := cli.SignReservation(tr, acct, id, who.ID, who.Sig, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := json.Marshal(r)
+		return b
+	}
 	base := "/api/accounts/" + string(acct) + "/enrollments"
 	reqID := pqtest.UUID()
-	if w := postJSON(srv, nil, base, []byte(`{"request_id":"`+string(reqID)+`"}`)); w.Code != http.StatusUnauthorized {
+	if w := postJSON(srv, nil, base, reserve(alice, reqID)); w.Code != http.StatusUnauthorized {
 		t.Fatalf("anonymous: %d", w.Code)
 	}
-	w := postJSON(srv, user, base, []byte(`{"request_id":"`+string(reqID)+`"}`))
+	// Security review of #15: a session that is not an enroller takes no lock.
+	forged, _ := cli.SignReservation(tr, acct, reqID, alice.ID, bob.Sig, time.Now()) // claims alice, signed by bob
+	forged.SigKeyID, _ = alice.Sig.Public().SigKeyID()
+	forgedBody, _ := json.Marshal(forged)
+	for name, body := range map[string][]byte{
+		"forged":       forgedBody,
+		"non-enroller": reserve(bob, reqID),
+		"unsigned":     []byte(`{"request_id":"` + string(reqID) + `"}`),
+	} {
+		if w := postJSON(srv, user, base, body); w.Code != http.StatusForbidden {
+			t.Fatalf("%s: %d %s", name, w.Code, w.Body)
+		}
+		if op, _, _ := st.Vault().Lock(ctx, string(acct)); op != "" {
+			t.Fatalf("%s took the lock", name)
+		}
+		if a, _ := st.Vault().GetAccount(ctx, string(acct)); a.HighestSecretVersion != 0 {
+			t.Fatalf("%s allocated a version", name)
+		}
+	}
+	w := postJSON(srv, user, base, reserve(alice, reqID))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("reserve: %d %s", w.Code, w.Body)
 	}
@@ -64,7 +96,7 @@ func TestEnrollmentRoutes(t *testing.T) {
 	if res.SecretVersion != "1" || res.BrokerID != string(b.ID) {
 		t.Fatalf("reservation %+v", res)
 	}
-	if w := postJSON(srv, user, base, []byte(`{"request_id":"`+string(pqtest.UUID())+`"}`)); w.Code != http.StatusConflict {
+	if w := postJSON(srv, user, base, reserve(alice, pqtest.UUID())); w.Code != http.StatusConflict {
 		t.Fatalf("second reservation: %d", w.Code)
 	}
 	status := func() string {
@@ -82,11 +114,6 @@ func TestEnrollmentRoutes(t *testing.T) {
 		t.Fatalf("state %s", s)
 	}
 
-	tr := d.Trust(t)
-	ms, _ := st.Guard().Manifests(ctx, 0)
-	for _, m := range ms {
-		tr.Accept(m.Manifest)
-	}
 	good, err := cli.SealEnrollment(tr, acct, reqID, 1, alice.ID, alice.Sig, []byte("pw"), time.Now())
 	if err != nil {
 		t.Fatal(err)

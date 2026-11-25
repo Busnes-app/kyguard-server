@@ -39,20 +39,25 @@ func activeBroker(tr *pqcrypto.Trust, account pqcrypto.UUID) (pqcrypto.UUID, err
 }
 
 func (s *Server) handleReserveEnrollment(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		RequestID pqcrypto.UUID `json:"request_id"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || !req.RequestID.Valid() {
-		s.writeError(w, http.StatusBadRequest, "request_id is required")
+	var req brokerproto.EnrollReservation
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxManifestBody)).Decode(&req); err != nil || !req.RequestID.Valid() {
+		s.writeError(w, http.StatusBadRequest, "a signed reservation is required")
 		return
 	}
 	account := pqcrypto.UUID(r.PathValue("id"))
 	var broker pqcrypto.UUID
-	if err := s.trust.View(r.Context(), func(tr *pqcrypto.Trust) (err error) {
-		broker, err = activeBroker(tr, account)
-		return err
-	}); err != nil {
+	err := s.trust.View(r.Context(), func(tr *pqcrypto.Trust) (err error) {
+		if broker, err = activeBroker(tr, account); err != nil {
+			return errNoPolicy
+		}
+		return enrollerSigned(tr, &req, account, time.Now().UTC())
+	})
+	switch {
+	case errors.Is(err, errNoPolicy):
 		s.writeError(w, http.StatusConflict, "the account has no managed policy with an active broker")
+		return
+	case err != nil:
+		s.writeError(w, http.StatusForbidden, "the reservation is not signed by an enroller of this account")
 		return
 	}
 	op, err := pqcrypto.RequestOpID(req.RequestID, 0)
@@ -171,4 +176,37 @@ func (s *Server) handleEnrollmentStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.writeJSON(w, http.StatusOK, map[string]string{"state": state})
+}
+
+var errNoPolicy = errors.New("no managed policy")
+
+// enrollerSigned accepts a reservation only if it is recent, for this deployment and
+// account, from a principal in the current policy's enroller_principal_ids, and signed by an
+// active key of that principal's verified enrollment.
+func enrollerSigned(tr *pqcrypto.Trust, req *brokerproto.EnrollReservation, account pqcrypto.UUID, now time.Time) error {
+	p, _ := tr.Policy(account)
+	if p == nil || req.AccountID != account || req.DeploymentID != tr.DeploymentID() {
+		return pqcrypto.ErrNotAllowed
+	}
+	if d := now.Sub(req.IssuedAt.Time); d > brokerproto.ReservationMaxSkew || d < -brokerproto.ReservationMaxSkew {
+		return pqcrypto.ErrExpired
+	}
+	allowed := false
+	for _, id := range p.EnrollerPrincipalIDs {
+		allowed = allowed || id == req.PrincipalID
+	}
+	ke := tr.Enrollment(req.PrincipalID)
+	if !allowed || ke == nil {
+		return pqcrypto.ErrNotAllowed
+	}
+	d, err := req.Digest()
+	if err != nil {
+		return err
+	}
+	for _, k := range ke.Keys {
+		if k.Status == pqcrypto.StatusActive && k.SigKeyID == req.SigKeyID {
+			return k.SigPub.Verify(d, req.Sig)
+		}
+	}
+	return pqcrypto.ErrUnknownKey
 }

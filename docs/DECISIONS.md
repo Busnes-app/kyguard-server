@@ -206,6 +206,11 @@ contradicts itself. Each names its section. The most secure reading wins.
 54. §4.5 (CLI wiring). `cli.SealEnrollment` is the CLI's half (seal, sign the candidate and
     the `enroll` transaction from its own verified state); the `kyguard-cli vault enroll`
     command lands with the session-backed `cli.Client` (§7.6).
+55. §4.5 step 1 (who may reserve). The reservation request is signed by an active key of a
+    principal in the current policy's `enroller_principal_ids` (domain type
+    `enroll_reservation`, at most 5 minutes old); otherwise 403 and no lock is taken. It
+    stops anyone who is not an enroller from holding the account's lock for 15 minutes; it
+    authorizes nothing at the broker.
 61. §4.1 (sync frame bound). `cptrust.Submit` refuses a manifest over 512 KiB
     (`MaxManifest`), so any stored manifest fits a 4 MiB channel frame base64url-encoded. A
     `sync` page carries at most 64 manifests whose encoded size stays within `SyncBudget`
