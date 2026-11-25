@@ -36,3 +36,17 @@ it('explains a blocked enrollment and offers only sign-out', () => {
   expect(screen.queryByLabelText('Authenticator code')).toBeNull();
   expect(screen.getByRole('button', { name: 'Sign out' })).toBeTruthy();
 });
+
+it('retries only the session load after an accepted code', async () => {
+  const fetcher = vi.fn(async () => new Response('{"authenticated":true}', { status: 200 }));
+  vi.stubGlobal('fetch', fetcher);
+  const done = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(undefined);
+  render(<StepUp state={{ required: true, enrolled: true, can_enroll: false }} onDone={done} onLogout={vi.fn()} />);
+  fireEvent.change(screen.getByLabelText('Authenticator code'), { target: { value: '123456' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+  expect((await screen.findByRole('alert')).textContent).toContain('could not load your session');
+  expect(screen.queryByLabelText('Authenticator code')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+  await waitFor(() => expect(done).toHaveBeenCalledTimes(2));
+  expect(fetcher).toHaveBeenCalledOnce();
+});
