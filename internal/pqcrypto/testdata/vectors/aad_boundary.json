@@ -1,0 +1,60 @@
+[
+  {
+    "name": "byte moved across a field boundary",
+    "domain_a": "kyguard/1/recipient",
+    "fields_a": [
+      "managed",
+      "ab",
+      "c"
+    ],
+    "aad_a_hex": "6b7967756172642f312f726563697069656e7400000000076d616e616765640000000261620000000163",
+    "domain_b": "kyguard/1/recipient",
+    "fields_b": [
+      "managed",
+      "a",
+      "bc"
+    ],
+    "aad_b_hex": "6b7967756172642f312f726563697069656e7400000000076d616e616765640000000161000000026263"
+  },
+  {
+    "name": "field split in two",
+    "domain_a": "kyguard/1/payload",
+    "fields_a": [
+      "vaultedmanaged"
+    ],
+    "aad_a_hex": "6b7967756172642f312f7061796c6f6164000000000e7661756c7465646d616e61676564",
+    "domain_b": "kyguard/1/payload",
+    "fields_b": [
+      "vaulted",
+      "managed"
+    ],
+    "aad_b_hex": "6b7967756172642f312f7061796c6f616400000000077661756c746564000000076d616e61676564"
+  },
+  {
+    "name": "empty field added",
+    "domain_a": "kyguard/1/payload",
+    "fields_a": [
+      "x"
+    ],
+    "aad_a_hex": "6b7967756172642f312f7061796c6f6164000000000178",
+    "domain_b": "kyguard/1/payload",
+    "fields_b": [
+      "x",
+      ""
+    ],
+    "aad_b_hex": "6b7967756172642f312f7061796c6f616400000000017800000000"
+  },
+  {
+    "name": "domain absorbs a field byte",
+    "domain_a": "kyguard/1/payloa",
+    "fields_a": [
+      "dx"
+    ],
+    "aad_a_hex": "6b7967756172642f312f7061796c6f6100000000026478",
+    "domain_b": "kyguard/1/payload",
+    "fields_b": [
+      "x"
+    ],
+    "aad_b_hex": "6b7967756172642f312f7061796c6f6164000000000178"
+  }
+]
