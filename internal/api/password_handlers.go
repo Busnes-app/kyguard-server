@@ -63,7 +63,9 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	factorID, err := s.factors.Check(r.Context(), user.ID, "", req.TOTPCode)
 	if err != nil {
 		if errors.Is(err, auth.ErrCodeRejected) {
-			if err := s.store.Audit().LogAudit(context.WithoutCancel(r.Context()), &store.AuditRecord{UserID: user.ID, Action: "auth.totp_failed", Resource: "password", Details: "severity=critical", IPAddress: s.requestIP(r)}); err != nil {
+			if err := detachedWrite(r, func(ctx context.Context) error {
+				return s.store.Audit().LogAudit(ctx, &store.AuditRecord{UserID: user.ID, Action: "auth.totp_failed", Resource: "password", Details: "severity=critical", IPAddress: s.requestIP(r)})
+			}); err != nil {
 				s.writeError(w, http.StatusServiceUnavailable, "Audit unavailable")
 				return
 			}

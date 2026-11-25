@@ -124,7 +124,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			Details: "severity=critical outcome=" + outcome, IPAddress: s.requestIP(r)}
 	}
 	audit := func(userID, outcome string) bool {
-		if err := s.store.Audit().LogAudit(context.WithoutCancel(r.Context()), record(userID, outcome)); err != nil {
+		if err := detachedWrite(r, func(ctx context.Context) error { return s.store.Audit().LogAudit(ctx, record(userID, outcome)) }); err != nil {
 			s.writeError(w, http.StatusServiceUnavailable, "Authentication temporarily unavailable")
 			return false
 		}
@@ -161,7 +161,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	refund() // only failures stay counted
 
-	if _, _, err := s.sessions.IssueBreakGlassSession(context.WithoutCancel(r.Context()), w, r, user, factorID, record(user.ID, "success")); err != nil {
+	if err := detachedWrite(r, func(ctx context.Context) error {
+		_, _, err := s.sessions.IssueBreakGlassSession(ctx, w, r, user, factorID, record(user.ID, "success"))
+		return err
+	}); err != nil {
 		// ErrNotFound: the password or factor was replaced since it was checked.
 		if errors.Is(err, store.ErrNotFound) && audit(user.ID, "superseded") {
 			s.writeError(w, http.StatusUnauthorized, "Invalid credentials")
@@ -203,7 +206,9 @@ func (s *Server) handleBreakGlassReason(w http.ResponseWriter, r *http.Request) 
 	// The reason and its audit record commit together, so a failed audit leaves no reason
 	// and the user can simply retry.
 	rec := &store.AuditRecord{UserID: user.ID, Action: "break_glass.reason", Resource: "session", Details: "severity=critical reason=" + strconv.Quote(req.Reason), IPAddress: s.requestIP(r)}
-	if err := s.store.Sessions().SetBreakGlassReason(context.WithoutCancel(r.Context()), sess.TokenHash, req.Reason, rec); err != nil {
+	if err := detachedWrite(r, func(ctx context.Context) error {
+		return s.store.Sessions().SetBreakGlassReason(ctx, sess.TokenHash, req.Reason, rec)
+	}); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			s.writeError(w, http.StatusConflict, "This session already has a reason")
 			return

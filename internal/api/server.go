@@ -486,6 +486,18 @@ func sameOrigin(origin, appURL string) bool {
 	return err == nil && o.Scheme == a.Scheme && o.Host == a.Host
 }
 
+// detachedWriteTimeout bounds a write that must not be cut short by the client leaving: it
+// keeps going after a disconnect, but a stalled database cannot hold it past this.
+const detachedWriteTimeout = 5 * time.Second
+
+// detachedWrite runs write on a context the client disconnecting does not cancel, bounded by
+// detachedWriteTimeout.
+func detachedWrite(r *http.Request, write func(context.Context) error) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), detachedWriteTimeout)
+	defer cancel()
+	return write(ctx)
+}
+
 func (s *Server) writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
