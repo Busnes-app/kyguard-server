@@ -48,7 +48,9 @@ func unitService(t *testing.T) []string {
 }
 
 // The startup step runs under the unit's own sandbox and syscall filter, through a user
-// systemd manager. User=/Group= (no user switch there) and ExecStart=/Restart= are dropped;
+// systemd manager. User=/Group= (no user switch there), CapabilityBoundingSet= (an
+// unprivileged manager can't drop it, and its process holds no capabilities anyway) and
+// ExecStart=/Restart= are dropped;
 // a copy of the test binary runs from a bound /var/tmp directory. Skipped
 // where no user manager runs (CI containers); run it on a systemd host.
 func TestDisableCoreDumpsUnderTheUnit(t *testing.T) {
@@ -82,7 +84,7 @@ func TestDisableCoreDumpsUnderTheUnit(t *testing.T) {
 	args := []string{"--user", "--wait", "--pipe", "--quiet"}
 	for _, line := range unitService(t) {
 		switch strings.SplitN(line, "=", 2)[0] {
-		case "User", "Group", "ExecStart", "Restart", "RestartSec", "Type":
+		case "User", "Group", "CapabilityBoundingSet", "ExecStart", "Restart", "RestartSec", "Type":
 			continue
 		}
 		args = append(args, "-p", line)
