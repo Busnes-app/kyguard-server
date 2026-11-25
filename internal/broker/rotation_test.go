@@ -650,3 +650,34 @@ func TestQuarantineHealthSurvivesACrashBeforeItsReport(t *testing.T) {
 		t.Fatal("recovery logged in to the target again")
 	}
 }
+
+// Account pages follow accounts_next: a page whose accounts were all filtered out still
+// advances, and a page that does not advance is refused (PR Reviewer Guide on #10).
+func TestSyncFollowsTheAccountCursor(t *testing.T) {
+	r := newRig(t)
+	m := r.machine()
+	defer m.J.Close()
+	ctx := context.Background()
+	var asked []pqcrypto.UUID
+	stuck := false
+	m.CP = &wrapCP{ControlPlane: r.cpw, sync: func(_ context.Context, req brokerproto.SyncRequest) (*brokerproto.SyncReply, error) {
+		asked = append(asked, req.AccountsAfter)
+		switch {
+		case stuck:
+			return &brokerproto.SyncReply{Accounts: []pqcrypto.UUID{}, AccountsNext: req.AccountsAfter}, nil
+		case req.AccountsAfter == "":
+			return &brokerproto.SyncReply{Accounts: []pqcrypto.UUID{}, AccountsNext: "00000000-0000-7000-8000-000000000001"}, nil
+		}
+		return &brokerproto.SyncReply{Accounts: []pqcrypto.UUID{r.pol.AccountID}, Done: true}, nil
+	}}
+	if err := m.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(asked) != 2 || asked[1] != "00000000-0000-7000-8000-000000000001" {
+		t.Fatalf("pages asked after %v", asked)
+	}
+	stuck = true
+	if err := m.Sync(ctx); err == nil || !strings.Contains(err.Error(), "no progress") {
+		t.Fatalf("a page that does not advance: %v", err)
+	}
+}
