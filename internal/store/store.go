@@ -105,6 +105,11 @@ type SessionStore interface {
 	// EndSSOSession fences the issuer's login sid until fenceUntil, then ends its sessions.
 	EndSSOSession(ctx context.Context, issuer, sid string, fenceUntil time.Time) error
 	CleanExpiredSessions(ctx context.Context) error
+	// ExchangeSession replaces a pending session with active (and a first factor when
+	// newFactor is set) in one transaction; see sessionStore.ExchangeSession.
+	ExchangeSession(ctx context.Context, pendingHash, passwordHash string, active *Session, newFactor *MFAFactor) error
+	// SetPendingSecret stores the sealed enrollment secret on a pending session.
+	SetPendingSecret(ctx context.Context, tokenHash, sealed string) error
 	// SetBreakGlassReason records the reason once, with its audit record in the same
 	// transaction; ErrConflict when one is already set.
 	SetBreakGlassReason(ctx context.Context, tokenHash, reason string, audit *AuditRecord) error

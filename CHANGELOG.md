@@ -13,6 +13,11 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 
 ### Changes
 
+- TOTP step-up after every SSO sign-in (spec §7.3): the callback issues a five-minute pending
+  session limited to `/api/auth/me`, logout and `/api/auth/stepup/*`; a TOTP code exchanges it
+  for a new 12-hour active session bound to the same login. First-factor enrollment
+  (`/api/auth/stepup/enroll`, `/enroll/confirm`) needs an ID token that asserted MFA. The web
+  shell shows a step-up screen. Migration 14 (`kyguard_pending_sessions`).
 - SSO identity is `(issuer, subject)` (spec §7.2): `users.sso_issuer` with a unique index,
   sessions record their issuer, and both back-channel logout fences are keyed by issuer.
   SCIM accounts take `KY_SCIM_ISSUER` (default `KY_KYSIGNON_ISSUER`).
