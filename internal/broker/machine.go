@@ -379,25 +379,38 @@ func (m *Machine) probe(ctx context.Context, a *Account, rc *rotationContext, ba
 }
 
 // release appends commit_target, completes the (empty, 1A) dependencies and appends
-// release, then sends both (§4.2).
+// release, then sends both (§4.2). It resumes from whatever the journal already holds, so a
+// restart between the two receipts finishes the run instead of stranding it.
 func (m *Machine) release(ctx context.Context, a *Account, env *pqcrypto.VerifiedEnvelope) error {
 	ch := pqcrypto.NewChain(env)
-	commit, err := m.receipt(ch, a.Run.OperationID, pqcrypto.ReceiptCommitTarget, "")
-	if err != nil {
-		return err
+	for _, r := range a.Run.Receipts {
+		if _, err := m.Trust.Append(ch, r, pqcrypto.ReceiptContext{}); err != nil {
+			return err
+		}
 	}
-	a.Run.State, a.Run.Receipts = StateTargetVerified, []pqcrypto.B64{commit}
-	if err := m.J.Save(a); err != nil {
-		return err
+	if !ch.CommitTarget {
+		commit, err := m.receipt(ch, a.Run.OperationID, pqcrypto.ReceiptCommitTarget, "")
+		if err != nil {
+			return err
+		}
+		a.Run.State, a.Run.Receipts = StateTargetVerified, []pqcrypto.B64{commit}
+		if err := m.J.Save(a); err != nil {
+			return err
+		}
+		if err := m.hook("target_verified"); err != nil {
+			return err
+		}
 	}
-	a.Run.State = StateDependenciesComplete // 1A descriptors carry no dependencies
-	rel, err := m.receipt(ch, a.Run.OperationID, pqcrypto.ReceiptRelease, "")
-	if err != nil {
-		return err
-	}
-	a.Run.Receipts = append(a.Run.Receipts, rel)
-	if err := m.J.Save(a); err != nil {
-		return err
+	if !ch.Released {
+		a.Run.State = StateDependenciesComplete // 1A descriptors carry no dependencies
+		rel, err := m.receipt(ch, a.Run.OperationID, pqcrypto.ReceiptRelease, "")
+		if err != nil {
+			return err
+		}
+		a.Run.Receipts = append(a.Run.Receipts, rel)
+		if err := m.J.Save(a); err != nil {
+			return err
+		}
 	}
 	return m.send(ctx, a)
 }
@@ -521,6 +534,12 @@ func (m *Machine) recover(ctx context.Context, a *Account) error {
 	switch {
 	case r == nil || r.Sent:
 		return nil
+	case r.State == StateTargetVerified || r.State == StateDependenciesComplete:
+		env, err := m.Trust.VerifyEnvelope(r.NewEnvelope, pqcrypto.EnvelopeContext{})
+		if err != nil {
+			return err
+		}
+		return m.release(ctx, a, env) // finish the receipts, then send
 	case len(r.Receipts) > 0:
 		return m.send(ctx, a)
 	case r.ProbeDone:

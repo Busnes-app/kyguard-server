@@ -80,6 +80,9 @@ func TestCrashThenRestart(t *testing.T) {
 		{"probe_recorded", 1, broker.StateWriteOutcomeUnknown, true},
 		// The result was journaled and not delivered: re-sent, no second write.
 		{"before_send", 1, broker.StateReleaseAuthorized, false},
+		// Between commit_target and release: the restart signs release and finishes
+		// (PR Reviewer Guide on #11).
+		{"target_verified", 1, broker.StateReleaseAuthorized, false},
 	}
 	for _, c := range cases {
 		t.Run(c.point, func(t *testing.T) {
@@ -299,7 +302,11 @@ func TestSyncRefusesRollbackForksAndStaleChains(t *testing.T) {
 		t.Fatalf("rotate after the policy change: %v", err)
 	}
 
-	real, err := r.cpw.Sync(ctx)
+	real, err := r.cpw.Sync(ctx, 0)
+	if err != nil || !real.Done {
+		t.Fatal(err)
+	}
+	realAcct, err := r.cpw.SyncAccount(ctx, r.pol.AccountID, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,15 +315,17 @@ func TestSyncRefusesRollbackForksAndStaleChains(t *testing.T) {
 	old := *r.pol
 	old.Signatures = nil
 	stale := *real
-	stale.Accounts = []brokerproto.AccountState{real.Accounts[0]}
-	st := stale.Accounts[0]
+	stale.Manifests = append(append([]pqcrypto.B64(nil), real.Manifests...), r.cp.Dep.Signed(t, &old), r.cp.Dep.Signed(t, &fork))
+	st := *realAcct
 	st.Chains = append([]brokerproto.ChainState(nil), st.Chains...)
 	last := st.Chains[len(st.Chains)-1]
 	last.Receipts = last.Receipts[:1] // the latest release is missing
 	st.Chains[len(st.Chains)-1] = last
-	stale.Accounts[0] = st
-	stale.Manifests = append(append([]pqcrypto.B64(nil), real.Manifests...), r.cp.Dep.Signed(t, &old), r.cp.Dep.Signed(t, &fork))
-	m.CP = &wrapCP{ControlPlane: r.cpw, sync: func(context.Context) (*brokerproto.SyncReply, error) { return &stale, nil }}
+	m.CP = &wrapCP{ControlPlane: r.cpw,
+		sync: func(context.Context, int) (*brokerproto.SyncReply, error) { return &stale, nil },
+		account: func(context.Context, pqcrypto.UUID, pqcrypto.Counter) (*brokerproto.AccountState, error) {
+			return &st, nil
+		}}
 	r.alerts = nil
 	if err := m.Sync(ctx); err != nil {
 		t.Fatal(err)
@@ -366,5 +375,24 @@ func TestAuthFailureQuarantineSurvivesAFailedDelivery(t *testing.T) {
 	}
 	if a := r.account(m2); !a.Quarantined || a.Health != broker.HealthAuthFailed || !a.Run.Sent {
 		t.Fatalf("%+v", a)
+	}
+}
+
+// The broker follows sync pages to the end (PR Reviewer Guide on #10).
+func TestSyncFollowsEveryPage(t *testing.T) {
+	r := newRig(t)
+	var ids []pqcrypto.UUID
+	for range brokerproto.SyncPage + 3 {
+		ids = append(ids, r.cp.Account(nil).AccountID)
+	}
+	m := r.machine()
+	defer m.J.Close()
+	if err := m.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range ids {
+		if p, _ := m.Trust.Policy(id); p == nil {
+			t.Fatalf("policy of %s not synced", id)
+		}
 	}
 }
