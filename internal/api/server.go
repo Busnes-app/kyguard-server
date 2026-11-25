@@ -43,6 +43,8 @@ type Server struct {
 	recovery   recoveryClient
 	trust      *cptrust.Trust
 	brokerCA   *brokerproto.CA // nil until kyguard-server init
+	brokerOnce sync.Once
+	broker     *brokerproto.Listener // the one listener; it holds the broker connections
 	mux        *http.ServeMux
 	attemptsMu sync.Mutex
 	attempts   map[string]attemptWindow
@@ -503,5 +505,8 @@ func (s *Server) BrokerListener() *brokerproto.Listener {
 	if s.brokerCA == nil || s.config.Broker.Hostname == "" {
 		return nil
 	}
-	return &brokerproto.Listener{Store: s.store, Trust: s.trust, CA: s.brokerCA, MinVersion: s.config.Broker.MinVersion}
+	s.brokerOnce.Do(func() {
+		s.broker = &brokerproto.Listener{Store: s.store, Trust: s.trust, CA: s.brokerCA, MinVersion: s.config.Broker.MinVersion}
+	})
+	return s.broker
 }
