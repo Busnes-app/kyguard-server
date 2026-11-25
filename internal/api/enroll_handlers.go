@@ -16,6 +16,9 @@ import (
 // before its lock goes back to the holder it displaced (§4.5 step 1).
 const EnrollmentReservationTTL = 15 * time.Minute
 
+// maxRequestBody caps a signed request body (an enrollment, a transaction, a proof).
+const maxRequestBody = 512 << 10
+
 func (s *Server) enrollRoutes() {
 	// TODO(hawthorn §7.5): classify + step-up (fresh step-up required, §4.5).
 	s.mux.HandleFunc("POST /api/accounts/{id}/enrollments", s.requireAuthenticated(s.handleReserveEnrollment))
@@ -40,7 +43,7 @@ func activeBroker(tr *pqcrypto.Trust, account pqcrypto.UUID) (pqcrypto.UUID, err
 
 func (s *Server) handleReserveEnrollment(w http.ResponseWriter, r *http.Request) {
 	var req brokerproto.EnrollReservation
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxManifestBody)).Decode(&req); err != nil || !req.RequestID.Valid() {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBody)).Decode(&req); err != nil || !req.RequestID.Valid() {
 		s.writeError(w, http.StatusBadRequest, "a signed reservation is required")
 		return
 	}
@@ -90,7 +93,7 @@ func (s *Server) handleReserveEnrollment(w http.ResponseWriter, r *http.Request)
 // which checks them again and alone decides.
 func (s *Server) handleSubmitEnrollment(w http.ResponseWriter, r *http.Request) {
 	var req brokerproto.EnrollPush
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxManifestBody)).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBody)).Decode(&req); err != nil {
 		s.writeError(w, http.StatusBadRequest, "tx and envelope are required")
 		return
 	}
@@ -150,7 +153,10 @@ func (s *Server) handleSubmitEnrollment(w http.ResponseWriter, r *http.Request) 
 	txd, _ := pqcrypto.ObjDigest(tx)
 	vs := s.store.Vault()
 	if err := vs.PutEnvelope(r.Context(), string(op), &store.StoredEnvelope{EnvelopeID: string(v.EnvelopeID), AccountID: string(account), SecretVersion: version,
-		EnvelopeKind: v.EnvelopeKind, Digest: string(v.Digest.Hex()), Envelope: req.Envelope}); err != nil {
+		EnvelopeKind: v.EnvelopeKind, Digest: string(v.Digest.Hex()), Envelope: req.Envelope}); errors.Is(err, store.ErrTooLarge) {
+		s.writeError(w, http.StatusRequestEntityTooLarge, "candidate envelope too large")
+		return
+	} else if err != nil {
 		s.writeError(w, http.StatusConflict, "the reservation changed")
 		return
 	}
@@ -158,10 +164,9 @@ func (s *Server) handleSubmitEnrollment(w http.ResponseWriter, r *http.Request) 
 		s.writeError(w, http.StatusConflict, "a different transaction holds this request id")
 		return
 	}
-	l := s.BrokerListener()
 	body, _ := json.Marshal(req)
-	if l == nil || l.Send(r.Context(), broker, brokerproto.Message{V: 1, Type: brokerproto.MsgEnroll, Body: body}) != nil {
-		s.writeError(w, http.StatusServiceUnavailable, "the broker is not connected; submit again")
+	if err := s.relay(r.Context(), broker, brokerproto.Message{V: 1, Type: brokerproto.MsgEnroll, Body: body}, tx.ExpiresAt.Time); err != nil {
+		s.writeError(w, http.StatusServiceUnavailable, "could not relay to the broker; submit again")
 		return
 	}
 	s.writeJSON(w, http.StatusAccepted, map[string]string{"state": "relayed"})

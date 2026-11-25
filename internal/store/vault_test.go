@@ -3,11 +3,22 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 func vaultAccount(t *testing.T) (VaultStore, string) {
+	t.Helper()
+	v, _, acct := vaultAccountGuard(t)
+	return v, acct
+}
+
+// vaultAccountGuard also returns the guard store, with policy epoch 1 (digest "p1",
+// descriptor "d1") accepted for the account.
+func vaultAccountGuard(t *testing.T) (VaultStore, GuardStore, string) {
 	t.Helper()
 	s, _ := guardStoreFor(t)
 	v := s.Vault()
@@ -18,7 +29,10 @@ func vaultAccount(t *testing.T) (VaultStore, string) {
 	if err := v.CreateAccount(ctx, &Account{ID: "ac", AssetID: "as", Name: "svc", AccountKind: "managed"}); err != nil {
 		t.Fatal(err)
 	}
-	return v, "ac"
+	if err := s.Guard().AppendManifest(ctx, &TrustManifest{Seq: 1, Type: "policy", ScopeID: "ac", Epoch: 1, Digest: "p1", Manifest: []byte(`{"p":1}`), TargetDescriptor: "d1"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	return v, s.Guard(), "ac"
 }
 
 func TestCompleteReleasesOnlyItsOwnLock(t *testing.T) {
@@ -150,7 +164,7 @@ func TestOneOpenLeasePerAccount(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	l := func(id, state string) *Lease {
-		return &Lease{RequestID: id, AccountID: acct, BrokerID: "b", SecretVersion: 1, State: state, OpenedAt: now, ExpiresAt: now.Add(time.Hour)}
+		return &Lease{RequestID: id, AccountID: acct, BrokerID: "b", SecretVersion: 1, State: state, PolicyDigest: "p1", TargetDescriptorDigest: "d1", OpenedAt: now, ExpiresAt: now.Add(time.Hour)}
 	}
 	if err := v.MirrorLease(ctx, l("r1", "active")); err != nil {
 		t.Fatal(err)
@@ -166,5 +180,350 @@ func TestOneOpenLeasePerAccount(t *testing.T) {
 	}
 	if err := v.MirrorLease(ctx, l("r2", "active")); err != nil {
 		t.Fatalf("after close: %v", err)
+	}
+}
+
+// §3.3 (security review of #16): a new lease must be under the current policy, and a policy
+// that changes the descriptor is refused while a lease is open; the same target is not.
+func TestDescriptorChangeWaitsForTheLease(t *testing.T) {
+	v, g, acct := vaultAccountGuard(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	lease := &Lease{RequestID: "r1", AccountID: acct, BrokerID: "b", SecretVersion: 1, State: "active", PolicyDigest: "p0", TargetDescriptorDigest: "d1", OpenedAt: now, ExpiresAt: now.Add(time.Hour)}
+	if err := v.MirrorLease(ctx, lease); !errors.Is(err, ErrPolicyChanged) {
+		t.Fatalf("lease under a stale policy: %v", err)
+	}
+	lease.PolicyDigest = "p1"
+	if err := v.MirrorLease(ctx, lease); err != nil {
+		t.Fatal(err)
+	}
+	policy := func(seq int64, digest, target string) error {
+		return g.AppendManifest(ctx, &TrustManifest{Seq: seq, Type: "policy", ScopeID: acct, Epoch: uint64(seq), Digest: digest, Manifest: []byte(`{}`), TargetDescriptor: target}, nil)
+	}
+	if err := policy(2, "p2", "d2"); !errors.Is(err, ErrLeaseOpen) {
+		t.Fatalf("descriptor change during the lease: %v", err)
+	}
+	if err := policy(2, "p2", "d1"); err != nil {
+		t.Fatalf("same target: %v", err)
+	}
+	lease.State = "closed"
+	if err := v.MirrorLease(ctx, lease); err != nil {
+		t.Fatal(err)
+	}
+	if err := policy(3, "p3", "d2"); err != nil {
+		t.Fatalf("after the lease: %v", err)
+	}
+}
+
+// enrollingAccount is a quarantined account whose stuck rotation "rot" is displaced by the
+// reservation "enr", which expires at the returned deadline.
+func enrollingAccount(t *testing.T, v VaultStore, acct string) time.Time {
+	t.Helper()
+	ctx := context.Background()
+	if err := v.CreateAccount(ctx, &Account{ID: acct, AssetID: "as", Name: acct, AccountKind: "managed"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Reserve(ctx, acct, "rot", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.SetHealth(ctx, acct, "quarantined", ""); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := v.ReserveEnrollment(ctx, acct, "enr", 0, now, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	return now.Add(time.Minute)
+}
+
+// acceptedKeepsTheLock fails when an accepted enrollment no longer holds the account's lock.
+func acceptedKeepsTheLock(t *testing.T, v VaultStore, acct string) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := v.EnrollmentState(ctx, acct, "enr")
+	op, _, _ := v.Lock(ctx, acct)
+	if err != nil || st != "accepted" || op != "enr" {
+		t.Fatalf("%s: accepted, then state %q (%v) and lock %q", acct, st, err, op)
+	}
+}
+
+// An acceptance that started before the deadline and commits while expiry is between
+// finding the reservation and restoring the displaced lock keeps the lock (PR #15 review).
+// The acceptance is held open on the row so expiry runs into it deterministically.
+func TestExpiryNeverReleasesAnAcceptanceItRaces(t *testing.T) {
+	s, _ := guardStoreFor(t)
+	if s.driver != "postgres" {
+		t.Skip("SQLite has one writer connection; needs KY_TEST_POSTGRES_DSN")
+	}
+	v := s.Vault()
+	ctx := context.Background()
+	if err := v.CreateAsset(ctx, &Asset{ID: "as", Name: "host"}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := enrollingAccount(t, v, "ac")
+	accept, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer accept.Rollback()
+	if _, err := accept.ExecContext(ctx, `UPDATE rotation_locks SET state = 'accepted' WHERE account_id = 'ac' AND operation_id = 'enr' AND state = 'reserved'`); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := v.ExpireEnrollments(ctx, deadline.Add(time.Second)); done <- err }()
+	for start := time.Now(); ; time.Sleep(5 * time.Millisecond) {
+		var waiting int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM pg_locks WHERE NOT granted`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			break
+		}
+		if time.Since(start) > 10*time.Second {
+			t.Fatal("expiry never waited on the acceptance")
+		}
+	}
+	if err := accept.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	acceptedKeepsTheLock(t, v, "ac")
+}
+
+// Acceptance just before the deadline races expiry just after it, many times: an
+// acceptance that succeeded always keeps the lock (PR #15 review).
+func TestAcceptRacingExpiry(t *testing.T) {
+	s, _ := guardStoreFor(t)
+	v := s.Vault()
+	ctx := context.Background()
+	if err := v.CreateAsset(ctx, &Asset{ID: "as", Name: "host"}); err != nil {
+		t.Fatal(err)
+	}
+	accepted := 0
+	for i := range 200 {
+		acct := fmt.Sprintf("ac%d", i)
+		deadline := enrollingAccount(t, v, acct)
+		var wg sync.WaitGroup
+		var aerr, eerr error
+		start := make(chan struct{})
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			aerr = v.AcceptEnrollment(ctx, acct, "enr", deadline.Add(-time.Second))
+		}()
+		go func() { defer wg.Done(); <-start; _, eerr = v.ExpireEnrollments(ctx, deadline.Add(time.Second)) }()
+		close(start)
+		wg.Wait()
+		if eerr != nil {
+			t.Fatal(eerr)
+		}
+		if aerr == nil {
+			accepted++
+			acceptedKeepsTheLock(t, v, acct)
+		} else if !errors.Is(aerr, ErrConflict) {
+			t.Fatal(aerr)
+		}
+	}
+	t.Logf("%d of 200 acceptances won the race", accepted)
+}
+
+// The paged chain queries read only the requested slice of an account's history (PR
+// Reviewer Guide on #10): a version range with a limit, the open chains, or one envelope.
+func TestChainQueriesReadOnlyTheirSlice(t *testing.T) {
+	v, acct := vaultAccount(t)
+	ctx := context.Background()
+	// v1 release (current), v2 abort, v3 no receipt, v4 commit_target, v5 abort, v6 no receipt.
+	ends := []string{"release", "abort", "", "commit_target", "abort", ""}
+	for i, end := range ends {
+		op, id := fmt.Sprint("op", i+1), fmt.Sprint("e", i+1)
+		ver, err := v.Reserve(ctx, acct, op, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := v.PutEnvelope(ctx, op, &StoredEnvelope{EnvelopeID: id, AccountID: acct, SecretVersion: ver, EnvelopeKind: "managed", Digest: "d" + id, Envelope: []byte(id)}); err != nil {
+			t.Fatal(err)
+		}
+		var rs []*StoredReceipt
+		if end != "" {
+			rs = append(rs, &StoredReceipt{EnvelopeID: id, ReceiptSeq: 1, ReceiptType: end, OperationID: op, Digest: "h" + id, PrevReceiptHash: zeroHash, Receipt: []byte("r" + id)})
+		}
+		current := ""
+		if i == 0 {
+			current = id
+		}
+		if err := v.Complete(ctx, op, acct, rs, current, "", LockDelete); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids := func(cs []*StoredChain) (out []string) {
+		for _, c := range cs {
+			out = append(out, fmt.Sprintf("%s/%d", c.Envelope.EnvelopeID, len(c.Receipts)))
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		after uint64
+		limit int
+		want  string
+	}{{2, 2, "[e3/0 e4/1]"}, {0, 1, "[e1/1]"}, {4, 10, "[e5/1 e6/0]"}, {6, 10, "[]"}} {
+		cs, err := v.ChainsAfter(ctx, acct, tc.after, tc.limit)
+		if err != nil || fmt.Sprint(ids(cs)) != tc.want {
+			t.Fatalf("ChainsAfter(%d, %d) = %v %v, want %s", tc.after, tc.limit, ids(cs), err, tc.want)
+		}
+	}
+	if cs, err := v.OpenChains(ctx, acct, 0, 5, 10); err != nil || fmt.Sprint(ids(cs)) != "[e1/1 e3/0 e4/1]" {
+		t.Fatalf("OpenChains = %v %v", ids(cs), err)
+	}
+	if cs, err := v.OpenChains(ctx, acct, 1, 5, 1); err != nil || fmt.Sprint(ids(cs)) != "[e3/0]" {
+		t.Fatalf("OpenChains(1, 5, 1) = %v %v", ids(cs), err)
+	}
+	if c, err := v.Chain(ctx, acct, "e4"); err != nil || c.Envelope.SecretVersion != 4 || len(c.Receipts) != 1 || string(c.Receipts[0].Receipt) != "re4" {
+		t.Fatalf("Chain(e4) = %+v %v", c, err)
+	}
+	if _, err := v.Chain(ctx, acct, "e9"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown envelope: %v", err)
+	}
+	if _, err := v.Chain(ctx, "other", "e4"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another account's envelope: %v", err)
+	}
+}
+
+// A completion delayed past a newer rotation is a retry: it neither rewinds the current
+// envelope nor the run state (PR Reviewer Guide on #10).
+func TestADelayedDuplicateCompletionChangesNothing(t *testing.T) {
+	v, acct := vaultAccount(t)
+	ctx := context.Background()
+	release := func(op, id string) []*StoredReceipt {
+		ver, err := v.Reserve(ctx, acct, op, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := v.PutEnvelope(ctx, op, &StoredEnvelope{EnvelopeID: id, AccountID: acct, SecretVersion: ver, EnvelopeKind: "managed", Digest: "d" + id, Envelope: []byte(id)}); err != nil {
+			t.Fatal(err)
+		}
+		if err := v.RecordIntent(ctx, &RotationRun{OperationID: op, AccountID: acct, BrokerID: "b", SecretVersion: ver, Intent: []byte("i" + op)}); err != nil {
+			t.Fatal(err)
+		}
+		rs := []*StoredReceipt{{EnvelopeID: id, ReceiptSeq: 1, ReceiptType: "release", OperationID: op, Digest: "h" + id, PrevReceiptHash: zeroHash, Receipt: []byte("r" + id)}}
+		if err := v.Complete(ctx, op, acct, rs, id, "release_authorized", LockDelete); err != nil {
+			t.Fatal(err)
+		}
+		return rs
+	}
+	old := release("op1", "e1")
+	release("op2", "e2")
+	if err := v.Complete(ctx, "op1", acct, old, "e1", "target_verified", LockDelete); err != nil {
+		t.Fatal(err)
+	}
+	if a, _ := v.GetAccount(ctx, acct); a.CurrentEnvelopeID != "e2" {
+		t.Fatalf("current %q after a delayed duplicate, want e2", a.CurrentEnvelopeID)
+	}
+	if r, _ := v.GetRun(ctx, acct, "op1"); r.State != "release_authorized" {
+		t.Fatalf("run state %q after a delayed duplicate", r.State)
+	}
+}
+
+// One chain and one descriptor stay under their caps, so a sync reply always fits a frame
+// (security review of #10).
+func TestChainsAndDescriptorsAreCapped(t *testing.T) {
+	v, acct := vaultAccount(t)
+	ctx := context.Background()
+	if err := v.PutTargetDescriptor(ctx, "td", acct, make([]byte, MaxDescriptor+1)); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("oversized descriptor: %v", err)
+	}
+	ver, _ := v.Reserve(ctx, acct, "op", 0)
+	if err := v.PutEnvelope(ctx, "op", &StoredEnvelope{EnvelopeID: "big", AccountID: acct, SecretVersion: ver, EnvelopeKind: "managed", Digest: "dbig", Envelope: make([]byte, MaxEnvelope+1)}); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("oversized envelope: %v", err)
+	}
+	env := []byte(strings.Repeat("e", MaxChain/2))
+	if err := v.PutEnvelope(ctx, "op", &StoredEnvelope{EnvelopeID: "e", AccountID: acct, SecretVersion: ver, EnvelopeKind: "managed", Digest: "de", Envelope: env}); err != nil {
+		t.Fatal(err)
+	}
+	r := func(seq uint64, prev string, n int) *StoredReceipt {
+		return &StoredReceipt{EnvelopeID: "e", ReceiptSeq: seq, ReceiptType: "commit_target", OperationID: "op", Digest: fmt.Sprint("h", seq), PrevReceiptHash: prev, Receipt: []byte(strings.Repeat("r", n))}
+	}
+	if err := v.Complete(ctx, "op", acct, []*StoredReceipt{r(1, zeroHash, MaxChain/4)}, "", "", LockKeep); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Complete(ctx, "op", acct, []*StoredReceipt{r(2, "h1", MaxChain/4+1)}, "", "", LockKeep); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("receipt over the chain cap: %v", err)
+	}
+}
+
+// Queued pushes are taken once, oldest first, per broker, and expire (PR Reviewer Guide on
+// #15).
+func TestQueuedPushesAreTakenOnce(t *testing.T) {
+	v, _ := vaultAccount(t)
+	ctx := context.Background()
+	now := time.Now()
+	for i, p := range []*Push{{BrokerID: "b1", Type: "a"}, {BrokerID: "b2", Type: "x"}, {BrokerID: "b1", Type: "b"}, {BrokerID: "b1", Type: "old"}} {
+		p.Body, p.ExpiresAt = []byte(fmt.Sprint(i)), now.Add(time.Minute)
+		if p.Type == "old" {
+			p.ExpiresAt = now.Add(-time.Second)
+		}
+		if err := v.QueuePush(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ps, err := v.TakePushes(ctx, "b1", 10, now)
+	if err != nil || len(ps) != 2 || ps[0].Type != "a" || ps[1].Type != "b" || string(ps[1].Body) != "2" {
+		t.Fatalf("take: %+v %v", ps, err)
+	}
+	if ps, _ := v.TakePushes(ctx, "b1", 10, now); len(ps) != 0 {
+		t.Fatalf("taken twice: %+v", ps)
+	}
+	if ps, _ := v.TakePushes(ctx, "b2", 10, now); len(ps) != 1 {
+		t.Fatalf("other broker: %+v", ps)
+	}
+}
+
+// Concurrent identical retries of an envelope store and an intent all succeed: the
+// account lock is taken before the existence check (PR Reviewer Guide on #10).
+func TestConcurrentIdenticalRetriesSucceed(t *testing.T) {
+	v, a := vaultAccount(t)
+	ctx := context.Background()
+	ver, err := v.Reserve(ctx, a, "op", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &StoredEnvelope{EnvelopeID: "env", AccountID: a, SecretVersion: ver, EnvelopeKind: "managed", Digest: "d", Envelope: []byte("{}")}
+	run := &RotationRun{OperationID: "op", AccountID: a, BrokerID: "b", SecretVersion: ver, Intent: []byte(`{"i":1}`)}
+	var wg sync.WaitGroup
+	errs := make([]error, 16)
+	for i := range errs {
+		wg.Go(func() {
+			if i%2 == 0 {
+				errs[i] = v.PutEnvelope(ctx, "op", e)
+			} else {
+				errs[i] = v.RecordIntent(ctx, run)
+			}
+		})
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("retry %d: %v", i, err)
+		}
+	}
+}
+
+// The largest envelope the store takes still leaves room for its terminal receipt, so an
+// accepted enrollment can always be finished and its lock released (security review of #15).
+func TestTheLargestEnvelopeCanStillBeFinished(t *testing.T) {
+	v, acct := vaultAccount(t)
+	ctx := context.Background()
+	ver, _ := v.Reserve(ctx, acct, "op", 0)
+	if err := v.PutEnvelope(ctx, "op", &StoredEnvelope{EnvelopeID: "e", AccountID: acct, SecretVersion: ver, EnvelopeKind: "managed", Digest: "de", Envelope: []byte(strings.Repeat("e", MaxEnvelope))}); err != nil {
+		t.Fatal(err)
+	}
+	abort := &StoredReceipt{EnvelopeID: "e", ReceiptSeq: 1, ReceiptType: "abort", OperationID: "op", Digest: "h1", PrevReceiptHash: zeroHash, Receipt: []byte(strings.Repeat("r", 16<<10))}
+	if err := v.Complete(ctx, "op", acct, []*StoredReceipt{abort}, "", "aborted", LockDelete); err != nil {
+		t.Fatalf("terminal receipt after the largest envelope: %v", err)
+	}
+	if op, _, _ := v.Lock(ctx, acct); op != "" {
+		t.Fatalf("lock still held by %s", op)
 	}
 }

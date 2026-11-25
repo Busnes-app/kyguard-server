@@ -4,19 +4,9 @@ package main
 
 import "syscall"
 
-func realSetrlimit() error {
-	return syscall.Setrlimit(syscall.RLIMIT_CORE, &syscall.Rlimit{Cur: 0, Max: 0})
-}
-
-var setrlimit = realSetrlimit
-
-// disableCoreDumps ensures RLIMIT_CORE is 0, soft and hard. Under the systemd unit
-// (LimitCORE=0) it already is, and the unit's syscall filter refuses setrlimit, so it is
-// called only when needed.
+// disableCoreDumps sets RLIMIT_CORE to 0, soft and hard (§4.1). On Linux Go issues
+// prlimit64, which the unit's filter allows (@default); `~@resources` denies only the
+// setrlimit syscall. TestDisableCoreDumpsUnderTheUnit runs this under the real filter.
 func disableCoreDumps() error {
-	var l syscall.Rlimit
-	if err := syscall.Getrlimit(syscall.RLIMIT_CORE, &l); err == nil && l.Cur == 0 && l.Max == 0 {
-		return nil
-	}
-	return setrlimit()
+	return syscall.Setrlimit(syscall.RLIMIT_CORE, &syscall.Rlimit{Cur: 0, Max: 0})
 }

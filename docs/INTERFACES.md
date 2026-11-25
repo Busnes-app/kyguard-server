@@ -538,7 +538,7 @@ holds a mailbox; the broker decides. A delivery is sealed to the requester's key
 
 | Route | Authentication and input | Success |
 |---|---|---|
-| POST `/api/accounts/{id}/transactions` | Session; JSON `{"tx"}`: a signed `vault_checkout`, `standing_release` or `manual_rotation` | 202 relayed; 422 `{"code"}` on a signature, policy or validity failure; 503 when the broker is not connected. Audited as `vault.transaction_relayed` |
+| POST `/api/accounts/{id}/transactions` | Session; JSON `{"tx"}`: a signed `vault_checkout` or `manual_rotation` | 202 relayed; 422 `{"code"}` on a signature, policy or validity failure, and `unsupported_action` for `standing_release`, which the broker does not run yet; 503 when the broker is not connected. Audited as `vault.transaction_relayed` |
 | GET `/api/transactions/{request_id}` | Session | 200 `{"challenge", "purpose", "delivery", "result"}`: the broker's single-use challenge, the checkout wrap, or a refusal code |
 | POST `/api/transactions/{request_id}/proof` | Session; JSON `{"proof"}`: a possession proof over the challenge | 202 relayed |
 | POST `/api/transactions/{request_id}/checkin` | Session | 202; the broker posts a `checkin` challenge |

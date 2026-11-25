@@ -249,7 +249,7 @@ func (s *Server) handleSignDraft(w http.ResponseWriter, r *http.Request) {
 		s.inventoryError(w, err, "policy draft")
 		return
 	}
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxManifestBody))
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, cptrust.MaxManifest))
 	if err != nil {
 		s.writeError(w, http.StatusRequestEntityTooLarge, "draft too large")
 		return

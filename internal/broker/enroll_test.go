@@ -269,6 +269,46 @@ func TestEnrollmentResendsWithoutASecondBind(t *testing.T) {
 	}
 }
 
+// failReceipts fails the next n receipt deliveries, as a transient error on an open channel.
+type failReceipts struct {
+	broker.ControlPlane
+	n int
+}
+
+func (f *failReceipts) Receipts(ctx context.Context, op, account pqcrypto.UUID, rs []pqcrypto.B64) error {
+	if f.n > 0 {
+		f.n--
+		return errors.New("transient")
+	}
+	return f.ControlPlane.Receipts(ctx, op, account, rs)
+}
+
+// A receipt delivery that fails while the channel stays open is retried by the next
+// scheduler tick, with no reconnect and no second bind (PR #15 review).
+func TestEnrollmentReceiptsRetryOnTheNextTick(t *testing.T) {
+	r := newEnrollRig(t, true)
+	m := r.machine()
+	defer m.J.Close()
+	quarantineV2(t, r, m)
+	r.target.password = "Reset-By-Operator-1!"
+	m.CP = &failReceipts{ControlPlane: m.CP, n: 1}
+	if _, err := r.enroll(m, "Reset-By-Operator-1!"); err == nil {
+		t.Fatal("the first delivery did not fail")
+	}
+	if a := r.account(m); !a.Enrollment.Open() || r.cpLock() == "" {
+		t.Fatalf("delivered: sent=%v lock=%q", a.Enrollment.Sent, r.cpLock())
+	}
+	if err := m.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if a := r.account(m); a.Quarantined || !a.Enrollment.Sent || r.cpLock() != "" {
+		t.Fatalf("after the tick: quarantined=%v sent=%v lock=%q", a.Quarantined, a.Enrollment.Sent, r.cpLock())
+	}
+	if n := r.target.logins["Reset-By-Operator-1!"]; n != 1 {
+		t.Fatalf("%d binds", n)
+	}
+}
+
 // §13 1A acceptance test 4: an acceptance withheld past 15 minutes expires the
 // reservation; the broker never binds and the stuck rotation's lock is restored. A failed
 // enrollment restores it too.
@@ -441,5 +481,73 @@ func TestAnotherAccountsEnvelopeIsNotACandidate(t *testing.T) {
 	}
 	if len(r.target.logins) != 0 || r.account(m).Enrollment != nil {
 		t.Fatal("logged in or journaled")
+	}
+}
+
+// An accepted enrollment resumed after a restart, when sync has since applied a policy
+// that pins another target, fails without sending the credential anywhere (security review
+// of #15).
+func TestRecoveredEnrollmentFailsWhenTheTargetChanged(t *testing.T) {
+	r := newEnrollRig(t, false)
+	m := r.machine()
+	m.Hook = func(p string) error {
+		if p == "accept_ack" {
+			return errors.New("kill")
+		}
+		return nil
+	}
+	if _, err := r.enroll(m, initialPassword); !errors.Is(err, broker.ErrStopped) {
+		t.Fatal(err)
+	}
+	m.J.Close()
+	moveTarget(t, r.rig)
+	m2 := r.machine()
+	defer m2.J.Close()
+	if err := m2.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := m2.Trust.Policy(r.pol.AccountID); p.Epoch != 2 {
+		t.Fatalf("policy epoch %s", p.Epoch)
+	}
+	m2.Recover(context.Background())
+	if n := r.target.logins[initialPassword]; n != 0 || len(r.target.hosts) != 0 {
+		t.Fatalf("%d logins to %v", n, r.target.hosts)
+	}
+	if a := r.account(m2); a.Enrollment.Verified || r.current(m2) != nil {
+		t.Fatalf("enrollment %+v", a.Enrollment)
+	}
+}
+
+// An enrollment that stopped after the Control Plane accepted it, with no receipts yet
+// (e.g. the broker's disk was full), resumes on the next tick, as after a restart: one bind,
+// the lock released (PR Reviewer Guide on #15).
+func TestStalledEnrollmentResumesOnTheNextTick(t *testing.T) {
+	r := newEnrollRig(t, false)
+	m := r.machine()
+	defer m.J.Close()
+	m.Hook = func(p string) error {
+		if p == "accept_ack" {
+			return errors.New("disk full")
+		}
+		return nil
+	}
+	if _, err := r.enroll(m, initialPassword); err == nil {
+		t.Fatal("enrollment did not stop")
+	}
+	m.Hook = nil
+	if a := r.account(m); !a.Enrollment.Open() || len(a.Enrollment.Receipts) > 0 || r.cpLock() == "" {
+		t.Fatalf("stalled: %+v lock=%q", a.Enrollment, r.cpLock())
+	}
+	if err := m.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if a := r.account(m); !a.Enrollment.Sent || r.cpLock() != "" {
+		t.Fatalf("after the tick: sent=%v lock=%q", a.Enrollment.Sent, r.cpLock())
+	}
+	if cur := r.current(m); cur == nil || !cur.VaultCommitted {
+		t.Fatalf("current %+v", cur)
+	}
+	if n := r.target.logins[initialPassword]; n != 1 {
+		t.Fatalf("%d binds", n)
 	}
 }
