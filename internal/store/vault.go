@@ -369,6 +369,11 @@ func (v vaultStore) PutEnvelope(ctx context.Context, op string, e *StoredEnvelop
 		return ErrTooLarge
 	}
 	return v.s.inTx(ctx, func(tx *sql.Tx) error {
+		// The account lock comes first, so a concurrent identical retry sees the first
+		// one's row and succeeds (PR Reviewer Guide on #10).
+		if _, err := v.lockAccount(ctx, tx, e.AccountID); err != nil {
+			return err
+		}
 		var have string
 		err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT envelope FROM secret_envelopes WHERE envelope_id = ?`), e.EnvelopeID).Scan(&have)
 		if err == nil {
@@ -391,6 +396,11 @@ func (v vaultStore) PutEnvelope(ctx context.Context, op string, e *StoredEnvelop
 
 func (v vaultStore) RecordIntent(ctx context.Context, r *RotationRun) error {
 	return v.s.inTx(ctx, func(tx *sql.Tx) error {
+		// The account lock comes first, so a concurrent identical retry sees the first
+		// one's row and succeeds (PR Reviewer Guide on #10).
+		if _, err := v.lockAccount(ctx, tx, r.AccountID); err != nil {
+			return err
+		}
 		var have string
 		err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT intent FROM rotation_runs WHERE account_id = ? AND operation_id = ?`), r.AccountID, r.OperationID).Scan(&have)
 		if err == nil {
