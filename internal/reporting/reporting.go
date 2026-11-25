@@ -123,10 +123,10 @@ type Row struct {
 // Dataset is the authorized scorecard dataset: active rows and the visible decommissioned
 // count, which no class includes (§8.1).
 type Dataset struct {
-	Rows           []*Row
-	Decommissioned int
-	AccountKeys    []string // account attribute keys, sorted
-	OwnerKeys      []string // user attribute keys, sorted
+	Rows        []*Row
+	Retired     []*Row   // decommissioned: no class or health
+	AccountKeys []string // account attribute keys, sorted
+	OwnerKeys   []string // user attribute keys, sorted
 }
 
 // Build reads the inventory and the verified policies once and returns what caller may see.
@@ -181,10 +181,6 @@ func Build(ctx context.Context, st store.Store, trust *cptrust.Trust, caller Cal
 		if !caller.Admin && a.OwnerUserID != caller.UserID && !listed(p, mine) {
 			continue
 		}
-		if a.Status != "active" {
-			ds.Decommissioned++
-			continue
-		}
 		f := facts[a.ID]
 		if f == nil {
 			f = &store.ReportFacts{}
@@ -201,7 +197,9 @@ func Build(ctx context.Context, st store.Store, trust *cptrust.Trust, caller Cal
 			lr := f.LastRelease
 			row.LastRelease = &lr
 		}
-		row.Class, row.Health = Classify(in, now)
+		if a.Status == "active" {
+			row.Class, row.Health = Classify(in, now)
+		}
 		if a.OwnerUserID != "" {
 			row.OwnerAttributes = nonNil(userVals[a.OwnerUserID])
 			name, ok := owners[a.OwnerUserID]
@@ -214,6 +212,10 @@ func Build(ctx context.Context, st store.Store, trust *cptrust.Trust, caller Cal
 				owners[a.OwnerUserID] = name
 			}
 			row.Owner = name
+		}
+		if a.Status != "active" {
+			ds.Retired = append(ds.Retired, row) // counted, never classified (§8.1)
+			continue
 		}
 		for k := range row.Attributes {
 			akeys[k] = true
@@ -301,6 +303,15 @@ func (f Filter) Match(r *Row) bool {
 		}
 	}
 	return true
+}
+
+// Retired counts the decommissioned rows the filter's pool and attribute terms match. They
+// have no class or health, so a class or health term matches none of them.
+func (f Filter) Retired(rows []*Row) int {
+	if f.Class != "" || f.Health != "" {
+		return 0
+	}
+	return len(f.Apply(rows))
 }
 
 // Apply returns the rows the filter matches, in order.

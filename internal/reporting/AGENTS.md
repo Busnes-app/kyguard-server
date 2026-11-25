@@ -12,7 +12,8 @@ the routes and the export audit.
 ## Local Contracts
 - Class order is fixed: Green needs a schedule in the current verified policy and at least
   one `release` receipt; else Yellow needs a current envelope; else Red. Health never
-  changes the class. Decommissioned accounts are counted, never classified.
+  changes the class. Decommissioned accounts are counted (by the same pool and attribute filters; a class
+  or health filter excludes them), never classified.
 - Health is one value: a non-`healthy` broker report first, then `checkout_open`, then
   `pending_first_rotation` (scheduled, never released), then `overdue` (the newest
   occurrence due at least one interval ago came after the last release), else `healthy`.

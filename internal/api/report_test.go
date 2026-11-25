@@ -232,6 +232,16 @@ func TestScorecard(t *testing.T) {
 		t.Fatalf("%d export audit records, want 2", exports)
 	}
 
+	// A filter applies to the decommissioned count too.
+	if _, c := getCard(t, srv, admin, "?owner.department=Sales"); c.Totals.Decommissioned != 0 {
+		t.Fatalf("decommissioned outside the filter counted: %+v", c.Totals)
+	}
+	if _, c := getCard(t, srv, admin, "?class=green"); c.Totals.Decommissioned != 0 {
+		t.Fatalf("decommissioned counted under a class filter: %+v", c.Totals)
+	}
+	if dash.Totals.Decommissioned != 1 {
+		t.Fatalf("decommissioned under the owner's department: %+v", dash.Totals)
+	}
 	// The owner sees their two active accounts; carol sees only the one she approves.
 	_, mine := getCard(t, srv, owner, "")
 	if len(mine.Rows) != 2 || mine.Totals.Decommissioned != 1 {

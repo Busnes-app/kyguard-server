@@ -58,7 +58,7 @@ func (s *Server) handleScorecard(w http.ResponseWriter, r *http.Request) {
 	}
 	f := reporting.ParseFilter(q)
 	rows := f.Apply(ds.Rows)
-	card := scorecard{GeneratedAt: now, Totals: reporting.Summarize(rows, ds.Decommissioned), AccountKeys: ds.AccountKeys, OwnerKeys: ds.OwnerKeys, Rows: rows}
+	card := scorecard{GeneratedAt: now, Totals: reporting.Summarize(rows, f.Retired(ds.Retired)), AccountKeys: ds.AccountKeys, OwnerKeys: ds.OwnerKeys, Rows: rows}
 	if format == "" {
 		s.writeJSON(w, http.StatusOK, card)
 		return
