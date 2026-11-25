@@ -31,6 +31,8 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 - Removed the SAML 2.0 service-provider helper, its `/saml/metadata` route (now 404) and the
   `KY_SAML_ENTITY_ID` and `KY_SAML_METADATA_URL` settings (spec §7.2).
 - Removed the base's product-scaffolding script (`scripts/ky-init.sh`); KyGuard is a product.
+- The README's OpenSSF Best Practices badge now shows KyGuard's own project (17119), not the
+  one inherited from `ky-server-base`.
 - KyGuard `internal/pqcrypto` wire format (spec §3.1): strict RFC 8785 JCS, decimal-string
   counters capped at 2^63-1, unpadded base64url, the domain digest `D(obj)`, ML-DSA-65 +
   Ed25519 hybrid signatures, `sig_key_id`/`enc_key_id`, the payload and DEK-wrap AADs, the

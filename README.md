@@ -1,6 +1,6 @@
 # KyGuard
 
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15937/badge)](https://www.bestpractices.dev/projects/15937)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/17119/badge)](https://www.bestpractices.dev/projects/17119)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Busnes-app/kyguard-server/badge)](https://scorecard.dev/viewer/?uri=github.com/Busnes-app/kyguard-server)
 
 KyGuard is a self-hosted privileged access management (PAM) and just-in-time access platform
