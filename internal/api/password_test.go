@@ -126,11 +126,11 @@ func TestPasswordReplacementRequiresSessionAndPost(t *testing.T) {
 	for _, tc := range []struct {
 		method string
 		want   int
-	}{{http.MethodPost, 401}, {http.MethodGet, 405}} {
+	}{{http.MethodPost, 401}, {http.MethodGet, 200}} { // a GET never reaches the handler: the SPA answers
 		w := httptest.NewRecorder()
 		srv.ServeHTTP(w, httptest.NewRequest(tc.method, "/api/auth/change-password", nil))
-		if w.Code != tc.want {
-			t.Fatal(w.Code)
+		if w.Code != tc.want || (tc.method == http.MethodGet && strings.Contains(w.Body.String(), "password")) {
+			t.Fatal(w.Code, w.Body.String()[:min(80, w.Body.Len())])
 		}
 	}
 }

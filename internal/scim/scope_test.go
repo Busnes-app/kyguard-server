@@ -15,18 +15,23 @@ import (
 	"github.com/Busnes-app/kyguard-server/internal/testdb"
 )
 
-func scopedSCIM(t *testing.T, allowAdmin bool) (store.Store, func(method, path string, body any) *httptest.ResponseRecorder) {
+func scopedSCIM(t *testing.T) (store.Store, func(method, path string, body any) *httptest.ResponseRecorder) {
 	t.Helper()
 	st, err := store.Open(context.Background(), testdb.Config(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	srv := scim.NewServer(st, config.SCIMConfig{Enabled: true, BearerToken: "tok", AllowAdmin: allowAdmin}, "http://localhost:8080")
+	return st, scimFor(st, testIssuer)
+}
+
+// scimFor serves SCIM over st with issuer as the configured SSO issuer.
+func scimFor(st store.Store, issuer string) func(method, path string, body any) *httptest.ResponseRecorder {
+	srv := scim.NewServer(st, config.SCIMConfig{Enabled: true, BearerToken: "tok", Issuer: issuer}, "http://localhost:8080")
 	mux := http.NewServeMux()
-	srv.RegisterRoutes(mux)
+	srv.RegisterRoutes(mux.Handle)
 	h := srv.AuthMiddleware(mux)
-	return st, func(method, path string, body any) *httptest.ResponseRecorder {
+	return func(method, path string, body any) *httptest.ResponseRecorder {
 		var raw []byte
 		if body != nil {
 			raw, _ = json.Marshal(body)
@@ -41,9 +46,9 @@ func scopedSCIM(t *testing.T, allowAdmin bool) (store.Store, func(method, path s
 }
 
 // SCIM sees and changes only the accounts it created: a local break-glass admin and
-// KyIdentity accounts are invisible to it, and it cannot grant admin unless allowed.
+// KyIdentity accounts are invisible to it, and it cannot grant admin.
 func TestSCIMIsScopedToTheAccountsItManages(t *testing.T) {
-	st, do := scopedSCIM(t, false)
+	st, do := scopedSCIM(t)
 	ctx := context.Background()
 	if err := st.Users().CreateUser(ctx, &store.User{ID: "usr_admin", Username: "admin", Role: "admin", Status: "active", SSOProvider: "local"}); err != nil {
 		t.Fatal(err)
@@ -100,10 +105,27 @@ func TestSCIMIsScopedToTheAccountsItManages(t *testing.T) {
 	}
 }
 
-func TestSCIMAdminGrantWhenAllowed(t *testing.T) {
-	_, do := scopedSCIM(t, true)
-	admin := map[string]any{"schemas": []string{scim.SchemaUser}, "userName": "root2", "roles": []any{map[string]any{"value": "admin"}}}
-	if w := do("POST", "/scim/v2/Users", admin); w.Code != http.StatusCreated {
-		t.Fatalf("KY_SCIM_ALLOW_ADMIN=true admin create: %d %s", w.Code, w.Body.String())
+// testIssuer is the SSO issuer the test SCIM server assigns its accounts.
+const testIssuer = "https://idp.test"
+
+// Acceptance 10: there is no setting under which SCIM grants admin, and an existing admin
+// is still deprovisioned through SCIM.
+func TestSCIMNeverGrantsAdmin(t *testing.T) {
+	t.Setenv("KY_SCIM_ALLOW_ADMIN", "true") // the base's opt-in; KyGuard ignores it
+	st, do := scopedSCIM(t)
+	ctx := context.Background()
+	grant := map[string]any{"schemas": []string{scim.SchemaUser}, "userName": "root2", "roles": []any{map[string]any{"value": "admin"}}}
+	if w := do("POST", "/scim/v2/Users", grant); w.Code != http.StatusBadRequest {
+		t.Fatalf("admin create: %d %s, want 400", w.Code, w.Body.String())
+	}
+	if err := st.Users().CreateUser(ctx, &store.User{ID: "usr_olga", Username: "olga", Role: "admin", Status: "active", SSOProvider: "scim", SSOSubject: "sub-olga", SSOIssuer: testIssuer, SCIMManaged: true}); err != nil {
+		t.Fatal(err)
+	}
+	off := map[string]any{"schemas": []string{scim.SchemaUser}, "userName": "olga", "externalId": "sub-olga", "active": false}
+	if w := do("PUT", "/scim/v2/Users/usr_olga", off); w.Code != http.StatusOK {
+		t.Fatalf("deactivating an admin: %d %s", w.Code, w.Body.String())
+	}
+	if u, _ := st.Users().GetUserByID(ctx, "usr_olga"); u.Status == "active" {
+		t.Fatal("SCIM could not deactivate an admin")
 	}
 }
