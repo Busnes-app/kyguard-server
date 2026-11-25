@@ -56,6 +56,15 @@ Owns data models, store interfaces (`UserStore`, `SessionStore`, `GroupStore`, `
   its own transaction through `auditTx`, the one place the chained append replaces.
   `ClaimPairing` consumes a token by compare-and-swap on `consumed_at IS NULL` and expiry.
 
+- `Vault()` (`vault.go`, migration 101) holds assets, the minimal `accounts` columns the
+  broker stack needs, target descriptors, envelopes, receipts, `rotation_locks` and
+  `rotation_runs`. Callers verify signed objects first; the store keeps their exact bytes.
+  `Reserve` allocates `max(highest allocated, broker-reported) + 1` under the one lock per
+  account (a retry by the same operation gets the same version). Receipt append is a
+  compare-and-swap on `(seq = head + 1, prev = head hash)`; a byte-identical re-append is a
+  no-op. `Complete` appends, moves the current envelope and deletes the lock by
+  `operation_id` in one transaction.
+
 ## Verification
 - `go test -v ./internal/store/...`
 

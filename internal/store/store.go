@@ -25,6 +25,7 @@ type Store interface {
 	Settings() SettingsStore
 	Coordination() CoordinationStore
 	Guard() GuardStore
+	Vault() VaultStore
 
 	// SnapshotToSQLite copies a PostgreSQL database, as of one transaction, into a new SQLite
 	// file; ErrSnapshotSchema for a schema this build does not know.

@@ -142,3 +142,15 @@ contradicts itself. Each names its section. The most secure reading wins.
     leaving younger ones to a replica that may still be answering.
 38. §9.2 (migration numbering). Broker-stack migrations take versions from 100 so the two
     parallel stacks never reuse a version; they run after every Phase 0 migration.
+39. §9.2, §8.1 (minimal accounts). The broker stack's migration 101 creates `assets` and
+    `accounts` with only the columns it needs (`pool_id`, `current_envelope_id`,
+    `min_password_age_seconds`, `owner_user_id`, `status`, the version high-water mark and
+    the broker-reported `health`); the inventory work adds the rest.
+40. §4.3 rule 7 (completion). The Control Plane derives the outcome of a receipts request
+    from the verified receipts: `release` makes its envelope current, marks the run
+    `release_authorized` and deletes the operation's lock; `abort` marks it `aborted` and
+    deletes the lock; `commit_target` marks it `target_verified`. The broker's own claims
+    about state are never trusted.
+41. §4.1 (channel scope). Every channel request is re-authorized: the broker must be its
+    pool's active member at that moment, and the account's current policy must be managed
+    and name that pool.
