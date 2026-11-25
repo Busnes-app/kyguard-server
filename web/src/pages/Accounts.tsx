@@ -135,6 +135,7 @@ const AddAccount: React.FC<{ onDone: () => void }> = ({ onDone }) => {
       const r = await fetchJSON('POST', '/api/assets', { name: newAsset });
       if (typeof r === 'string') { setErr(r); return; }
       assetID = r.ID;
+      setAsset(assetID); // a retry or the next account reuses it
       assets.reload();
     }
     const body: Record<string, string> = { asset_id: assetID, name, account_kind: kind };

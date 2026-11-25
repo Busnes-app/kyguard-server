@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Trash2 } from 'lucide-react';
-import { Scorecard, send, useJSON } from '../reporting';
+import { localInput, Scorecard, send, useJSON } from '../reporting';
 
 interface Draft {
   id: string;
@@ -66,7 +66,7 @@ const DraftForm: React.FC<{ escrowDefault: boolean; onSaved: () => void }> = ({ 
   const [lists, setLists] = useState<Record<string, string[]>>({ users: [], approvers: [], enrollers: [], standing: [] });
   const [approvals, setApprovals] = useState(0);
   const [ttl, setTTL] = useState(3600);
-  const [schedule, setSchedule] = useState({ on: true, anchor: new Date().toISOString().slice(0, 16), hours: 24 });
+  const [schedule, setSchedule] = useState({ on: true, anchor: localInput(new Date()), hours: 24 });
   const [escrow, setEscrow] = useState<boolean | null>(null);
   const [err, setErr] = useState('');
   const [saved, setSaved] = useState('');

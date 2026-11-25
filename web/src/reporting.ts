@@ -73,6 +73,8 @@ export function useJSON<T>(url: string | null): { data: T | null; error: string;
   const [tick, setTick] = useState(0);
   const reload = useCallback(() => setTick((t) => t + 1), []);
   useEffect(() => {
+    // Never show the previous query's rows as the current ones (exports follow the URL).
+    setData(null);
     if (!url) return;
     let live = true;
     fetch(url)
@@ -81,7 +83,7 @@ export function useJSON<T>(url: string | null): { data: T | null; error: string;
         return r.json();
       })
       .then((j) => { if (live) { setData(j); setError(''); } })
-      .catch((e: Error) => { if (live) setError(e.message); });
+      .catch((e: Error) => { if (live) { setData(null); setError(e.message); } });
     return () => { live = false; };
   }, [url, tick]);
   return { data, error, reload };
@@ -113,4 +115,10 @@ export function scorecardURL(filter: Record<string, string>, format?: 'csv' | 'j
   if (format) q.set('format', format);
   const s = q.toString();
   return '/api/reports/scorecard' + (s ? '?' + s : '');
+}
+
+// localInput formats d for a datetime-local input in the browser's own time zone.
+export function localInput(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
 }

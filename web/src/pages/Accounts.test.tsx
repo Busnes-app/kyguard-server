@@ -53,3 +53,24 @@ it('shows a refused scorecard instead of an empty inventory', async () => {
   expect((await screen.findAllByRole('alert'))[0].textContent).toMatch(/Authentication required/);
   expect(screen.queryByText('No accounts yet.')).toBeNull();
 });
+
+// A failed filtered load must not leave the previous rows on screen under the new filter.
+it('drops the previous rows when a filtered load fails', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === '/api/attributes') return json({ account: [], user: [] });
+    if (url.includes('class=red')) return json({ error: 'database unavailable' }, 500);
+    return json(card([row('a', 'green', 'Ops'), row('b', 'red', 'Sales')]));
+  }));
+  render(<Accounts isAdmin={false} />);
+  expect(await screen.findByText('dc1 / svc-b')).toBeTruthy();
+  fireEvent.change(screen.getByLabelText('Class'), { target: { value: 'red' } });
+  expect((await screen.findByRole('alert')).textContent).toMatch(/database unavailable/);
+  expect(screen.queryByText('dc1 / svc-a')).toBeNull();
+});
+
+it('defaults the first rotation to local time', async () => {
+  const { localInput } = await import('../reporting');
+  const d = new Date(2026, 10, 25, 9, 5);
+  expect(localInput(d)).toBe('2026-11-25T09:05');
+});
