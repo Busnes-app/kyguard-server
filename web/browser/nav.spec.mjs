@@ -1,4 +1,8 @@
 import { test, expect } from '@playwright/test';
+import { adminState } from './totp.mjs';
+
+// Signed in once by setup.mjs: TOTP codes are single-use, so specs share that session.
+test.use({ storageState: adminState });
 
 // Phones scroll the Primary navigation sideways. A page change that does not come from a nav
 // click (an Overview action) must bring the current row into view, without moving the page
@@ -6,9 +10,6 @@ import { test, expect } from '@playwright/test';
 test('phone navigation reveals the current row after an Overview action', async ({ page }, testInfo) => {
   test.skip(testInfo.project.use.viewport.width > 390, 'phone layout only');
   await page.goto('/');
-  await page.getByPlaceholder('admin', { exact: true }).fill('admin');
-  await page.locator('input[type=password]').fill('BrowserUpdated456!');
-  await page.getByRole('button', { name: 'Sign In', exact: true }).click();
   const nav = page.getByRole('navigation', { name: 'Primary' });
   await expect(page.getByRole('heading', { name: /Welcome/ })).toBeVisible();
   // Test-only height (CSSOM, allowed by the CSP), so the page cannot clamp its scroll:

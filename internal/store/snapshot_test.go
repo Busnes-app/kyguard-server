@@ -79,6 +79,8 @@ func seedEveryTable(t *testing.T, st *SQLStore) {
 	for _, q := range []string{
 		`INSERT INTO mfa_challenges (token_hash, user_id, expires_at) VALUES ('m1', 'u1', now())`,
 		`INSERT INTO sso_directory_events (provider, subject, last_timestamp) VALUES ('kysignon', 'sub-1', 42)`,
+		`INSERT INTO mfa_factors (id, user_id, kind, secret_enc, last_counter, created_at) VALUES ('f1', 'u1', 'totp', 'sealed', 7, now())`,
+		`INSERT INTO totp_attempts (id, user_id, session_hash, created_at) VALUES ('a1', 'u1', 'tok', now())`,
 	} {
 		if _, err := st.db.ExecContext(ctx, q); err != nil {
 			t.Fatalf("%s: %v", q, err)
