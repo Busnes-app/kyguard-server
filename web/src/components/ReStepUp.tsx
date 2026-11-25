@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { onStepupStale, secureFetch } from '../api';
 
@@ -18,8 +18,8 @@ export function ReStepUp() {
   const inFlight = useRef<AbortController | null>(null);
 
   // While open the shell behind is inert, so Tab and clicks stay in the dialog; on close focus
-  // goes back to where it was.
-  useEffect(() => {
+  // goes back to where it was. A layout effect: inert lands in the commit that shows the dialog.
+  useLayoutEffect(() => {
     if (!open || !dialog.current) return;
     const behind = Array.from(dialog.current.parentElement?.children ?? []).filter((el): el is HTMLElement => el !== dialog.current && el instanceof HTMLElement && !el.inert);
     behind.forEach((el) => { el.inert = true; });
