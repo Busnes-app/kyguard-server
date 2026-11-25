@@ -12,7 +12,7 @@ import (
 
 func (s *Server) reportRoutes() {
 	// TODO(hawthorn §7.5): classify (session). The dataset is authorized per caller (§8.3).
-	s.mux.HandleFunc("GET /api/reports/scorecard", s.requireAuthenticated(s.handleScorecard))
+	s.mux.HandleFunc("GET /api/reports/scorecard", s.requireSession(s.handleScorecard))
 	// TODO(hawthorn §7.5): classify (session).
 	s.mux.HandleFunc("GET /api/jobs", s.requireAdmin(s.handleJobs))
 }
