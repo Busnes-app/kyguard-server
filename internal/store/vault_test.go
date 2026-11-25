@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -93,5 +94,63 @@ func TestOperationIDsAreScopedToTheAccount(t *testing.T) {
 		if err := v.RecordIntent(ctx, &RotationRun{OperationID: "same-op", AccountID: acct, BrokerID: "b", SecretVersion: ver, Intent: []byte("{\"a\":\"" + acct + "\"}")}); err != nil {
 			t.Fatalf("%s intent: %v", acct, err)
 		}
+	}
+}
+
+// The paged chain queries read only the requested slice of an account's history (PR
+// Reviewer Guide on #10): a version range with a limit, the open chains, or one envelope.
+func TestChainQueriesReadOnlyTheirSlice(t *testing.T) {
+	v, acct := vaultAccount(t)
+	ctx := context.Background()
+	// v1 release (current), v2 abort, v3 no receipt, v4 commit_target, v5 abort, v6 no receipt.
+	ends := []string{"release", "abort", "", "commit_target", "abort", ""}
+	for i, end := range ends {
+		op, id := fmt.Sprint("op", i+1), fmt.Sprint("e", i+1)
+		ver, err := v.Reserve(ctx, acct, op, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := v.PutEnvelope(ctx, op, &StoredEnvelope{EnvelopeID: id, AccountID: acct, SecretVersion: ver, EnvelopeKind: "managed", Digest: "d" + id, Envelope: []byte(id)}); err != nil {
+			t.Fatal(err)
+		}
+		var rs []*StoredReceipt
+		if end != "" {
+			rs = append(rs, &StoredReceipt{EnvelopeID: id, ReceiptSeq: 1, ReceiptType: end, OperationID: op, Digest: "h" + id, PrevReceiptHash: zeroHash, Receipt: []byte("r" + id)})
+		}
+		current := ""
+		if i == 0 {
+			current = id
+		}
+		if err := v.Complete(ctx, op, acct, rs, current, "", true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids := func(cs []*StoredChain) (out []string) {
+		for _, c := range cs {
+			out = append(out, fmt.Sprintf("%s/%d", c.Envelope.EnvelopeID, len(c.Receipts)))
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		after uint64
+		limit int
+		want  string
+	}{{2, 2, "[e3/0 e4/1]"}, {0, 1, "[e1/1]"}, {4, 10, "[e5/1 e6/0]"}, {6, 10, "[]"}} {
+		cs, err := v.ChainsAfter(ctx, acct, tc.after, tc.limit)
+		if err != nil || fmt.Sprint(ids(cs)) != tc.want {
+			t.Fatalf("ChainsAfter(%d, %d) = %v %v, want %s", tc.after, tc.limit, ids(cs), err, tc.want)
+		}
+	}
+	if cs, err := v.OpenChains(ctx, acct, 5); err != nil || fmt.Sprint(ids(cs)) != "[e1/1 e3/0 e4/1]" {
+		t.Fatalf("OpenChains = %v %v", ids(cs), err)
+	}
+	if c, err := v.Chain(ctx, acct, "e4"); err != nil || c.Envelope.SecretVersion != 4 || len(c.Receipts) != 1 || string(c.Receipts[0].Receipt) != "re4" {
+		t.Fatalf("Chain(e4) = %+v %v", c, err)
+	}
+	if _, err := v.Chain(ctx, acct, "e9"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown envelope: %v", err)
+	}
+	if _, err := v.Chain(ctx, "other", "e4"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another account's envelope: %v", err)
 	}
 }

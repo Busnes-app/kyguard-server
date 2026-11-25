@@ -158,3 +158,8 @@ contradicts itself. Each names its section. The most secure reading wins.
     (`MaxManifest`), so any stored manifest fits a 4 MiB channel frame base64url-encoded. A
     `sync` page carries at most 64 manifests whose encoded size stays within `SyncBudget`
     (2 MiB), and always at least one, so every page advances.
+62. §4.1 (sync read bound). A `sync_account` reply reads from the store only the open
+    chains at or below the broker's version (current, or without `abort`, `release` or
+    `vault_commit`; first request only) and at most `SyncChains + 1` (65) chains above it,
+    so a page never loads the whole history. A `receipts` request reads only the chains its
+    receipts name.

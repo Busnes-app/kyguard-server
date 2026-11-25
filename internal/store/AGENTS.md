@@ -64,6 +64,9 @@ Owns data models, store interfaces (`UserStore`, `SessionStore`, `GroupStore`, `
   compare-and-swap on `(seq = head + 1, prev = head hash)`; a byte-identical re-append is a
   no-op. `Complete` appends, moves the current envelope and deletes the lock by
   `operation_id` in one transaction.
+  `ChainsAfter` (a version range with a limit), `OpenChains` and `Chain` read only the
+  envelopes asked for, then their receipts by envelope ID; `Chains` reads a whole history
+  and is for tests.
 
 ## Verification
 - `go test -v ./internal/store/...`

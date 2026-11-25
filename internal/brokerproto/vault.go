@@ -123,44 +123,48 @@ func (l *Listener) syncAccount(ctx context.Context, tr *pqcrypto.Trust, b *store
 	if raw, err := l.Store.Vault().TargetDescriptor(ctx, string(p.TargetDescriptorDigest)); err == nil {
 		st.Descriptor = raw
 	}
-	chains, err := l.Store.Vault().Chains(ctx, a.ID)
+	// Only the open chains at or below the broker's version and one page above it are read,
+	// so a long history costs each page no more than the page itself.
+	var open []*store.StoredChain
+	if !req.Continue {
+		if open, err = l.Store.Vault().OpenChains(ctx, a.ID, uint64(req.AfterVersion)); err != nil {
+			return nil, err
+		}
+	}
+	newer, err := l.Store.Vault().ChainsAfter(ctx, a.ID, uint64(req.AfterVersion), SyncChains+1)
 	if err != nil {
 		return nil, err
 	}
-	budget, newer := SyncBudget, 0
-	for _, c := range chains { // ascending secret_version
-		old := c.Envelope.SecretVersion <= uint64(req.AfterVersion)
-		if old && (req.Continue || (c.Envelope.EnvelopeID != a.CurrentEnvelopeID && terminated(c))) {
-			continue
-		}
-		cs := ChainState{Envelope: c.Envelope.Envelope, Receipts: []pqcrypto.B64{}}
-		size := encoded(c.Envelope.Envelope)
-		for _, r := range c.Receipts {
-			cs.Receipts = append(cs.Receipts, r.Receipt)
-			size += encoded(r.Receipt)
-		}
-		if !old && size > budget && newer > 0 {
+	budget := SyncBudget
+	for _, c := range open {
+		budget -= add(st, c)
+	}
+	for i, c := range newer {
+		if i == SyncChains || (size(c) > budget && i > 0) { // a page with More always carries a newer chain
 			st.More = true
 			break
 		}
-		budget -= size
-		if !old {
-			newer++ // a page with More always carries at least one newer chain
-		}
-		st.Chains = append(st.Chains, cs)
+		budget -= add(st, c)
 	}
 	return st, nil
 }
 
-// terminated reports a chain that can take no new receipt but rewrap_user after release.
-func terminated(c *store.StoredChain) bool {
+func size(c *store.StoredChain) int {
+	n := encoded(c.Envelope.Envelope)
 	for _, r := range c.Receipts {
-		switch r.ReceiptType {
-		case pqcrypto.ReceiptAbort, pqcrypto.ReceiptRelease, pqcrypto.ReceiptVaultCommit:
-			return true
-		}
+		n += encoded(r.Receipt)
 	}
-	return false
+	return n
+}
+
+// add appends c to st and returns its encoded size.
+func add(st *AccountState, c *store.StoredChain) int {
+	cs := ChainState{Envelope: c.Envelope.Envelope, Receipts: []pqcrypto.B64{}}
+	for _, r := range c.Receipts {
+		cs.Receipts = append(cs.Receipts, r.Receipt)
+	}
+	st.Chains = append(st.Chains, cs)
+	return size(c)
 }
 
 func decode(body json.RawMessage, v any) error {
@@ -258,13 +262,11 @@ func (l *Listener) receipts(ctx context.Context, tr *pqcrypto.Trust, b *store.Br
 	if _, _, err := l.account(ctx, tr, b, req.AccountID); err != nil {
 		return err
 	}
-	stored, err := l.Store.Vault().Chains(ctx, string(req.AccountID))
-	if err != nil {
-		return err
-	}
+	stored := map[pqcrypto.UUID]*store.StoredChain{} // only the chains the receipts name
 	chains := map[pqcrypto.UUID]*pqcrypto.Chain{}
 	var out []*store.StoredReceipt
 	current, runState, release := "", "", false
+	var err error
 	for _, raw := range req.Receipts {
 		var peek struct {
 			EnvelopeID pqcrypto.UUID    `json:"envelope_id"`
@@ -273,15 +275,14 @@ func (l *Listener) receipts(ctx context.Context, tr *pqcrypto.Trust, b *store.Br
 		if json.Unmarshal(raw, &peek) != nil {
 			return errors.New("malformed receipt")
 		}
-		ch := chains[peek.EnvelopeID]
-		var sc *store.StoredChain
-		for _, c := range stored {
-			if c.Envelope.EnvelopeID == string(peek.EnvelopeID) {
-				sc = c
-			}
-		}
+		ch, sc := chains[peek.EnvelopeID], stored[peek.EnvelopeID]
 		if sc == nil {
-			return errors.New("receipt for an unknown envelope")
+			if sc, err = l.Store.Vault().Chain(ctx, string(req.AccountID), string(peek.EnvelopeID)); errors.Is(err, store.ErrNotFound) {
+				return errors.New("receipt for an unknown envelope")
+			} else if err != nil {
+				return err
+			}
+			stored[peek.EnvelopeID] = sc
 		}
 		if ch == nil {
 			if ch, err = chainFor(tr, sc); err != nil {

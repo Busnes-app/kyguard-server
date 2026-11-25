@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -35,6 +37,15 @@ type VaultStore interface {
 	EnvelopeByDigest(ctx context.Context, digest string) ([]byte, error)
 	// Chains returns every envelope of the account with its receipts in order.
 	Chains(ctx context.Context, accountID string) ([]*StoredChain, error)
+	// ChainsAfter returns at most limit envelopes of the account above version after, in
+	// version order, with their receipts.
+	ChainsAfter(ctx context.Context, accountID string, after uint64, limit int) ([]*StoredChain, error)
+	// OpenChains returns the envelopes at or below version upTo that are the account's
+	// current envelope or have no abort, release or vault_commit receipt, in version order,
+	// with their receipts.
+	OpenChains(ctx context.Context, accountID string, upTo uint64) ([]*StoredChain, error)
+	// Chain returns one envelope of the account with its receipts, or ErrNotFound.
+	Chain(ctx context.Context, accountID, envelopeID string) (*StoredChain, error)
 	// Complete appends receipts by compare-and-swap (a byte-identical re-append is a no-op),
 	// sets current_envelope_id when current is non-empty, moves op's run to runState when
 	// non-empty and, when release is true, deletes the lock held by op. One transaction
@@ -299,7 +310,34 @@ func (v vaultStore) RecordIntent(ctx context.Context, r *RotationRun) error {
 }
 
 func (v vaultStore) Chains(ctx context.Context, accountID string) ([]*StoredChain, error) {
-	rows, err := v.s.db.QueryContext(ctx, v.s.rebind(`SELECT envelope_id, account_id, secret_version, envelope_kind, digest, envelope FROM secret_envelopes WHERE account_id = ? ORDER BY secret_version`), accountID)
+	return v.chainsWhere(ctx, `e.account_id = ? ORDER BY e.secret_version`, accountID)
+}
+
+func (v vaultStore) ChainsAfter(ctx context.Context, accountID string, after uint64, limit int) ([]*StoredChain, error) {
+	return v.chainsWhere(ctx, `e.account_id = ? AND e.secret_version > ? ORDER BY e.secret_version LIMIT ?`, accountID, int64(min(after, 1<<63-1)), limit)
+}
+
+func (v vaultStore) OpenChains(ctx context.Context, accountID string, upTo uint64) ([]*StoredChain, error) {
+	return v.chainsWhere(ctx, `e.account_id = ? AND e.secret_version <= ? AND (e.envelope_id = (SELECT current_envelope_id FROM accounts WHERE id = e.account_id)
+ OR NOT EXISTS (SELECT 1 FROM envelope_receipts t WHERE t.envelope_id = e.envelope_id AND t.receipt_type IN ('abort', 'release', 'vault_commit'))) ORDER BY e.secret_version`,
+		accountID, int64(min(upTo, 1<<63-1)))
+}
+
+func (v vaultStore) Chain(ctx context.Context, accountID, envelopeID string) (*StoredChain, error) {
+	cs, err := v.chainsWhere(ctx, `e.account_id = ? AND e.envelope_id = ?`, accountID, envelopeID)
+	if err == nil && len(cs) == 0 {
+		err = ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return cs[0], nil
+}
+
+// chainsWhere loads the envelopes `FROM secret_envelopes e WHERE <where>` (which may end in
+// ORDER BY and LIMIT), then the receipts of exactly those envelopes.
+func (v vaultStore) chainsWhere(ctx context.Context, where string, args ...any) ([]*StoredChain, error) {
+	rows, err := v.s.db.QueryContext(ctx, v.s.rebind(`SELECT e.envelope_id, e.account_id, e.secret_version, e.envelope_kind, e.digest, e.envelope FROM secret_envelopes e WHERE `+where), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -322,10 +360,26 @@ func (v vaultStore) Chains(ctx context.Context, accountID string) ([]*StoredChai
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	rows, err = v.s.db.QueryContext(ctx, v.s.rebind(`SELECT r.envelope_id, r.receipt_seq, r.receipt_type, r.operation_id, r.digest, r.prev_receipt_hash, r.receipt
-FROM envelope_receipts r JOIN secret_envelopes e ON e.envelope_id = r.envelope_id WHERE e.account_id = ? ORDER BY r.envelope_id, r.receipt_seq`), accountID)
+	// Receipts by envelope ID, not by re-running where: an envelope stored between the two
+	// reads must not shift a LIMIT window. Chunks stay under every driver's parameter limit.
+	for chunk := range slices.Chunk(out, 500) {
+		ids := make([]any, len(chunk))
+		for i, c := range chunk {
+			ids[i] = c.Envelope.EnvelopeID
+		}
+		q := `SELECT envelope_id, receipt_seq, receipt_type, operation_id, digest, prev_receipt_hash, receipt FROM envelope_receipts WHERE envelope_id IN (?` +
+			strings.Repeat(", ?", len(ids)-1) + `) ORDER BY envelope_id, receipt_seq`
+		if err := v.receiptsInto(ctx, byID, q, ids); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func (v vaultStore) receiptsInto(ctx context.Context, byID map[string]*StoredChain, q string, args []any) error {
+	rows, err := v.s.db.QueryContext(ctx, v.s.rebind(q), args...)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -333,15 +387,13 @@ FROM envelope_receipts r JOIN secret_envelopes e ON e.envelope_id = r.envelope_i
 		var seq int64
 		var raw string
 		if err := rows.Scan(&r.EnvelopeID, &seq, &r.ReceiptType, &r.OperationID, &r.Digest, &r.PrevReceiptHash, &raw); err != nil {
-			return nil, err
+			return err
 		}
 		r.ReceiptSeq, r.Receipt = uint64(seq), []byte(raw)
-		// An envelope committed between the two reads is left for the next call.
-		if c := byID[r.EnvelopeID]; c != nil {
-			c.Receipts = append(c.Receipts, &r)
-		}
+		c := byID[r.EnvelopeID]
+		c.Receipts = append(c.Receipts, &r)
 	}
-	return out, rows.Err()
+	return rows.Err()
 }
 
 // appendReceipt is the §3.5 compare-and-swap: seq must be head+1 and prev the head hash.

@@ -122,6 +122,10 @@ const (
 // variable only so tests can lower it.
 var SyncBudget = syncBudget
 
+// SyncChains is the most newer chains one sync_account reply carries, and so about the
+// most the Control Plane reads for it (decision 62). A variable only so tests can lower it.
+var SyncChains = 64
+
 const syncBudget = 2 << 20
 
 // A budget-sized page or one maximal manifest, base64url-encoded, leaves 1 MiB of a frame

@@ -39,8 +39,9 @@ Owns `/broker/v1/*`. It is never mounted on the main mux. Signed-object rules ar
 - Frames are at most `MaxFrame` (4 MiB) on both ends. `sync` pages manifests, at most
   `SyncPage` and `SyncBudget` encoded bytes but always one (a manifest is at most
   `cptrust.MaxManifest`), and lists the pool's accounts on the last page; `sync_account` returns one account's
-  chains above the broker's version plus its current and unterminated ones. Never return a
-  whole history in one frame.
+  chains above the broker's version, at most `SyncChains` and `SyncBudget`, plus its current
+  and unterminated ones. Never return or read a whole history for one request: use
+  `OpenChains`, `ChainsAfter` and `Chain`, never `Chains` (decision 62).
 - `CreateCA` never replaces existing files; `LoadCA` refuses a key that is not the
   certificate's.
 

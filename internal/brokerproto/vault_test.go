@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto/brokertest"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto/pqtest"
+	"github.com/Busnes-app/kyguard-server/internal/store"
 )
 
 type vaultFixture struct {
@@ -428,5 +430,113 @@ func TestManifestPagesAreBudgeted(t *testing.T) {
 	var s brokerproto.SyncReply
 	if err := f.call(brokerproto.MsgSync, brokerproto.SyncRequest{}, &s); err != nil || len(s.Manifests) != 1 {
 		t.Fatalf("tiny budget: %d manifests, %v", len(s.Manifests), err)
+	}
+}
+
+// countingStore counts the chains the listener reads from the store.
+type countingStore struct {
+	store.Store
+	n *atomic.Int64
+}
+
+func (s countingStore) Vault() store.VaultStore { return countingVault{s.Store.Vault(), s.n} }
+
+type countingVault struct {
+	store.VaultStore
+	n *atomic.Int64
+}
+
+func (v countingVault) count(cs []*store.StoredChain, err error) ([]*store.StoredChain, error) {
+	v.n.Add(int64(len(cs)))
+	return cs, err
+}
+
+func (v countingVault) Chains(ctx context.Context, a string) ([]*store.StoredChain, error) {
+	return v.count(v.VaultStore.Chains(ctx, a))
+}
+
+func (v countingVault) ChainsAfter(ctx context.Context, a string, after uint64, limit int) ([]*store.StoredChain, error) {
+	return v.count(v.VaultStore.ChainsAfter(ctx, a, after, limit))
+}
+
+func (v countingVault) OpenChains(ctx context.Context, a string, upTo uint64) ([]*store.StoredChain, error) {
+	return v.count(v.VaultStore.OpenChains(ctx, a, upTo))
+}
+
+func (v countingVault) Chain(ctx context.Context, a, e string) (*store.StoredChain, error) {
+	c, err := v.VaultStore.Chain(ctx, a, e)
+	if err == nil {
+		v.n.Add(1)
+	}
+	return c, err
+}
+
+// Paging bounds the store reads, not only the reply: an account sync page reads at most
+// SyncChains+1 newer chains plus the open ones, and a receipts request reads only the chain
+// it names, however long the history (PR Reviewer Guide on #10).
+func TestAccountSyncAndReceiptsReadOnlyWhatTheyNeed(t *testing.T) {
+	f := newVault(t)
+	saved := brokerproto.SyncChains
+	defer func() { brokerproto.SyncChains = saved }()
+	brokerproto.SyncChains = 2
+	rotate := func(end string) {
+		op := pqtest.UUID()
+		v, _ := f.reserve(op, 0)
+		e, raw := f.envelope(v)
+		if err := f.call(brokerproto.MsgEnvelope, brokerproto.EnvelopeRequest{OperationID: op, Envelope: raw}, nil); err != nil {
+			t.Fatal(err)
+		}
+		var rs []pqcrypto.B64
+		if end == pqcrypto.ReceiptAbort {
+			ab, _ := f.receipt(e, 1, pqcrypto.ZeroHex, pqcrypto.ReceiptAbort, pqcrypto.ReasonRefused, op)
+			rs = append(rs, ab)
+		} else {
+			c1, h1 := f.receipt(e, 1, pqcrypto.ZeroHex, pqcrypto.ReceiptCommitTarget, "", op)
+			c2, _ := f.receipt(e, 2, h1, pqcrypto.ReceiptRelease, "", op)
+			rs = append(rs, c1, c2)
+		}
+		if err := f.call(brokerproto.MsgReceipts, brokerproto.ReceiptsRequest{OperationID: op, AccountID: f.acct(), Receipts: rs}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rotate(pqcrypto.ReceiptRelease)
+	for range 12 {
+		rotate(pqcrypto.ReceiptAbort)
+	}
+	var n atomic.Int64
+	f.cp.L.Store = countingStore{f.cp.Store, &n} // the next frame orders this write before the listener's reads
+	after, pages, got := pqcrypto.Counter(0), 0, 0
+	for {
+		if pages > 20 {
+			t.Fatal("sync never completes")
+		}
+		n.Store(0)
+		var st brokerproto.AccountState
+		if err := f.call(brokerproto.MsgSyncAccount, brokerproto.SyncAccountRequest{AccountID: f.acct(), AfterVersion: after, Continue: pages > 0}, &st); err != nil {
+			t.Fatal(err)
+		}
+		pages++
+		if read := n.Load(); read > int64(brokerproto.SyncChains)+2 {
+			t.Fatalf("page %d read %d chains for %d sent", pages, read, len(st.Chains))
+		}
+		got += len(st.Chains)
+		for _, c := range st.Chains {
+			var v struct {
+				V pqcrypto.Counter `json:"secret_version"`
+			}
+			json.Unmarshal(c.Envelope, &v)
+			after = max(after, v.V)
+		}
+		if !st.More {
+			break
+		}
+	}
+	if got != 13 || pages < 6 {
+		t.Fatalf("%d chains in %d pages", got, pages)
+	}
+	n.Store(0)
+	rotate(pqcrypto.ReceiptRelease)
+	if read := n.Load(); read != 1 {
+		t.Fatalf("a receipts request read %d chains", read)
 	}
 }
