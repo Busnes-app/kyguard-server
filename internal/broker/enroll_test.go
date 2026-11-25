@@ -602,3 +602,32 @@ func TestReEnrollmentReceiptsAreBatched(t *testing.T) {
 		t.Fatalf("%d batches, last %s", len(cp.batches), last.ReceiptType)
 	}
 }
+
+// A reconnect's sync copies the stuck v2 envelope before re-enrollment; enrollCommit must
+// not add it a second time, or the two aborts at the same seq are refused and the
+// enrollment never completes (security review of #15).
+func TestReEnrollmentAfterSyncCopiedTheStuckEnvelope(t *testing.T) {
+	r := newEnrollRig(t, true)
+	m := r.machine()
+	defer m.J.Close()
+	quarantineV2(t, r, m)
+	if err := m.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(r.account(m).Chains); n != 2 {
+		t.Fatalf("sync left %d chains, want v1 and the stuck v2", n)
+	}
+	r.target.password = "Reset-By-Operator-1!"
+	if _, err := r.enroll(m, "Reset-By-Operator-1!"); err != nil {
+		t.Fatal(err)
+	}
+	if a, cur := r.account(m), r.current(m); a.Quarantined || cur.Envelope.SecretVersion != 3 || r.cpLock() != "" {
+		t.Fatalf("after re-enrollment: quarantined=%v current=%d lock=%q", a.Quarantined, cur.Envelope.SecretVersion, r.cpLock())
+	}
+	if err := m.Rotate(context.Background(), r.pol.AccountID, 1, due.Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if a := r.account(m); a.Run.State != broker.StateReleaseAuthorized || a.Run.SecretVersion != 4 {
+		t.Fatalf("next rotation %+v", a.Run)
+	}
+}
