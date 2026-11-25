@@ -45,6 +45,15 @@ h=hmac.new(k,struct.pack(">Q",c),hashlib.sha1).digest(); o=h[-1]&15
 print("%06d"%((struct.unpack(">I",h[o:o+4])[0]&0x7fffffff)%1000000))' "$1" "${2:-0}"
 }
 
+# wrong_totp <base32 secret>: a well-formed code that matches no step near now (a fixed one,
+# 000000 included, is sometimes valid).
+wrong_totp() {
+  near=" $(for o in -3 -2 -1 0 1 2 3; do totp "$1" "$o"; done | tr '\n' ' ')"
+  n=0
+  while case "$near" in *" $(printf '%06d' "$n") "*) true ;; *) false ;; esac; do n=$((n + 1)); done
+  printf '%06d\n' "$n"
+}
+
 login_body() { # login_body <username> <password> <code>
   printf '{"username":"%s","password":"%s","totp_code":"%s"}' "$1" "$2" "$3"
 }
@@ -134,7 +143,7 @@ check "unknown user is 401" \
 check "password without a code is refused" \
   "$(status -X POST -H 'Content-Type: application/json' -d '{"username":"admin","password":"'"$ADMIN_PASS"'"}' "$BASE/api/auth/login")" "400"
 check "wrong code is 401" \
-  "$(status -X POST -H 'Content-Type: application/json' -d "$(login_body admin "$ADMIN_PASS" 000000)" "$BASE/api/auth/login")" "401"
+  "$(status -X POST -H 'Content-Type: application/json' -d "$(login_body admin "$ADMIN_PASS" "$(wrong_totp "$SECRET")")" "$BASE/api/auth/login")" "401"
 
 LOGIN_HEADERS="$WORK/login.headers"
 LOGIN_BODY="$(curl -s -D "$LOGIN_HEADERS" -c "$WORK/cookies" -X POST -H 'Content-Type: application/json' \
@@ -159,7 +168,7 @@ CSRF="$(awk '$6 == "ky_csrf" { print $7 }' "$WORK/cookies")"
 check "password change requires CSRF" "$(status -b "$WORK/cookies" -X POST "$BASE/api/auth/change-password")" "403"
 check "password change requires a code" \
   "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
-    -d '{"current_password":"'"$ADMIN_PASS"'","new_password":"ReplacementSmokePass456!","totp_code":"000000"}' "$BASE/api/auth/change-password")" "401"
+    -d '{"current_password":"'"$ADMIN_PASS"'","new_password":"ReplacementSmokePass456!","totp_code":"'"$(wrong_totp "$SECRET")"'"}' "$BASE/api/auth/change-password")" "401"
 check "password change with a code succeeds" \
   "$(status -b "$WORK/cookies" -H "X-CSRF-Token: $CSRF" -H 'Content-Type: application/json' \
     -d '{"current_password":"'"$ADMIN_PASS"'","new_password":"ReplacementSmokePass456!","totp_code":"'"$(totp "$SECRET" 1)"'"}' "$BASE/api/auth/change-password")" "200"

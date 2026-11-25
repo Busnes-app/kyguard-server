@@ -191,7 +191,8 @@ func TestCookieAuthenticatedWriteRequiresCSRF(t *testing.T) {
 	}
 }
 
-// loginStatusFor posts one sign-in from peer with a code that never verifies.
+// loginStatusFor posts one sign-in from peer with a placeholder code. Use it only where the
+// password or account is wrong, so the code is never checked; 000000 is sometimes valid.
 func loginStatusFor(t *testing.T, srv *api.Server, username, pass, peer string) *httptest.ResponseRecorder {
 	t.Helper()
 	return loginWithCode(t, srv, username, pass, "000000", peer)

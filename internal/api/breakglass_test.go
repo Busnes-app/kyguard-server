@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Busnes-app/ky-primitives/password"
+	"github.com/Busnes-app/ky-primitives/totp"
 	"github.com/Busnes-app/kyguard-server/internal/api"
 	"github.com/Busnes-app/kyguard-server/internal/auth"
 	"github.com/Busnes-app/kyguard-server/internal/crypto"
@@ -37,7 +38,7 @@ func TestBreakGlassSignInNeedsTheCode(t *testing.T) {
 	if w := loginWithCode(t, srv, "root", bg.Password, "", "192.0.2.1:1"); w.Code != http.StatusBadRequest {
 		t.Fatalf("no totp_code: %d", w.Code)
 	}
-	if w := loginWithCode(t, srv, "root", bg.Password, "000000", "192.0.2.1:1"); w.Code != http.StatusUnauthorized {
+	if w := loginWithCode(t, srv, "root", bg.Password, bg.WrongCode(t), "192.0.2.1:1"); w.Code != http.StatusUnauthorized {
 		t.Fatalf("wrong totp_code: %d", w.Code)
 	}
 }
@@ -82,7 +83,7 @@ func TestUserCodeLimitRefusesACorrectCode(t *testing.T) {
 	srv, st, _ := setupTestServer(t)
 	bg := newBreakGlass(t, srv, st, "root")
 	for i := 1; i <= auth.UserCodeLimit; i++ {
-		if w := loginWithCode(t, srv, "root", bg.Password, "000000", "192.0.2."+strconv.Itoa(i)+":1"); w.Code != http.StatusUnauthorized {
+		if w := loginWithCode(t, srv, "root", bg.Password, bg.WrongCode(t), "192.0.2."+strconv.Itoa(i)+":1"); w.Code != http.StatusUnauthorized {
 			t.Fatalf("wrong code %d: %d", i, w.Code)
 		}
 	}
@@ -265,5 +266,17 @@ func TestBreakGlassReasonCountsCharacters(t *testing.T) {
 	}
 	if code := reason(strings.Repeat("障", 500)); code != http.StatusOK { // 1500 bytes
 		t.Fatalf("500 multibyte characters: %d", code)
+	}
+}
+
+// The wrong-code tests must not lean on a fixed code: this secret's code at zerosAt is 000000.
+func TestWrongCodeIsNeverValid(t *testing.T) {
+	const secret = "AAAAAAAAB34YOAAAAAAAAAAAAAAAAAAA"
+	zerosAt := time.Unix(1795600000, 0)
+	if code, _ := totp.Code(secret, zerosAt); code != "000000" {
+		t.Fatalf("fixture code %s", code)
+	}
+	if _, ok := totp.Validate(secret, wrongCode(t, secret, zerosAt), zerosAt); ok {
+		t.Fatal("wrongCode returned an accepted code")
 	}
 }

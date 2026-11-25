@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -61,6 +62,30 @@ func (b *breakGlass) Code(t *testing.T) string {
 	}
 	b.used++
 	return code
+}
+
+// WrongCode returns a well-formed code that matches no step near now, so a refusal never
+// rests on luck: any fixed code, 000000 included, is sometimes a valid one.
+func (b *breakGlass) WrongCode(t *testing.T) string {
+	t.Helper()
+	return wrongCode(t, b.Secret, time.Now())
+}
+
+func wrongCode(t *testing.T, secret string, at time.Time) string {
+	t.Helper()
+	near := map[string]bool{}
+	for step := -3; step <= 3; step++ {
+		code, err := totp.Code(secret, at.Add(time.Duration(step)*totp.Period*time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		near[code] = true
+	}
+	for n := 0; ; n++ {
+		if code := fmt.Sprintf("%06d", n); !near[code] {
+			return code
+		}
+	}
 }
 
 func (b *breakGlass) loginBody(t *testing.T) []byte {

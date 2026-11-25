@@ -74,7 +74,7 @@ func TestForcedPasswordReplacement(t *testing.T) {
 		old, new string
 		status   int
 	}{{oldPassword, "Fifteen-chars-1", 400}, {oldPassword, oldPassword, 400}, {"incorrect", newPassword, 401}, {oldPassword, newPassword, 401}} {
-		if w := call("POST", "/api/auth/change-password", body(bad.old, bad.new, "000000"), true, true); w.Code != bad.status {
+		if w := call("POST", "/api/auth/change-password", body(bad.old, bad.new, bg.WrongCode(t)), true, true); w.Code != bad.status {
 			t.Fatal(w.Code, w.Body)
 		}
 	}
