@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Busnes-app/ky-primitives/recoverykey"
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto/brokertest"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
@@ -832,5 +833,49 @@ func TestAccountSyncNeedsTheDescriptor(t *testing.T) {
 	var st brokerproto.AccountState
 	if err := f.call(brokerproto.MsgSyncAccount, brokerproto.SyncAccountRequest{AccountID: pol.AccountID}, &st); err == nil {
 		t.Fatalf("sync without the descriptor: %+v", st)
+	}
+}
+
+// The chain room the store keeps above MaxEnvelope fits commit_target plus a release with a
+// wrap for every standing recipient a policy may name, so every admitted envelope can
+// finish its rotation and release its lock (security review of #10).
+func TestChainRoomFitsTheLargestRelease(t *testing.T) {
+	f := newVault(t)
+	op := pqtest.UUID()
+	e, _ := f.envelope(1)
+	ct, h1 := f.receipt(e, 1, pqcrypto.ZeroHex, pqcrypto.ReceiptCommitTarget, "", op)
+	dek := make([]byte, pqcrypto.DEKBytes)
+	var wraps []pqcrypto.Recipient
+	for range pqcrypto.MaxStandingRecipients {
+		k, err := recoverykey.Generate()
+		if err != nil {
+			t.Fatal(err)
+		}
+		w, err := e.WrapTo(dek, pqtest.UUID(), k.Public().Bytes())
+		if err != nil {
+			t.Fatal(err)
+		}
+		wraps = append(wraps, w)
+	}
+	r := &pqcrypto.EnvelopeReceipt{Header: pqcrypto.Header{Type: pqcrypto.TypeReceipt, DeploymentID: f.cp.Dep.ID, Epoch: f.pol.Epoch,
+		Scope: e.Scope, SignerRole: pqcrypto.RoleBroker}, EnvelopeID: e.EnvelopeID, EnvelopeKind: e.EnvelopeKind,
+		SecretVersion: e.SecretVersion, ReceiptSeq: 2, PrevReceiptHash: h1, ReceiptType: pqcrypto.ReceiptRelease,
+		OperationID: op, ExtraRecipients: wraps, IssuedAt: pqcrypto.NewTime(time.Now())}
+	rel := f.signed(r)
+	if room := store.MaxChain - store.MaxEnvelope; len(ct)+len(rel) > room {
+		t.Fatalf("commit_target %d + release %d bytes > %d bytes of room", len(ct), len(rel), room)
+	}
+}
+
+// A policy naming more standing recipients than a release can carry is refused.
+func TestPolicyStandingRecipientsAreBounded(t *testing.T) {
+	d := pqtest.New(t)
+	p := d.ManagedPolicy(pqtest.UUID(), pqtest.UUID(), 1, pqcrypto.HexID(strings.Repeat("ab", 32)))
+	p.CheckoutMode = pqcrypto.ModeStanding
+	for range pqcrypto.MaxStandingRecipients + 1 {
+		p.StandingRecipientPrincipalIDs = append(p.StandingRecipientPrincipalIDs, pqtest.UUID())
+	}
+	if _, err := d.Trust(t).Accept(d.Signed(t, p)); !errors.Is(err, pqcrypto.ErrBody) {
+		t.Fatalf("policy with %d standing recipients: %v", len(p.StandingRecipientPrincipalIDs), err)
 	}
 }

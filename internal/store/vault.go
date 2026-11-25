@@ -20,13 +20,13 @@ var ErrTooLarge = errors.New("record over its size limit")
 
 // MaxChain bounds an envelope with all its receipts, and MaxDescriptor a target descriptor,
 // in canonical bytes, so one chain and its descriptor always fit one sync reply.
-// MaxEnvelope leaves room in the chain for a terminal receipt (abort, release or
-// vault_commit carry no extra recipients), so a stored envelope can always be finished
-// (security review of #15).
+// MaxEnvelope leaves room in the chain for commit_target and a release carrying a wrap for
+// each of up to pqcrypto.MaxStandingRecipients standing recipients (or one abort or
+// vault_commit), so a stored envelope can always be finished (security reviews of #10, #15).
 const (
 	MaxChain      = 256 << 10
 	MaxDescriptor = 64 << 10
-	MaxEnvelope   = MaxChain - 32<<10
+	MaxEnvelope   = MaxChain - 96<<10
 )
 
 // LockAction is what Complete does with the lock op holds.
