@@ -400,3 +400,28 @@ func TestReconnectDoesNotBlockOnAnUnresponsiveConnection(t *testing.T) {
 		t.Fatalf("reconnected broker did not get the message: %v", err)
 	}
 }
+
+// CloseAll drops a broker's channel at once, so the broker reconnects elsewhere instead of
+// waiting out the shutdown drain (PR Reviewer Guide on #8).
+func TestCloseAllDropsEveryChannel(t *testing.T) {
+	f := newFixture(t)
+	p, k := f.mustPair()
+	f.admitPool(1, member(p, k, pqcrypto.StatusActive))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := brokerproto.Dial(ctx, f.srv.URL, p.CACert, clientCert(p, k))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	time.Sleep(200 * time.Millisecond) // let the listener register it
+	f.l.CloseAll()
+	rctx, rcancel := context.WithTimeout(ctx, 3*time.Second)
+	defer rcancel()
+	if _, _, err := c.Read(rctx); err == nil || rctx.Err() != nil {
+		t.Fatalf("channel still open after CloseAll: %v", err)
+	}
+	if err := f.l.Send(ctx, p.BrokerID, brokerproto.Message{V: 1, Type: brokerproto.MsgNudge}); err == nil {
+		t.Fatal("Send reached a closed channel")
+	}
+}
