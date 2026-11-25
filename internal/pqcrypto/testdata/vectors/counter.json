@@ -1,0 +1,70 @@
+[
+  {
+    "name": "zero",
+    "json": "\"0\"",
+    "value": "0",
+    "verdict": "ok"
+  },
+  {
+    "name": "one",
+    "json": "\"1\"",
+    "value": "1",
+    "verdict": "ok"
+  },
+  {
+    "name": "max 2^63-1",
+    "json": "\"9223372036854775807\"",
+    "value": "9223372036854775807",
+    "verdict": "ok"
+  },
+  {
+    "name": "above 2^63-1",
+    "json": "\"9223372036854775808\"",
+    "verdict": "invalid_counter"
+  },
+  {
+    "name": "2^64",
+    "json": "\"18446744073709551616\"",
+    "verdict": "invalid_counter"
+  },
+  {
+    "name": "leading zero",
+    "json": "\"01\"",
+    "verdict": "invalid_counter"
+  },
+  {
+    "name": "double zero",
+    "json": "\"00\"",
+    "verdict": "invalid_counter"
+  },
+  {
+    "name": "plus sign",
+    "json": "\"+1\"",
+    "verdict": "invalid_counter"
+  },
+  {
+    "name": "minus sign",
+    "json": "\"-1\"",
+    "verdict": "invalid_counter"
+  },
+  {
+    "name": "empty",
+    "json": "\"\"",
+    "verdict": "invalid_counter"
+  },
+  {
+    "name": "whitespace",
+    "json": "\" 1\"",
+    "verdict": "invalid_counter"
+  },
+  {
+    "name": "JSON number",
+    "json": "1",
+    "verdict": "invalid_counter"
+  },
+  {
+    "name": "non-ASCII digit",
+    "json": "\"١\"",
+    "verdict": "invalid_counter"
+  }
+]

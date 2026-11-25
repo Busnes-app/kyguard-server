@@ -15,16 +15,26 @@ contradicts itself. Each names its section. The most secure reading wins.
    restore contract. The inherited `ky_server_base:` domain-separation labels (sealed
    KyRecovery token, replica fingerprint) stay, so the base's pinned fixtures keep proving
    the format.
-4. §7.4 (break-glass password). `break-glass create` generates the password (24 characters,
-   144 bits) and prints it once with the TOTP URI, rather than reading one from argv (visible in
-   process listings) or a terminal. The holder may change it with password + code.
-5. §7.4 (403 versus 401). A wrong password answers 401 for every account, so the 403 for an SSO
-   account comes only after its password verifies; SSO accounts have no password, so the 403
-   cannot enumerate them.
-6. §7.4 (break-glass reason). The reason is stored on the session (`sessions.break_glass_reason`),
-   set once through `POST /api/auth/break-glass/reason`, and checked by the admin middleware.
-7. §7.3 rule 4 (factor binding). The sealed TOTP secret carries its user ID inside the sealed
-   bytes, so a `secret_enc` copied onto another user's row does not open.
-8. §7.3 rule 5 (counting). Each code attempt is inserted and committed before it is counted, and
-   released only on success, so concurrent guesses can only both be refused, never both admitted
-   past the limit.
+4. §3.1 (JSON numbers). Signed objects allow only integers in [-(2^53-1), 2^53-1], with no
+   fraction, exponent or `-0`; in that range RFC 8785 number serialization is plain decimal
+   in every runtime. Counters stay decimal strings (rule 2).
+5. §3.1 rule 1 (strict typed decoding). A received object must re-encode from its typed form
+   to the same JCS bytes as its input. This rejects unknown fields, case-variant keys (Go's
+   `encoding/json` matches keys case-insensitively), explicit empty values for omitted
+   fields and `null` in place of a value.
+6. §3.1 rule 3 (timestamps). The one accepted form is `YYYY-MM-DDTHH:MM:SSZ`: UTC, whole
+   seconds, no fraction, so the JCS bytes are identical across runtimes.
+7. §3.1 rule 3 (base64url). Padding, the standard alphabet, non-zero trailing bits and
+   embedded CR or LF are rejected. Go's decoder skips CR/LF even in strict mode, so they are
+   refused first.
+8. §3.1 rule 4 (`D(obj)`). Only the top-level `signatures` and `approvals` members are
+   removed; nested objects keep theirs, so `bootstrap_fingerprint` covers the signatures of
+   the bundled manifests. `<type>` must match `^[a-z][a-z0-9_]*$`.
+9. §3.1 (AAD field checks). The AAD builders refuse an `envelope_kind` other than
+   `managed`/`vaulted`, a `recipient_type` other than `broker`/`user`/`recovery`, and a
+   `recipient_id` without that type's form (UUID for broker and user, 64-hex for recovery).
+   `WrapDEK` and `UnwrapDEK` refuse an AAD whose `key_id` is not the `enc_key_id` of the key
+   in use.
+10. §3.4 (`opid`). The first 16 digest bytes are formatted `8-4-4-4-12` lowercase hex with no
+    UUID version or variant bits forced; the spec says only "formatted as a UUID", and
+    forcing bits would discard digest entropy.

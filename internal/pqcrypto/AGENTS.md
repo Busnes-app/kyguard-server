@@ -1,0 +1,38 @@
+# pqcrypto
+
+## Purpose
+KyGuard's wire format and crypto core, `docs/SPEC.md` §3.1: strict JSON field types,
+RFC 8785 JCS (`canonical/`), the domain digest `D(obj)`, `HybridSig`/`HybridPub`
+(ML-DSA-65 + Ed25519), `sig_key_id`/`enc_key_id`, the payload and DEK-wrap AADs, the HPKE
+DEK wrap, the AES-256-GCM payload and `opid`. Used by the Control Plane, broker and CLI.
+
+## Ownership
+Owns every byte KyGuard signs, hashes or seals. The spec is normative; this package
+implements it and `docs/DECISIONS.md` records where the spec left a choice.
+
+## Local Contracts
+- Stdlib crypto only (`crypto/mldsa`, `crypto/ed25519`, `crypto/hpke`, `crypto/aes`,
+  `crypto/cipher`, `crypto/sha256`) plus `ky-primitives/recoverykey` for X-Wing keys. No
+  third-party crypto, no custom primitives, no signer interface.
+- Parse untrusted JSON only through `canonical.Decode`: it rejects duplicate keys,
+  malformed UTF-8, lone surrogates, non-integer or unsafe numbers, unknown fields and any
+  input whose typed re-encoding differs from its canonical form.
+- Both signature halves are always checked; either failing rejects.
+- Every error a vector names is a stable `Error`/`canonical.Error` code. Never rename one.
+- Golden vectors live in `testdata/vectors/` and are written only by
+  `go generate ./internal/pqcrypto` (deterministic: fixed seeds plus
+  `testing/cryptotest.SetGlobalRandom`). Generators state each verdict themselves; the
+  consumers in `vectors_test.go` run the real code and must not share generator logic.
+  Phase 0 vectors are Go-only; the browser build consumes them from Phase 1C.
+
+## Work Guidance
+- A wire change is a vector change: regenerate, review the JSON diff, and add a negative
+  vector for each new refusal.
+
+## Verification
+- `go test -race ./internal/pqcrypto/...` (includes `TestVectorsCurrent`, which fails on
+  stale vectors), also with `GODEBUG=fips140=on`.
+- `go test -fuzz=FuzzParse ./internal/pqcrypto/canonical`
+
+## Child DOX Index
+None.
