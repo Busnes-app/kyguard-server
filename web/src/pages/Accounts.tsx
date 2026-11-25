@@ -14,6 +14,7 @@ export const Accounts: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
   const defs = useJSON<Record<string, AttributeDefinition[]>>('/api/attributes');
   const label = (entity: string, key: string) => defs.data?.[entity]?.find((d) => d.key === key)?.label || key;
   const [open, setOpen] = useState<string>('');
+  const [saved, setSaved] = useState(0); // bumps after a detail closes, so every list reloads
   const set = (k: string, v: string) => setFilter((f) => ({ ...f, [k]: v }));
 
   const choices = useMemo(() => {
@@ -110,8 +111,8 @@ export const Accounts: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
           </div>
         </>
       )}
-      {isAdmin && (card.data?.totals.decommissioned ?? 0) > 0 && <Retired onOpen={setOpen} />}
-      {open && <AccountDetail id={open} onClose={() => { setOpen(''); reload(); }} />}
+      {isAdmin && (card.data?.totals.decommissioned ?? 0) > 0 && <Retired version={saved} onOpen={setOpen} />}
+      {open && <AccountDetail id={open} onClose={() => { setOpen(''); reload(); setSaved((n) => n + 1); }} />}
     </div>
   );
 };
@@ -278,9 +279,11 @@ const OwnerPicker: React.FC<{ current: string; onPick: (id: string) => void }> =
 
 // Retired lists decommissioned accounts, which the traffic light counts but never shows, so an
 // admin can open one and reactivate it.
-const Retired: React.FC<{ onOpen: (id: string) => void }> = ({ onOpen }) => {
+const Retired: React.FC<{ version: number; onOpen: (id: string) => void }> = ({ version, onOpen }) => {
   const [shown, setShown] = useState(false);
   const list = useJSON<{ ID: string; Name: string; asset_name: string }[]>(shown ? '/api/accounts?status=decommissioned' : null);
+  const { reload } = list;
+  useEffect(() => { if (version > 0) reload(); }, [version, reload]); // a status may have changed
   return (
     <div className="panel dr-section kg-top">
       <button type="button" className="btn-secondary" aria-expanded={shown} onClick={() => setShown(!shown)}>{shown ? 'Hide' : 'Show'} decommissioned accounts</button>
