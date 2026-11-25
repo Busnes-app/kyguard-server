@@ -359,7 +359,13 @@ Numbered separately: these came from the parallel crypto stack.
     stores an envelope only if it leaves 96 KiB of the 256 KiB chain (`store.MaxEnvelope`).
     That room holds `commit_target` plus a `release` with all 32 wraps, so an admitted
     rotation can always finish and give back its lock.
-78. §3.6, §4.1 (transaction refusals). A refusal of a relayed transaction, proof or
+78. §4.5, §7.3 rule 6, §7.5 (broker route classes). Every enrollment and transaction route
+    is `session` class in the #18 registry. Reserving and submitting an enrollment need a
+    step-up within five minutes (§4.5 "fresh step-up"); so does submitting a transaction,
+    as a broker action. The status reads, the possession proof and the check-in are
+    `session` with no window: they continue a transaction already submitted under step-up,
+    the proof is bound to it, and a check-in may come hours later when the lease ends.
+79. §3.6, §4.1 (transaction refusals). A refusal of a relayed transaction, proof or
     check-in is journaled in a `refusals` bucket keyed by request ID and re-sent by every
     tick and by recovery until the Control Plane acknowledges it. A refusal the Control
     Plane rejects (a `RemoteError`, such as an unknown request) is dropped, since it would
