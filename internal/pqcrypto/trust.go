@@ -372,3 +372,27 @@ func (t *Trust) checkKeysUnique(ke *KeyEnrollmentManifest) error {
 	}
 	return nil
 }
+
+// DecodeManifest strictly decodes and validates a manifest of a type this binary builds,
+// without trusting it: for review before signing. It returns the manifest and its D.
+func DecodeManifest(raw []byte) (Signed, Digest, error) {
+	typ, err := PeekType(raw)
+	if err != nil {
+		return nil, Digest{}, err
+	}
+	m, err := newManifest(typ)
+	if err != nil {
+		return nil, Digest{}, err
+	}
+	_, d, err := decodeSigned(raw, m)
+	if err != nil {
+		return nil, Digest{}, err
+	}
+	if err := m.validate(); err != nil {
+		return nil, Digest{}, err
+	}
+	return m, d, nil
+}
+
+// HeaderOf returns the header of a signed object.
+func HeaderOf(o Signed) Header { return *o.head() }

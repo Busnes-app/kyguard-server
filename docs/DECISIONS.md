@@ -73,3 +73,29 @@ contradicts itself. Each names its section. The most secure reading wins.
     enrollment candidate, and `superseded_by_reenrollment` at the next seq of any unterminated
     envelope. A vaulted `rewrap_user` signer must already be a user recipient (initial or
     added by an earlier rewrap).
+20. §3.1, §3.2 rule 6 (key files). Argon2id comes from `golang.org/x/crypto/argon2`, the
+    implementation `ky-primitives/password` uses, at `password.DefaultParams()`. It derives
+    an AES-256-GCM key that seals the seeds; the clear header (kind, ID, key IDs, KDF
+    parameters) is the AAD, so it cannot be edited without the passphrase. New passphrases
+    need at least 12 characters.
+21. §3.2 rule 2 (`kyguard-cli init`). Every custodian signs both epoch-1 manifests, not just
+    M, and init verifies the bundle against its own fingerprint before writing it.
+22. §3.2 rules 3 and 5 (`trust`). Replacing a pin with a different fingerprint needs
+    `--replace`; a failed `trust` leaves no state behind.
+23. §3.2 rule 3 (manifest intake). `kyguard-cli import` is how the CLI accepts manifests
+    offline and records their high-water marks (the spec names no command for it). It
+    alerts on equivocation.
+24. §3.2 rule 4 (`sign`). The CLI refuses to sign a managed policy without a target
+    descriptor whose recomputed digest, account and deployment match the policy, and
+    refuses a signing key outside the current custodian set.
+25. §3.3, §13 (`enroll`). Phase 0 enrolls a principal's first key only; adding or rotating
+    keys, which needs self-signatures by the existing active keys, comes later.
+26. §7.6 (Control Plane client). The CLI reaches the Control Plane only through
+    `cli.Client`. The session-backed HTTP implementation arrives with `kyguard-cli login`,
+    together with the Control Plane's draft and manifest endpoints; Phase 0 commands take
+    files.
+27. §3.1, §9.4 (decrypt boundary). `TestNothingInTheServerDecrypts` exempts exactly one
+    function outside the restore command: `internal/cli/keyfile.go` `openKeyFile`. It
+    rebuilds a user's own X-Wing key from that user's passphrase-sealed key file with
+    `recoverykey.FromSeed` (§3.1 names `recoverykey` for these keys); it is part of
+    `kyguard-cli`, not the server, and never handles the suite recovery key.

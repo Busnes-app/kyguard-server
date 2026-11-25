@@ -29,11 +29,19 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   with all four actions, approvals and possession proofs; secret envelopes with the signer,
   recipient and escrow rules; receipt chains with compare-and-swap, the current-envelope rule
   and the chain-extension check, with golden vectors.
+- `kyguard-cli` (spec §3.2): `init` runs the offline ceremony (custodian key files, the
+  epoch-1 manifests and the bootstrap bundle, with a 1-of-1 warning), `trust` pins the
+  fingerprint, `import` records verified manifests and refuses rollback and forks,
+  `enroll` creates a user's keys and a self-signed key enrollment draft, and `sign` shows
+  a draft decoded (principals resolved, target descriptor recomputed, Control Plane labels
+  marked unverified) before applying a Custodian signature.
 
 ### Upgrade impact
 
 - No KyGuard install exists yet, so nothing migrates. The replica configuration fingerprint
   no longer covers the removed `KY_SAML_*` settings.
+- New binary `kyguard-cli` (`go build ./cmd/cli`); `golang.org/x/term` is a new direct
+  dependency and `golang.org/x/crypto` becomes direct (Argon2id).
 - The module declares `go 1.27.0` (for `crypto/mldsa`); builds need Go 1.27, as the pinned
   `go1.27.4` toolchain already provides.
 
