@@ -106,6 +106,11 @@ type SessionStore interface {
 	// EndSSOSession fences the issuer's login sid until fenceUntil, then ends its sessions.
 	EndSSOSession(ctx context.Context, issuer, sid string, fenceUntil time.Time) error
 	CleanExpiredSessions(ctx context.Context) error
+	// CreateCLICode stores a CLI login code with audit in one transaction (spec §7.6).
+	CreateCLICode(ctx context.Context, c *CLICode, audit *AuditRecord) error
+	// TakeCLICode deletes the unexpired code with this hash and returns it: a code is
+	// spent by its first redemption attempt. ErrNotFound when there is none.
+	TakeCLICode(ctx context.Context, codeHash string) (*CLICode, error)
 	// ExchangeSession replaces a pending session with active (and a first factor when
 	// newFactor is set) in one transaction; see sessionStore.ExchangeSession.
 	ExchangeSession(ctx context.Context, pendingHash, passwordHash string, active *Session, newFactor *MFAFactor) error
@@ -179,4 +184,12 @@ type IntentStore interface {
 	// noted outcome, else to outcome_unknown with an audit record. It returns how many.
 	Reconcile(ctx context.Context, kind string, olderThan time.Duration) (int, error)
 	Get(ctx context.Context, operationID string) (*Intent, error)
+}
+
+// CLICode is a kyguard-cli login code (spec §7.6), bound to the verified login and to the
+// CLI's PKCE challenge (base64url SHA-256 of its verifier).
+type CLICode struct {
+	CodeHash, UserID, SSOIssuer, SSOSID, Challenge string
+	IssuedAt, ExpiresAt                            time.Time
+	MFAAsserted                                    bool
 }

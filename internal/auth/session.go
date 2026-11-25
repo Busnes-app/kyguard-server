@@ -90,6 +90,23 @@ func (sm *SessionManager) IssuePendingSession(ctx context.Context, w http.Respon
 	}, nil)
 }
 
+// IssueCLIPendingSession redeems a kyguard-cli login code (spec §7.6): the pending session the
+// browser callback would have issued, bound to the same login, returned as a bearer token and
+// never as a cookie. CreateSession re-checks the logout fences after commit, so a logout
+// between callback and redemption makes it fail with store.ErrSSOSessionEnded.
+func (sm *SessionManager) IssueCLIPendingSession(ctx context.Context, r *http.Request, user *store.User, code *store.CLICode, audit *store.AuditRecord) (string, error) {
+	rawToken := crypto.RandomHex(32)
+	sess := &store.Session{
+		TokenHash: crypto.SHA256Hex([]byte(rawToken)), UserID: user.ID, UserAgent: r.UserAgent(), IPAddress: ClientIP(r, sm.config.TrustedProxies),
+		CreatedAt: code.IssuedAt, ExpiresAt: time.Now().UTC().Add(PendingTTL),
+		SSOSID: code.SSOSID, SSOIssuer: code.SSOIssuer, Stage: store.StagePending, MFAAsserted: code.MFAAsserted, Audit: audit,
+	}
+	if err := sm.store.Sessions().CreateSession(ctx, sess, user.PasswordHash); err != nil {
+		return "", err
+	}
+	return rawToken, nil
+}
+
 // ExchangePending deletes the pending session and issues a new active one with a new token
 // (spec §7.3 rule 2): stepped up now, ending SSOSessionTTL later, and still bound to the
 // pending session's login (issuer, sid, original iat) so the logout fences reach it.

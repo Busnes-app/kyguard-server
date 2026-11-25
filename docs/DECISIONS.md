@@ -103,3 +103,10 @@ contradicts itself. Each names its section. The most secure reading wins.
    `RecoveryKeyManifest`. That verifier is on the trust stack (#4), which is not joined to this
    stack, so the gate is not built here. Built fail-closed in this stack, it would refuse every
    pin and backup; built fail-open, it would be a hole if merged alone. It is a join task.
+19g. §7.6 (CLI login). The login takes `cli_port` (1024–65535) and an S256 `cli_challenge`,
+   held in a state-bound cookie for the callback. The callback issues no browser session; the
+   code goes only to `http://127.0.0.1:<port>/cb`. A code is spent by its first redemption
+   attempt, even with a wrong verifier, and an expired code is deleted when it is tried. The
+   redemption's pending session goes through `CreateSession`, which inserts, commits and then
+   re-checks both fences against the original `iat`. After step-up, a bearer caller gets the new
+   active token in the body; a cookie caller never does, so page script cannot read it.

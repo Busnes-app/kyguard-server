@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"slices"
@@ -750,9 +751,45 @@ func (s *sessionStore) SetBreakGlassReason(ctx context.Context, tokenHash, reaso
 }
 
 func (s *sessionStore) CleanExpiredSessions(ctx context.Context) error {
-	q := s.store.rebind("DELETE FROM sessions WHERE expires_at < ?")
-	_, err := s.store.db.ExecContext(ctx, q, time.Now().UTC())
+	now := time.Now().UTC()
+	if _, err := s.store.db.ExecContext(ctx, s.store.rebind("DELETE FROM sessions WHERE expires_at < ?"), now); err != nil {
+		return err
+	}
+	_, err := s.store.db.ExecContext(ctx, s.store.rebind("DELETE FROM cli_login_codes WHERE expires_at < ?"), now)
 	return err
+}
+
+func (s *sessionStore) CreateCLICode(ctx context.Context, c *CLICode, audit *AuditRecord) error {
+	tx, err := s.store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, s.store.rebind(`INSERT INTO cli_login_codes (code_hash, user_id, sso_issuer, sso_sid, issued_at, mfa_asserted, challenge, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
+		c.CodeHash, c.UserID, c.SSOIssuer, c.SSOSID, c.IssuedAt.UTC(), c.MFAAsserted, c.Challenge, c.ExpiresAt.UTC()); err != nil {
+		return err
+	}
+	if err := s.store.appendAudit(ctx, tx, audit); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *sessionStore) TakeCLICode(ctx context.Context, codeHash string) (*CLICode, error) {
+	c := CLICode{CodeHash: codeHash}
+	err := s.store.db.QueryRowContext(ctx, s.store.rebind(`DELETE FROM cli_login_codes WHERE code_hash = ? AND expires_at > ?
+RETURNING user_id, sso_issuer, sso_sid, issued_at, mfa_asserted, challenge, expires_at`), codeHash, time.Now().UTC()).
+		Scan(&c.UserID, &c.SSOIssuer, &c.SSOSID, &c.IssuedAt, &c.MFAAsserted, &c.Challenge, &c.ExpiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		// An expired code is spent too: nothing may redeem it later.
+		_, _ = s.store.db.ExecContext(ctx, s.store.rebind(`DELETE FROM cli_login_codes WHERE code_hash = ?`), codeHash)
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	c.IssuedAt, c.ExpiresAt = c.IssuedAt.UTC(), c.ExpiresAt.UTC()
+	return &c, nil
 }
 
 // ---------------------------------------------------------------------

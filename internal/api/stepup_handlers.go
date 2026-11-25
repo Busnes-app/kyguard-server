@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/Busnes-app/ky-primitives/totp"
 	"github.com/Busnes-app/kyguard-server/internal/auth"
@@ -60,8 +61,13 @@ func (s *Server) codeRefused(w http.ResponseWriter, r *http.Request, userID stri
 }
 
 // exchanged answers a pending-to-active exchange.
-func (s *Server) exchanged(w http.ResponseWriter, err error) {
+// exchanged answers a pending-to-active exchange. A caller that authenticated by bearer token
+// (kyguard-cli, spec §7.6) gets the new token in the body; a browser only gets the cookie, so
+// script on the page never sees a session token.
+func (s *Server) exchanged(w http.ResponseWriter, r *http.Request, token string, err error) {
 	switch {
+	case err == nil && strings.HasPrefix(r.Header.Get("Authorization"), "Bearer "):
+		s.writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "token": token})
 	case err == nil:
 		s.writeJSON(w, http.StatusOK, map[string]bool{"authenticated": true})
 	case errors.Is(err, store.ErrSSOSessionEnded):
@@ -95,7 +101,7 @@ func (s *Server) handleStepupTOTP(w http.ResponseWriter, r *http.Request) {
 		if err := detachedWrite(r, func(ctx context.Context) error {
 			return s.store.Sessions().RefreshStepup(ctx, sess, user.PasswordHash, factorID)
 		}); err != nil {
-			s.exchanged(w, err)
+			s.exchanged(w, r, "", err)
 			return
 		}
 		s.writeJSON(w, http.StatusOK, map[string]bool{"stepped_up": true})
@@ -106,12 +112,14 @@ func (s *Server) handleStepupTOTP(w http.ResponseWriter, r *http.Request) {
 		s.codeRefused(w, r, user.ID, err)
 		return
 	}
+	var token string
 	err = detachedWrite(r, func(ctx context.Context) error {
-		_, _, err := s.sessions.ExchangePending(ctx, w, r, user, sess, factorID, nil,
+		var err error
+		_, token, err = s.sessions.ExchangePending(ctx, w, r, user, sess, factorID, nil,
 			&store.AuditRecord{UserID: user.ID, Action: "auth.stepup", Resource: "session", Details: "factor=totp", IPAddress: s.requestIP(r)})
 		return err
 	})
-	s.exchanged(w, err)
+	s.exchanged(w, r, token, err)
 }
 
 // handleStepupEnroll offers a first TOTP factor to a pending session whose ID token asserted
@@ -164,8 +172,10 @@ func (s *Server) handleStepupEnrollConfirm(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	factor := &store.MFAFactor{ID: "mfa_" + crypto.RandomHex(12), SecretEnc: sess.PendingSecretEnc, LastCounter: counter}
+	var token string
 	err = detachedWrite(r, func(ctx context.Context) error {
-		_, _, err := s.sessions.ExchangePending(ctx, w, r, user, sess, "", factor,
+		var err error
+		_, token, err = s.sessions.ExchangePending(ctx, w, r, user, sess, "", factor,
 			&store.AuditRecord{UserID: user.ID, Action: "auth.factor_enrolled", Resource: "session", Details: "factor=totp", IPAddress: s.requestIP(r)})
 		return err
 	})
@@ -173,7 +183,7 @@ func (s *Server) handleStepupEnrollConfirm(w http.ResponseWriter, r *http.Reques
 		s.writeError(w, http.StatusConflict, "An authenticator is already enrolled; enter its code")
 		return
 	}
-	s.exchanged(w, err)
+	s.exchanged(w, r, token, err)
 }
 
 // handleDeleteFactor lets an administrator reset an SSO user's TOTP factor, with a fresh code
