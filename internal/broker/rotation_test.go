@@ -339,3 +339,32 @@ func TestSyncRefusesRollbackForksAndStaleChains(t *testing.T) {
 		t.Fatalf("the broker's copy was truncated to %d receipts", n)
 	}
 }
+
+// §4.6 (security review of #11): the quarantine after a denied login is durable even when
+// the abort cannot be delivered; after a restart the credential is never tried again.
+func TestAuthFailureQuarantineSurvivesAFailedDelivery(t *testing.T) {
+	r := newRig(t)
+	r.target.password = "changed-out-of-band"
+	w := &wrapCP{ControlPlane: r.cpw, receiptsErr: errors.New("control plane unreachable")}
+	r.cpw = w
+	m := r.machine()
+	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); err == nil {
+		t.Fatal("delivery did not fail")
+	}
+	m.J.Close()
+	w.receiptsErr = nil
+	m2 := r.machine()
+	defer m2.J.Close()
+	if err := m2.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m2.Rotate(context.Background(), r.pol.AccountID, 1, due); !errors.Is(err, broker.ErrQuarantined) {
+		t.Fatalf("after restart: %v", err)
+	}
+	if r.target.failed != 1 {
+		t.Fatalf("%d denied logins", r.target.failed)
+	}
+	if a := r.account(m2); !a.Quarantined || a.Health != broker.HealthAuthFailed || !a.Run.Sent {
+		t.Fatalf("%+v", a)
+	}
+}

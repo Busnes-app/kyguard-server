@@ -265,11 +265,11 @@ func (m *Machine) mutate(ctx context.Context, a *Account, rc *rotationContext, p
 	defer clear(pOld)
 	s, err := rc.conn.Login(ctx, rc.target, pOld)
 	if errors.Is(err, ErrAuthFailed) {
-		// §4.6: one attempt only; never retry a credential.
-		if err := m.abort(ctx, a, pqcrypto.ReasonRestartBeforeSend); err != nil {
-			return err
-		}
-		return m.quarantine(ctx, a, HealthAuthFailed, "pre-rotation login with the current credential was denied")
+		// §4.6: one attempt only; never retry a credential. The quarantine is journaled with
+		// the abort, before any Control Plane call can fail.
+		log.Printf("[BROKER] ALERT: account %s quarantined: the current credential was denied", a.ID)
+		a.Quarantined, a.Health, a.HealthReason = true, HealthAuthFailed, "pre-rotation login with the current credential was denied"
+		return m.abort(ctx, a, pqcrypto.ReasonRestartBeforeSend)
 	}
 	if err != nil {
 		return m.abort(ctx, a, pqcrypto.ReasonRestartBeforeSend)

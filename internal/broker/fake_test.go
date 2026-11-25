@@ -227,6 +227,15 @@ type wrapCP struct {
 	intent  func(ctx context.Context, raw []byte) error
 	reserve func(ctx context.Context, account, op pqcrypto.UUID, reported pqcrypto.Counter) (pqcrypto.Counter, error)
 	sync    func(ctx context.Context) (*brokerproto.SyncReply, error)
+	// receiptsErr fails every receipts delivery while set.
+	receiptsErr error
+}
+
+func (w *wrapCP) Receipts(ctx context.Context, op, account pqcrypto.UUID, rs []pqcrypto.B64) error {
+	if w.receiptsErr != nil {
+		return w.receiptsErr
+	}
+	return w.ControlPlane.Receipts(ctx, op, account, rs)
 }
 
 func (w *wrapCP) Intent(ctx context.Context, raw []byte) error {
