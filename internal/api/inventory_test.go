@@ -106,6 +106,12 @@ func TestTargetDescriptorUpload(t *testing.T) {
 	if w := sendJSON(srv, admin, "PUT", path, string(pqtest.Canon(t, td))); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "slice") {
 		t.Fatalf("out-of-slice descriptor: %d %s", w.Code, w.Body)
 	}
+	// A valid descriptor padded to the 64 KiB limit with more after it is too large, not
+	// silently cut to the valid prefix.
+	padded := string(raw) + strings.Repeat(" ", 64<<10-len(raw)) + "trailing"
+	if w := sendJSON(srv, admin, "PUT", path, padded); w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized descriptor: %d", w.Code)
+	}
 	var got map[string]string
 	created(t, sendJSON(srv, admin, "PUT", path, string(raw)), &got)
 	if got["digest"] != string(digest) {
@@ -154,6 +160,13 @@ func TestAttributeDefinitionsAndValues(t *testing.T) {
 	}
 	if w := sendJSON(srv, admin, "PATCH", "/api/attributes/"+tier.ID, `{"label":"Tier","enum_values":["silver"]}`); w.Code != http.StatusConflict {
 		t.Fatalf("removed a value in use: %d", w.Code)
+	}
+	var view struct {
+		Attributes map[string]string `json:"attributes"`
+	}
+	created(t, sendJSON(srv, admin, "GET", "/api/accounts/"+acct.ID, ""), &view)
+	if len(view.Attributes) != 1 || view.Attributes["tier"] != "gold" {
+		t.Fatalf("account attributes %v", view.Attributes)
 	}
 	if w := sendJSON(srv, admin, "PATCH", "/api/attributes/"+tier.ID, `{"label":"Service tier"}`); w.Code != http.StatusOK {
 		t.Fatalf("label-only update: %d %s", w.Code, w.Body)
