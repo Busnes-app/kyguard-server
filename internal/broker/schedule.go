@@ -58,10 +58,11 @@ func (m *Machine) Tick(ctx context.Context) error {
 	}
 	now := m.now()
 	for _, a := range accts {
-		// Journaled enrollment receipts the Control Plane has not acknowledged block
-		// rotation; re-send them, never verifying again.
-		if a.Enrollment.Open() && len(a.Enrollment.Receipts) > 0 {
-			if err := m.enrollSend(ctx, a); err != nil {
+		// An open enrollment blocks rotation. Enroll holds m.mu, so one seen here stopped
+		// early: it resumes as after a restart, re-sending receipts and never binding twice
+		// (PR Reviewer Guide on #15).
+		if a.Enrollment.Open() {
+			if err := m.recoverEnrollment(ctx, a); err != nil {
 				errs = append(errs, err)
 			}
 			continue

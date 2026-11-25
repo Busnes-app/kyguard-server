@@ -165,11 +165,11 @@ func (a *App) serve(ctx context.Context, j *Journal, k *Keys, id pqcrypto.UUID, 
 				log.Printf("[BROKER] malformed enroll push")
 				continue
 			}
-			go func() {
+			wg.Go(func() {
 				if err := m.Enroll(cctx, e.Tx, e.Envelope); err != nil {
 					log.Printf("[BROKER] enrollment refused: %v", err)
 				}
-			}()
+			})
 		case brokerproto.MsgNudge:
 			select {
 			case a.Nudges <- struct{}{}:
