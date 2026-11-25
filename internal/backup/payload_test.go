@@ -183,3 +183,40 @@ func TestCollectRefusesASnapshotTooLargeForACapsule(t *testing.T) {
 		t.Fatalf("got %v, want ErrCapsuleTooLarge", err)
 	}
 }
+
+// §9.4: the capsule carries the internal broker CA key and certificate, sealed with the
+// rest; half a pair is refused, never sealed.
+func TestCollectCarriesTheBrokerCA(t *testing.T) {
+	cfg, _ := payloadConfig(t)
+	files := func() map[string]string {
+		t.Helper()
+		payload, err := backup.Collect(context.Background(), cfg, nil, "1.0.0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]string{}
+		for _, f := range payload.Files {
+			got[f.Path] = string(f.Data)
+		}
+		return got
+	}
+	if got := files(); got["data/broker-ca.key"] != "" || got["data/broker-ca.crt"] != "" {
+		t.Fatal("a capsule without a broker CA carries one")
+	}
+	write := func(name, data string) {
+		if err := os.WriteFile(filepath.Join(cfg.Database.DataDir, name), []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("broker-ca.key", "ca key")
+	if _, err := backup.Collect(context.Background(), cfg, nil, "1.0.0"); err == nil {
+		t.Fatal("half a broker CA was sealed")
+	}
+	write("broker-ca.crt", "ca cert")
+	if got := files(); got["data/broker-ca.key"] != "ca key" || got["data/broker-ca.crt"] != "ca cert" {
+		t.Fatalf("broker CA members %q %q", got["data/broker-ca.key"], got["data/broker-ca.crt"])
+	}
+	if m := backup.Members(cfg); !slices.Contains(m, "data/broker-ca.key") || !slices.Contains(m, "data/broker-ca.crt") {
+		t.Fatalf("members %v", m)
+	}
+}
