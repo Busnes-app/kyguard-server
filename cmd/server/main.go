@@ -338,8 +338,10 @@ func backupLoop(ctx context.Context, cfg *config.Config, st store.Store, client 
 func recordRun(ctx context.Context, st store.Store, actor string, res recoveryclient.Result, err error) {
 	action, outcome, details := recoveryclient.Outcome(res, err)
 	details["outcome"] = outcome
-	_ = st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: actor, Action: action,
-		Resource: res.Manifest.CapsuleID, Details: api.AuditDetails(details)})
+	if aerr := st.Audit().LogAudit(ctx, &store.AuditRecord{UserID: actor, Action: action,
+		Resource: res.Manifest.CapsuleID, Details: api.AuditDetails(details)}); aerr != nil {
+		log.Printf("[BACKUP] %s: AUDIT WRITE FAILED for capsule %s: %v", actor, res.Manifest.CapsuleID, aerr)
+	}
 	if err != nil {
 		log.Printf("[BACKUP] %s: %s", actor, recoveryclient.AuditSafe(err.Error()))
 		return
