@@ -61,6 +61,12 @@ contradicts itself. Each names its section. The most secure reading wins.
    is stored.
 18. §9.3 (key plumbing). The chain key travels as `config.DatabaseConfig.AuditKey`; stores opened
    without it (backup drill scratch copies, migration sources) can read but refuse audit writes.
+18a. §9.3 (upgrade and verification). Records written before migration 15 have no chain fields.
+   Opening a store that has the chain key chains them, oldest first, in their canonical form and
+   after any chained records, so the first append finds one chain. Until then, verification
+   reports them as unchained. Verification rejects any stored field that differs from its
+   canonical rendering, because the HMAC covers only that rendering. On PostgreSQL it reads the
+   head and the records in one REPEATABLE READ snapshot.
 19. §9.3 (scope of this PR). `operation_intents` and startup reconciliation of external effects
    (pairing claim, deposit, pin) are the next PR. Until then a failed audit write after a backup
    run is logged loudly (`recordRun`) rather than retried.

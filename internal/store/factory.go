@@ -31,6 +31,10 @@ func Open(ctx context.Context, cfg config.DatabaseConfig) (Store, error) {
 		return nil, err
 	}
 	s.(*SQLStore).auditKey = append([]byte(nil), cfg.AuditKey...)
+	if err := s.(*SQLStore).adoptLegacyAudit(ctx); err != nil {
+		_ = s.Close()
+		return nil, fmt.Errorf("chain the audit records written before the audit chain: %w", err)
+	}
 	return s, nil
 }
 
