@@ -122,3 +122,27 @@ func TestBreakGlassHostCommands(t *testing.T) {
 		t.Fatal("reset-totp touched an SSO account")
 	}
 }
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
+
+// A create whose one-time credentials could not be printed leaves no account behind, so the
+// operator simply retries; nothing is lost and no slot is consumed.
+func TestBreakGlassCreateUndoesAnUnprintedAccount(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Database = testdb.Config(t)
+	st := openStore(t, cfg)
+	if err := createBreakGlass(ctx, cfg, st, "bg-ops", failingWriter{}); err == nil {
+		t.Fatal("create reported success though nothing was printed")
+	}
+	if _, err := st.Users().GetUserByUsername(ctx, "bg-ops"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the unprinted account remains: %v", err)
+	}
+	newTestBreakGlass(t, cfg, st, "bg-ops") // the retry works
+}

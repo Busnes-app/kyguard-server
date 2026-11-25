@@ -160,8 +160,12 @@ func (s *resetDuringReadStore) Users() store.UserStore { return s.users }
 func TestRestrictedSessionCannotInheritClearedFlag(t *testing.T) {
 	_, st, cfg := setupTestServer(t)
 	ctx := context.Background()
-	u := &store.User{ID: "race", Username: "race", PasswordHash: "old", Status: "active", Role: "admin", SSOProvider: "local", MustChangePassword: true, AccountType: store.AccountBreakGlass}
-	if err := st.Users().CreateUser(ctx, u); err != nil {
+	u := &store.User{ID: "race", Username: "race", PasswordHash: "old", Status: "active", Role: "admin"}
+	if err := st.MFA().CreateBreakGlass(ctx, u, &store.MFAFactor{ID: "mfa_race", SecretEnc: "sealed"}, &store.AuditRecord{Action: "break_glass.created"}); err != nil {
+		t.Fatal(err)
+	}
+	u.MustChangePassword = true
+	if err := st.Users().UpdateUser(ctx, u); err != nil {
 		t.Fatal(err)
 	}
 	manager := auth.NewSessionManager(st, cfg.Security)
@@ -170,7 +174,7 @@ func TestRestrictedSessionCannotInheritClearedFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 	users := &resetDuringReadUsers{UserStore: st.Users(), reset: func() {
-		if err := st.Users().CompletePasswordChange(ctx, u.ID, "old", "new", "127.0.0.1"); err != nil {
+		if err := st.Users().CompletePasswordChange(ctx, u.ID, "old", "new", "127.0.0.1", "mfa_race"); err != nil {
 			t.Fatal(err)
 		}
 	}}

@@ -494,15 +494,9 @@ func (s *sessionStore) CreateSession(ctx context.Context, sess *Session, expecte
 		if sess.Stage == "" {
 			sess.Stage = StageActive
 		}
-		// The user row is locked (withPassword), and ReplaceFactor locks it too: a factor
-		// replaced after this code was checked is seen here and refuses the session.
 		if sess.FactorID != "" {
-			var n int
-			if err := tx.QueryRowContext(ctx, s.store.rebind(`SELECT COUNT(1) FROM mfa_factors WHERE id = ? AND user_id = ?`), sess.FactorID, sess.UserID).Scan(&n); err != nil {
+			if err := factorStillCurrent(ctx, s.store, tx, sess.UserID, sess.FactorID); err != nil {
 				return err
-			}
-			if n != 1 {
-				return ErrNotFound
 			}
 		}
 		if _, err := tx.ExecContext(ctx, s.store.rebind(`INSERT INTO sessions (token_hash, user_id, user_agent, ip_address, created_at, expires_at, sso_sid, stage, stepup_at, break_glass_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), sess.TokenHash, sess.UserID, sess.UserAgent, sess.IPAddress, sess.CreatedAt, sess.ExpiresAt, sess.SSOSID, sess.Stage, nullTime(sess.StepupAt), sess.BreakGlassReason); err != nil {
@@ -559,8 +553,11 @@ ON CONFLICT (provider, subject) DO UPDATE SET cutoff = excluded.cutoff, expires_
 	return err
 }
 
-func (u *userStore) CompletePasswordChange(ctx context.Context, userID, oldHash, newHash, ip string) error {
+func (u *userStore) CompletePasswordChange(ctx context.Context, userID, oldHash, newHash, ip, factorID string) error {
 	return u.store.withPassword(ctx, userID, oldHash, func(tx *sql.Tx) error {
+		if err := factorStillCurrent(ctx, u.store, tx, userID, factorID); err != nil {
+			return err
+		}
 		now := time.Now().UTC()
 		result, err := tx.ExecContext(ctx, u.store.rebind(`UPDATE users SET password_hash = ?, must_change_password = ?, updated_at = ? WHERE id = ? AND account_type = ?`), newHash, false, now, userID, AccountBreakGlass)
 		if err != nil {
@@ -575,6 +572,20 @@ func (u *userStore) CompletePasswordChange(ctx context.Context, userID, oldHash,
 		}
 		return u.revokePasswordGrants(ctx, tx, userID, "password changed; sessions revoked", ip, now)
 	})
+}
+
+// factorStillCurrent refuses (ErrNotFound) once the factor whose code authorized a change has
+// been replaced. Callers hold the user row (withPassword), which ReplaceFactor also locks,
+// so a reset either lands first and is seen here, or waits for this transaction.
+func factorStillCurrent(ctx context.Context, s *SQLStore, tx *sql.Tx, userID, factorID string) error {
+	var n int
+	if err := tx.QueryRowContext(ctx, s.rebind(`SELECT COUNT(1) FROM mfa_factors WHERE id = ? AND user_id = ?`), factorID, userID).Scan(&n); err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (u *userStore) revokePasswordGrants(ctx context.Context, tx *sql.Tx, userID, details, ip string, now time.Time) error {

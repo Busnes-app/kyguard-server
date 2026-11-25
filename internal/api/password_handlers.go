@@ -60,7 +60,8 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Checked only after the password, like sign-in, so a password guess never spends codes.
-	if _, err := s.factors.Check(r.Context(), user.ID, "", req.TOTPCode); err != nil {
+	factorID, err := s.factors.Check(r.Context(), user.ID, "", req.TOTPCode)
+	if err != nil {
 		if errors.Is(err, auth.ErrCodeRejected) {
 			if err := s.store.Audit().LogAudit(context.WithoutCancel(r.Context()), &store.AuditRecord{UserID: user.ID, Action: "auth.totp_failed", Resource: "password", Details: "severity=critical", IPAddress: s.requestIP(r)}); err != nil {
 				s.writeError(w, http.StatusServiceUnavailable, "Audit unavailable")
@@ -77,7 +78,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusInternalServerError, "Failed to secure password")
 		return
 	}
-	if err := s.store.Users().CompletePasswordChange(r.Context(), user.ID, user.PasswordHash, hash, s.requestIP(r)); err != nil {
+	if err := s.store.Users().CompletePasswordChange(r.Context(), user.ID, user.PasswordHash, hash, s.requestIP(r), factorID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			s.writeError(w, http.StatusConflict, "Account changed; sign in again")
 			return

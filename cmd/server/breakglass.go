@@ -83,7 +83,13 @@ func createBreakGlass(ctx context.Context, cfg *config.Config, st store.Store, u
 		}
 		return err
 	}
-	fmt.Fprintf(out, "Break-glass account %q created. Shown once; store both offline.\nPassword: %s\nTOTP: %s\n", username, pass, totp.ProvisioningURI(cfg.Server.AppName, username, secret))
+	if _, err := fmt.Fprintf(out, "Break-glass account %q created. Shown once; store both offline.\nPassword: %s\nTOTP: %s\n", username, pass, totp.ProvisioningURI(cfg.Server.AppName, username, secret)); err != nil {
+		// Nobody saw the credentials: remove the account so the create can simply be retried.
+		if derr := st.Users().DeleteUser(ctx, user.ID); derr != nil {
+			return fmt.Errorf("printing the credentials failed (%v) and removing account %q failed (%v): remove it before retrying", err, username, derr)
+		}
+		return fmt.Errorf("printing the credentials failed, so account %q was removed again; retry: %w", username, err)
+	}
 	return nil
 }
 
@@ -108,6 +114,8 @@ func resetBreakGlassTOTP(ctx context.Context, cfg *config.Config, st store.Store
 		&store.AuditRecord{Action: "break_glass.totp_reset", Resource: "user", Details: "severity=critical via=host; sessions revoked"}); err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "TOTP for %q replaced; its sessions are revoked. Shown once.\nTOTP: %s\n", username, totp.ProvisioningURI(cfg.Server.AppName, username, secret))
+	if _, err := fmt.Fprintf(out, "TOTP for %q replaced; its sessions are revoked. Shown once.\nTOTP: %s\n", username, totp.ProvisioningURI(cfg.Server.AppName, username, secret)); err != nil {
+		return fmt.Errorf("the TOTP secret was replaced but printing it failed; run reset-totp again: %w", err)
+	}
 	return nil
 }

@@ -79,8 +79,9 @@ type UserStore interface {
 	// u.SSOSubject (the SCIM externalId) in the same statement.
 	UpdateSCIMProfile(ctx context.Context, u *User, prevRole, prevStatus, prevSubject string) error
 	// CompletePasswordChange replaces a break-glass account's password if it still has
-	// oldHash, revoking every session and auditing in the same transaction.
-	CompletePasswordChange(ctx context.Context, userID, oldHash, newHash, ip string) error
+	// oldHash and factorID (whose code authorized the change) is still its factor, revoking
+	// every session and auditing in the same transaction.
+	CompletePasswordChange(ctx context.Context, userID, oldHash, newHash, ip, factorID string) error
 	DeleteUser(ctx context.Context, id string) error
 	ListUsers(ctx context.Context, offset, limit int, search string) ([]*User, int, error)
 	// ListSCIMUsers is ListUsers restricted to accounts SCIM created (SCIMManaged).
