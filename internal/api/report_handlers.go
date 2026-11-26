@@ -11,20 +11,18 @@ import (
 )
 
 func (s *Server) reportRoutes() {
-	// TODO(hawthorn §7.5): classify (session). The dataset is authorized per caller (§8.3).
-	s.mux.HandleFunc("GET /api/reports/scorecard", s.requireSession(s.handleScorecard))
-	// TODO(hawthorn §7.5): classify (session).
-	s.mux.HandleFunc("GET /api/jobs", s.requireAdmin(s.handleJobs))
+	// Reads only, so no step-up window. The dataset is authorized per caller (§8.3).
+	s.route(ClassSession, "GET /api/reports/scorecard", http.HandlerFunc(s.requireSession(s.handleScorecard)))
+	s.route(ClassSession, "GET /api/jobs", http.HandlerFunc(s.requireAdmin(s.handleJobs)))
 }
 
-// callerIssuer is the issuer of the caller's SSO identity, or "" when this build cannot
-// name it, so a principal can never be matched to them by subject alone.
-// TODO(join): use users.sso_issuer from hawthorn's §7.2 stack.
-func (s *Server) callerIssuer(u *store.User) string {
-	if u.SSOProvider == "kysignon" && u.SSOSubject != "" {
-		return s.config.SSO.KySignOnIssuer
+// callerIssuer is the issuer of the caller's SSO identity (users.sso_issuer, §7.2), or ""
+// for a local account, so a principal can never be matched to them by subject alone.
+func callerIssuer(u *store.User) string {
+	if u.SSOSubject == "" {
+		return ""
 	}
-	return ""
+	return u.SSOIssuer
 }
 
 type scorecard struct {
@@ -51,7 +49,7 @@ func (s *Server) handleScorecard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now().UTC()
-	ds, err := reporting.Build(ctx, s.store, s.trust, reporting.Caller{UserID: u.ID, Admin: u.Role == "admin", Issuer: s.callerIssuer(u), Subject: u.SSOSubject}, now)
+	ds, err := reporting.Build(ctx, s.store, s.trust, reporting.Caller{UserID: u.ID, Admin: u.Role == "admin", Issuer: callerIssuer(u), Subject: u.SSOSubject}, now)
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "could not build the scorecard")
 		return

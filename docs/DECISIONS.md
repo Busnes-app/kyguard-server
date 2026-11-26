@@ -482,9 +482,8 @@ Numbered separately: these came from the parallel crypto stack.
     changes the class.
 207. §8.3 (listed on in the policy). A non-admin is listed when a principal in any of the
     current policy's principal lists has a verified `KeyEnrollmentManifest` whose issuer
-    and subject are the caller's own; a subject alone never matches. This build knows the
-    issuer only for KySignOn sign-ins (`KY_KYSIGNON_ISSUER`); every other caller sees only
-    accounts they own until `users.sso_issuer` (§7.2) is joined in.
+    and subject are the caller's own (`users.sso_issuer`, §7.2); a subject alone never
+    matches, and a local account is never listed.
 208. §8.3 (what is audited). The dashboard view is not an export and is not audited; every
     `format=json` or `format=csv` download is, before its body is sent. CSV cells that a
     spreadsheet would run as a formula are prefixed with `'`.
