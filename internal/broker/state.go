@@ -18,6 +18,7 @@ var (
 	bucketAccounts    = []byte("accounts")    // account_id -> JSON Account
 	bucketBurned      = []byte("burned")      // request_id -> RFC 3339 expiry (§3.7)
 	bucketChallenges  = []byte("challenges")  // request_id -> JSON Challenge, single use (§3.7)
+	bucketRefusals    = []byte("refusals")    // request_id -> refusal code not yet acknowledged
 )
 
 // Rotation states (§4.2).
@@ -103,6 +104,9 @@ type Lease struct {
 	Attempt                pqcrypto.Counter `json:"attempt"`
 	NextAttemptAt          time.Time        `json:"next_attempt_at"`
 	Mirrored               bool             `json:"mirrored,omitempty"` // the Control Plane holds this state
+	// Delivering is set when the lease opens and cleared with the wrap; a lease still
+	// delivering after a crash or a failed step delivered nothing (flush closes it).
+	Delivering bool `json:"delivering,omitempty"`
 	// Delivery is the checkout wrap until the Control Plane acknowledges it (ciphertext).
 	Delivery *pqcrypto.Recipient `json:"delivery,omitempty"`
 }
@@ -195,7 +199,7 @@ func seqKey(n uint64) []byte { return binary.BigEndian.AppendUint64(nil, n) }
 
 func (j *Journal) init() error {
 	return j.db.Update(func(tx *bolt.Tx) error {
-		for _, b := range [][]byte{bucketMeta, bucketManifests, bucketDescriptors, bucketAccounts, bucketBurned, bucketChallenges} {
+		for _, b := range [][]byte{bucketMeta, bucketManifests, bucketDescriptors, bucketAccounts, bucketBurned, bucketChallenges, bucketRefusals} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -377,4 +381,39 @@ func (j *Journal) SaveConsume(a *Account, id pqcrypto.UUID, until time.Time) err
 		}
 		return tx.Bucket(bucketAccounts).Put([]byte(a.ID), v)
 	})
+}
+
+// MaxPendingRefusals bounds the refusal outbox, so a Control Plane that pushes junk while it
+// withholds acknowledgements cannot grow the journal without limit.
+const MaxPendingRefusals = 1024
+
+// ErrOutboxFull means a refusal was not journaled; it is sent once only.
+var ErrOutboxFull = errors.New("broker: refusal outbox full")
+
+// PutRefusal journals a refusal for a request, replacing an earlier one.
+func (j *Journal) PutRefusal(id pqcrypto.UUID, code string) error {
+	return j.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketRefusals)
+		if b.Get([]byte(id)) == nil && b.Stats().KeyN >= MaxPendingRefusals {
+			return ErrOutboxFull
+		}
+		return b.Put([]byte(id), []byte(code))
+	})
+}
+
+// Refusals lists the journaled refusals.
+func (j *Journal) Refusals() ([]TxResult, error) {
+	var out []TxResult
+	err := j.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketRefusals).ForEach(func(k, v []byte) error {
+			out = append(out, TxResult{RequestID: pqcrypto.UUID(k), Result: string(v)})
+			return nil
+		})
+	})
+	return out, err
+}
+
+// DeleteRefusal drops a request's journaled refusal.
+func (j *Journal) DeleteRefusal(id pqcrypto.UUID) error {
+	return j.db.Update(func(tx *bolt.Tx) error { return tx.Bucket(bucketRefusals).Delete([]byte(id)) })
 }

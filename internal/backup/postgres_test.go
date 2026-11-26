@@ -96,7 +96,7 @@ func TestPostgresDepositSendsOnlyASealedCapsule(t *testing.T) {
 		scratch = append(scratch, info.Mode().Perm())
 	})()
 	dep := &recordingDepositor{}
-	res, err := backup.Run(ctx, cfg, rc, st, dep)
+	res, err := backup.Run(ctx, cfg, rc, st, dep, nil)
 	if err != nil || res.Receipt == nil {
 		t.Fatalf("deposit: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestPostgresUnknownSchemaSealsNothing(t *testing.T) {
 	if _, err := raw.Exec(`CREATE TABLE product_notes (id TEXT PRIMARY KEY)`); err != nil {
 		t.Fatal(err)
 	}
-	_, err = backup.Run(ctx, cfg, rc, st, &recordingDepositor{})
+	_, err = backup.Run(ctx, cfg, rc, st, &recordingDepositor{}, nil)
 	if !errors.Is(err, backup.ErrNoDatabaseSnapshot) || !strings.Contains(err.Error(), "adapter") {
 		t.Fatalf("got %v, want ErrNoDatabaseSnapshot naming the adapter", err)
 	}

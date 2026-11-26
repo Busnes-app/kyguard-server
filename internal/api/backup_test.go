@@ -98,9 +98,9 @@ func TestPinKeyIsWriteOnce(t *testing.T) {
 	var pinned, refused bool
 	for _, rec := range auditRows(t, st, "admin.backup_key_pin") {
 		switch {
-		case rec.Resource == first.Public().ID() && strings.HasPrefix(rec.Details, "threshold=2"):
+		case rec.Resource == first.Public().ID() && strings.Contains(rec.Details, "threshold=2"):
 			pinned = true
-		case rec.Resource == other.Public().ID() && strings.HasPrefix(rec.Details, "error="):
+		case rec.Resource == other.Public().ID() && strings.Contains(rec.Details, "error="):
 			refused = true
 		}
 	}

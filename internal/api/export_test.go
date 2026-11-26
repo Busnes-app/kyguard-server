@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net/http"
 	"time"
 
 	"github.com/Busnes-app/kyguard-server/internal/auth"
@@ -44,3 +45,8 @@ func RegisterDetachedForTest(s *Server) func() {
 
 // FactorsForTest is the server's TOTP factor store, so a test can enrol a known secret.
 func FactorsForTest(s *Server) *auth.Factors { return s.factors }
+
+// RegisterForTest calls the route registry directly.
+func RegisterForTest(s *Server, class RouteClass, pattern string) {
+	s.route(class, pattern, http.NotFoundHandler())
+}

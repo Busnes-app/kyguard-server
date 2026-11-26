@@ -22,13 +22,11 @@ import (
 const PairingTokenTTL = 10 * time.Minute
 
 func (s *Server) brokerRoutes() {
-	// TODO(hawthorn §7.5): classify + step-up (5-minute window for broker and pairing actions).
-	s.mux.HandleFunc("POST /api/broker-pools", s.requireAdmin(s.handleCreatePool))
-	// TODO(hawthorn §7.5): classify + step-up (5-minute window for broker and pairing actions).
-	s.mux.HandleFunc("POST /api/broker-pools/{id}/pairing-tokens", s.requireAdmin(s.handleCreatePairingToken))
+	// Broker and pairing actions need a step-up in the last five minutes (spec §7.3 rule 6).
+	s.route(ClassSession, "POST /api/broker-pools", http.HandlerFunc(s.requireAdmin(s.handleCreatePool)), fresh(StepupWindow))
+	s.route(ClassSession, "POST /api/broker-pools/{id}/pairing-tokens", http.HandlerFunc(s.requireAdmin(s.handleCreatePairingToken)), fresh(StepupWindow))
 	// Manifests carry their own Custodian signatures; the session only rate-limits callers.
-	// TODO(hawthorn §7.5): classify + step-up.
-	s.mux.HandleFunc("POST /api/manifests", s.requireAuthenticated(s.handleSubmitManifest))
+	s.route(ClassSession, "POST /api/manifests", http.HandlerFunc(s.handleSubmitManifest))
 }
 
 func (s *Server) actor(r *http.Request) string {

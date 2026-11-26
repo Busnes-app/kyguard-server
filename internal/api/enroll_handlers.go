@@ -20,12 +20,10 @@ const EnrollmentReservationTTL = 15 * time.Minute
 const maxRequestBody = 512 << 10
 
 func (s *Server) enrollRoutes() {
-	// TODO(hawthorn §7.5): classify + step-up (fresh step-up required, §4.5).
-	s.mux.HandleFunc("POST /api/accounts/{id}/enrollments", s.requireAuthenticated(s.handleReserveEnrollment))
-	// TODO(hawthorn §7.5): classify + step-up (fresh step-up required, §4.5).
-	s.mux.HandleFunc("POST /api/accounts/{id}/enrollments/{request}", s.requireAuthenticated(s.handleSubmitEnrollment))
-	// TODO(hawthorn §7.5): classify.
-	s.mux.HandleFunc("GET /api/accounts/{id}/enrollments/{request}", s.requireAuthenticated(s.handleEnrollmentStatus))
+	// Reserving and submitting an enrollment need a fresh step-up (§4.5, §7.3 rule 6).
+	s.route(ClassSession, "POST /api/accounts/{id}/enrollments", http.HandlerFunc(s.handleReserveEnrollment), fresh(StepupWindow))
+	s.route(ClassSession, "POST /api/accounts/{id}/enrollments/{request}", http.HandlerFunc(s.handleSubmitEnrollment), fresh(StepupWindow))
+	s.route(ClassSession, "GET /api/accounts/{id}/enrollments/{request}", http.HandlerFunc(s.handleEnrollmentStatus))
 }
 
 // activeBroker is the active broker of the account's current managed policy.
