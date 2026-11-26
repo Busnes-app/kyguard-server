@@ -134,6 +134,11 @@ func (m *mfaStore) DeleteFactor(ctx context.Context, userID string, audit *Audit
 	// The user row lock is the one every session issuance holds (withPassword), so an exchange
 	// authorized by this factor either commits first, and its session is deleted below, or
 	// waits and then finds the factor gone. Break-glass factors are reset only on the host.
+	// Outstanding CLI login codes carry the old sign-in, so they go first; a redemption holding
+	// one finishes before this delete returns, and its session is deleted below.
+	if _, err := tx.ExecContext(ctx, s.rebind(`DELETE FROM cli_login_codes WHERE user_id = ?`), userID); err != nil {
+		return err
+	}
 	lock, err := tx.ExecContext(ctx, s.rebind(`UPDATE users SET id = id WHERE id = ? AND account_type = ?`), userID, AccountSSO)
 	if err != nil {
 		return err
