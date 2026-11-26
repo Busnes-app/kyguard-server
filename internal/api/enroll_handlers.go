@@ -74,6 +74,9 @@ func (s *Server) handleReserveEnrollment(w http.ResponseWriter, r *http.Request)
 	case errors.Is(err, store.ErrLocked):
 		s.writeError(w, http.StatusConflict, "a rotation is open on a healthy account, or another enrollment is in progress")
 		return
+	case errors.Is(err, store.ErrConflict):
+		s.writeError(w, http.StatusConflict, "this enrollment already ended")
+		return
 	case err != nil:
 		s.writeError(w, http.StatusInternalServerError, "could not reserve")
 		return
