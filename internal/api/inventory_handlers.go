@@ -26,35 +26,37 @@ var scimUserKeys = []string{"department", "manager", "title"}
 var attrKey = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
 func (s *Server) inventoryRoutes() {
-	// TODO(hawthorn §7.5): classify + step-up. Inventory and attribute writes are admin only.
-	s.mux.HandleFunc("GET /api/assets", s.requireAdmin(s.handleListAssets))
-	s.mux.HandleFunc("POST /api/assets", s.requireAdmin(s.handleCreateAsset))
-	s.mux.HandleFunc("POST /api/accounts", s.requireAdmin(s.handleCreateAccount))
-	s.mux.HandleFunc("GET /api/accounts/{id}", s.requireAdmin(s.handleGetAccount))
-	s.mux.HandleFunc("PATCH /api/accounts/{id}", s.requireAdmin(s.handleUpdateAccount))
-	// TODO(hawthorn §7.5): classify + fresh(StepupWindow): a descriptor is what a policy pins.
-	s.mux.HandleFunc("PUT /api/accounts/{id}/target-descriptor", s.requireAdmin(s.handlePutDescriptor))
+	// Inventory and attribute writes are admin only, with a five-minute step-up: a descriptor
+	// is what a policy pins (decision 206).
+	w := func(h http.HandlerFunc) http.Handler { return http.HandlerFunc(s.requireAdmin(h)) }
+	s.route(ClassSession, "GET /api/assets", w(s.handleListAssets))
+	s.route(ClassSession, "POST /api/assets", w(s.handleCreateAsset), fresh(StepupWindow))
+	s.route(ClassSession, "POST /api/accounts", w(s.handleCreateAccount), fresh(StepupWindow))
+	s.route(ClassSession, "GET /api/accounts/{id}", w(s.handleGetAccount))
+	s.route(ClassSession, "PATCH /api/accounts/{id}", w(s.handleUpdateAccount), fresh(StepupWindow))
+	s.route(ClassSession, "PUT /api/accounts/{id}/target-descriptor", w(s.handlePutDescriptor), fresh(StepupWindow))
 	// Definitions are labels only; every signed-in user's report filters read them.
-	s.mux.HandleFunc("GET /api/attributes", s.requireSession(s.handleListAttributes))
-	s.mux.HandleFunc("POST /api/attributes", s.requireAdmin(s.handleCreateAttribute))
-	s.mux.HandleFunc("PATCH /api/attributes/{id}", s.requireAdmin(s.handleUpdateAttribute))
-	s.mux.HandleFunc("DELETE /api/attributes/{id}", s.requireAdmin(s.handleDeleteAttribute))
-	s.mux.HandleFunc("PUT /api/attributes/{id}/values/{entity}", s.requireAdmin(s.handleSetAttributeValue))
+	s.route(ClassSession, "GET /api/attributes", http.HandlerFunc(s.requireSession(s.handleListAttributes)))
+	s.route(ClassSession, "POST /api/attributes", w(s.handleCreateAttribute), fresh(StepupWindow))
+	s.route(ClassSession, "PATCH /api/attributes/{id}", w(s.handleUpdateAttribute), fresh(StepupWindow))
+	s.route(ClassSession, "DELETE /api/attributes/{id}", w(s.handleDeleteAttribute), fresh(StepupWindow))
+	s.route(ClassSession, "PUT /api/attributes/{id}/values/{entity}", w(s.handleSetAttributeValue), fresh(StepupWindow))
 }
 
-// decodeStrict reads one JSON object with no unknown fields.
-// requireSession admits any active session, but a break-glass one only once it has stated
-// its reason, as requireAdmin does (spec §7.4): reporting data spans the deployment.
+// requireSession admits any active session (the session class checks that first), but a
+// break-glass one only once it has stated its reason, as requireAdmin does (spec §7.4):
+// reporting data spans the deployment.
 func (s *Server) requireSession(h http.HandlerFunc) http.HandlerFunc {
-	return s.requireAuthenticated(func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		if u, sess, err := s.sessions.AuthenticateRequest(r); err == nil && u.AccountType == store.AccountBreakGlass && sess.BreakGlassReason == "" {
 			s.writeJSON(w, http.StatusForbidden, map[string]string{"error": "State the reason for this break-glass session first", "code": "break_glass_reason_required"})
 			return
 		}
 		h(w, r)
-	})
+	}
 }
 
+// decodeStrict reads one JSON object with no unknown fields.
 func decodeStrict(r *http.Request, v any) error {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()

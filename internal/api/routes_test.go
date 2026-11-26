@@ -242,7 +242,7 @@ func TestBrokerRoutesAreClassifiedWithTheirWindows(t *testing.T) {
 	}
 }
 
-// §4.5, §7.3 rule 6: the broker actions that need a fresh step-up declare the five-minute
+// §4.5, §7.3 rule 6: the broker and inventory actions that need a fresh step-up declare the five-minute
 // window; the middleware that enforces it is tested above (TestBackupActionsNeedAFreshStepUp).
 func TestBrokerActionsNeedAFreshStepUp(t *testing.T) {
 	srv, _, _ := setupTestServer(t)
@@ -254,6 +254,8 @@ func TestBrokerActionsNeedAFreshStepUp(t *testing.T) {
 		"POST /api/broker-pools", "POST /api/broker-pools/{id}/pairing-tokens",
 		"POST /api/accounts/{id}/enrollments", "POST /api/accounts/{id}/enrollments/{request}",
 		"POST /api/accounts/{id}/transactions",
+		"POST /api/assets", "POST /api/accounts", "PATCH /api/accounts/{id}", "PUT /api/accounts/{id}/target-descriptor",
+		"POST /api/attributes", "PATCH /api/attributes/{id}", "DELETE /api/attributes/{id}", "PUT /api/attributes/{id}/values/{entity}",
 	} {
 		if fresh[p] != api.StepupWindow {
 			t.Errorf("%s: step-up window %v, want %v", p, fresh[p], api.StepupWindow)
