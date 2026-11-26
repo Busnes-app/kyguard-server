@@ -907,3 +907,42 @@ func TestExpiredChallengesArePruned(t *testing.T) {
 		t.Fatal("the expired challenge is still journaled")
 	}
 }
+
+// A proof refused while another lease's closure is unmirrored, whose refusal could not be
+// sent, then accepted on retry once the Control Plane is back: the queued refusal is
+// dropped and never overwrites the "ok" (PR Reviewer Guide "Stale refusal" on #16).
+func TestAnAcceptedProofDropsAQueuedRefusal(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	b, a := c.checkoutTx(600), c.checkoutTx(600)
+	for _, co := range []*cli.Checkout{b, a} {
+		if err := c.m.Tx(ctx, co.Tx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bpop, _ := b.Proof(c.challenge(b.RequestID), pqcrypto.PurposeDeliver)
+	apop, _ := a.Proof(c.challenge(a.RequestID), pqcrypto.PurposeDeliver)
+	w := c.wrapCP()
+	w.LeaseErr = errors.New("connection lost")
+	f := &failResults{ControlPlane: w, n: 1 << 20}
+	c.m.CP = f
+	c.m.Proof(ctx, a.RequestID, apop) // closed not_mirrored, and the closure stays unmirrored
+	if l := c.account(c.m).Lease; l.State != broker.LeaseClosed || l.Mirrored {
+		t.Fatalf("first lease %+v", l)
+	}
+	if err := c.m.Proof(ctx, b.RequestID, bpop); !errors.Is(err, broker.ErrLeaseOpen) {
+		t.Fatalf("proof over the unmirrored closure: %v", err)
+	}
+	if rs, _ := c.m.J.Refusals(); len(rs) != 1 {
+		t.Fatalf("%d refusals queued", len(rs))
+	}
+	w.LeaseErr = nil
+	if err := c.m.Proof(ctx, b.RequestID, bpop); err != nil {
+		t.Fatal(err)
+	}
+	f.n = 0
+	c.m.Tick(ctx)
+	if d, res := c.delivery(b.RequestID); d == nil || res != "ok" {
+		t.Fatalf("after the retry: delivered=%v result=%q", d != nil, res)
+	}
+}

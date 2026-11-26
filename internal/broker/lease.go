@@ -242,9 +242,12 @@ func (m *Machine) deliver(ctx context.Context, a *Account, c *Challenge, raw []b
 	if _, err := pqcrypto.VerifyPoP(raw, tx, d, c.Challenge, pqcrypto.PurposeDeliver); err != nil {
 		return err // unauthenticated: published nowhere, the request's result stands
 	}
-	// The requester proved possession: its refusals from here on are its outcome.
-	if err := m.deliverable(ctx, a, chain); err != nil {
-		m.outcome(ctx, tx.RequestID, err)
+	// The requester proved possession: its outcome from here on is published, and an
+	// accepted proof drops a refusal still queued from an earlier try (PR Reviewer Guide
+	// "Stale refusal" on #16).
+	err = m.deliverable(ctx, a, chain)
+	m.outcome(ctx, tx.RequestID, err)
+	if err != nil {
 		return err
 	}
 	now := m.now()
@@ -501,8 +504,10 @@ func (m *Machine) checkinProof(ctx context.Context, a *Account, c *Challenge, ra
 		return err
 	}
 	a.Lease.State, a.Lease.NextAttemptAt, a.Lease.Mirrored, a.Lease.Delivery = LeaseRotationPending, m.now(), false, nil
-	// "ok" replaces an earlier refusal the mailbox may hold (PR Reviewer Guide "Stale
-	// refusal" on #16); it is journaled with the state and re-sent until acknowledged.
+	// "ok" replaces an earlier refusal the mailbox may hold, and one still queued is dropped
+	// (PR Reviewer Guide "Stale refusal" on #16); "ok" is journaled with the state and
+	// re-sent until acknowledged.
+	m.outcome(ctx, a.Lease.RequestID, nil)
 	a.Results = append(a.Results, TxResult{RequestID: a.Lease.RequestID, Result: "ok"})
 	if err := m.J.SaveConsume(a, a.Lease.RequestID, time.Time{}); err != nil {
 		return err
