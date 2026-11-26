@@ -179,6 +179,10 @@ func TestExpirePendingIntentsLeavesYoungOnes(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM audit_records WHERE action = 'pairing.outcome_unknown'`).Scan(&audited); err != nil || audited != 2 {
 		t.Fatalf("audited %d %v", audited, err)
 	}
+	// The sweep's records are chained like every other (§9.3).
+	if err := s.VerifyAuditChain(ctx); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // Two sweeps racing over the same pending intent settle and audit it once (PR Reviewer

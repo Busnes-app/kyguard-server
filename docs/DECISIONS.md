@@ -15,6 +15,133 @@ contradicts itself. Each names its section. The most secure reading wins.
    restore contract. The inherited `ky_server_base:` domain-separation labels (sealed
    KyRecovery token, replica fingerprint) stay, so the base's pinned fixtures keep proving
    the format.
+4. §7.4 (break-glass password). `break-glass create` generates the password (24 characters,
+   144 bits) and prints it once with the TOTP URI, rather than reading one from argv (visible in
+   process listings) or a terminal. The holder may change it with password + code.
+5. §7.4 (403 versus 401). A wrong password answers 401 for every account, so the 403 for an SSO
+   account comes only after its password verifies; SSO accounts have no password, so the 403
+   cannot enumerate them.
+6. §7.4 (break-glass reason). The reason is stored on the session (`sessions.break_glass_reason`),
+   set once through `POST /api/auth/break-glass/reason`, and checked by the admin middleware.
+7. §7.3 rule 4 (factor binding). The sealed TOTP secret carries its user ID inside the sealed
+   bytes, so a `secret_enc` copied onto another user's row does not open.
+8. §7.3 rule 5 (counting). Each code attempt is inserted and committed before it is counted, and
+   released only on success, so concurrent guesses can only both be refused, never both admitted
+   past the limit.
+9. §7.2 (SCIM admin refusal). "`checkRole` refuses `admin` unconditionally" is read as: no
+   setting can let SCIM grant admin. SCIM may still update, deactivate or demote an account
+   that already holds admin from its last sign-in; refusing every write that names admin would
+   block deprovisioning an administrator through the directory.
+10. §7.2 (SCIM issuer). "The configured SCIM issuer" is `KY_SCIM_ISSUER`, defaulting to
+   `KY_KYSIGNON_ISSUER`, because KyIdentity is both the SCIM source and the KySignOn issuer.
+11. §7.2 (auth_time). An `auth_time` more than one minute in the future is refused like a stale
+   one; the spec states only the 120-second age limit.
+12. §7.2 (legacy identities). A database with SSO subjects but no issuer (rows from before
+   migration 13) is refused at startup with instructions to set `users.sso_issuer`, rather than
+   guessing an issuer. No KyGuard install predates the migration. Those rows may share a subject
+   across providers, so the unique `(sso_issuer, sso_subject)` index skips rows with no issuer:
+   the migration applies, and the index refuses a duplicate once issuers are set. SCIM refuses
+   an `externalId` while no issuer is configured, so it never writes such a row.
+12a. §7.2 (fence migration). Migration 13 replaces the sid- and provider-keyed fence tables with
+   issuer-keyed ones instead of converting rows: fences live ten minutes and no KyGuard
+   install exists.
+13. §7.3 rule 3 (enrollment routes). Enrollment is two calls under `/api/auth/stepup/`:
+   `enroll` offers a secret (stored sealed on the pending session) and `enroll/confirm` takes the
+   first code, stores the factor and exchanges in one transaction. The confirming code's counter
+   becomes the factor's `last_counter`, so it cannot be replayed.
+14. §7.3 rule 2 (12 hours). The active SSO session lifetime is the constant `SSOSessionTTL`,
+   not configurable; `KY_SESSION_TTL` style overrides are not offered.
+15. §7.5 (broker listener). The classification test covers the main mux only; the broker
+   listener (`/broker/v1/*`, §4.1) is Phase 1A work and the test must be extended to it there.
+16. §7.3 rule 6 (re-step-up). An active session refreshes its step-up with a code at
+   `/api/auth/stepup/totp`, the same route a pending session uses. Break-glass sessions start
+   stepped up at sign-in, so backup actions in their last 25 minutes need a fresh code too.
+16a. §7.3 rule 6, §7.5 (broker routes on the main mux). `POST /api/broker-pools` and
+   `POST /api/broker-pools/{id}/pairing-tokens` are session routes with the 5-minute window
+   (broker and pairing actions). `POST /api/manifests` is a session route with no window: rule 6
+   does not list it, and the manifest's Custodian signatures are what authorize it.
+17. §9.3 (stored values). Audit fields pass through `logging.AuditFields`, which bounds each
+   value to 256 bytes; the stored columns hold those rendered values, so nothing outside the hash
+   is stored.
+18. §9.3 (key plumbing). The chain key travels as `config.DatabaseConfig.AuditKey`; stores opened
+   without it (backup drill scratch copies, migration sources) can read but refuse audit writes.
+18a. §9.3 (upgrade and verification). Records written before migration 15 have no chain fields.
+   Migration 15 chains them inside its own transaction, oldest first, in their canonical form,
+   so the first append finds one chain. An interrupted upgrade leaves both undone and the next
+   start retries them, and without the chain key a database holding such records refuses to
+   migrate. No later open signs anything, so a row a writer without the key
+   inserts unchained stays unchained and verification reports it. Forging the trigger means
+   deleting the migration's record, and then the migration's `ALTER TABLE` fails and the start
+   is refused. Verification rejects any stored field that differs from its
+   canonical rendering, because the HMAC covers only that rendering. On PostgreSQL it reads the
+   head and the records in one REPEATABLE READ snapshot.
+19. §9.3 (external effects). A KyRecovery pairing claim, a recovery-key pin and a deposit each
+   commit an `operation_intents` row before the effect starts. The run's or request's audit
+   record is the completion append, in the same transaction that ends the intent, and it is
+   noted on the intent first. So when that append fails, the action answers 500
+   (`ErrNotRecorded`) and reconciliation later appends the noted record. Nothing is only logged.
+   A deposit intent is taken only when a deposit can go out (paired) and after the payload is
+   collected, so refused and local-only runs leave none.
+19a. §9.3 (reconciliation). Deposits run under the `backup-run` lock, so `backup.Run`, and
+   startup when it wins that lock, settle every pending deposit before depositing. Pairing and
+   pin requests hold no shared lock, so startup, the next request of the same kind and every
+   tick of the elected scheduled worker settle only intents older than 20 minutes (longer than
+   any detached backup request). The worker tick runs only while the backup scheduler does; a
+   deployment key that cannot seal stops it, leaving startup and the next request. A pending
+   intent settles to its noted outcome, else to `outcome_unknown` with a critical
+   `operation.outcome_unknown` record. A noted outcome carries an HMAC under a key derived from
+   the audit chain key. The HMAC binds the operation ID, kind, subject, state and exact record,
+   and a note that fails it ends `outcome_unknown` with `operation.outcome_rejected`; its record
+   is never appended. Settling is one conditional `UPDATE`. Reconciliation moves only `pending`
+   intents whose note is still the one it read, so concurrent reconcilers append once, a note
+   written after the read is replayed on the next pass rather than lost, and the owning process may still correct an
+   `outcome_unknown`. A completed deposit supersedes every `outcome_unknown`
+   deposit, and a fresh capsule is sealed for each run, so lost bytes are never replayed.
+19b. §9.3 (states). Besides the spec's `pending`, `complete`, `outcome_unknown` and `superseded`,
+   an intent can end `failed`: the effect was refused, or it happened and the local completion
+   failed, and either way the outcome is known.
+19d. §9.3 (one table, two stacks). Migration 100 (broker stack, merged) creates
+   `operation_intents`. Migration 200 rebuilds it, rows kept, as the superset this stack needs
+   (`outcome`, `failed`, an index on `(kind, state)`); SQLite cannot change a CHECK in place.
+   The auth stack's migrations after the broker's take versions from 200, and a test fails if
+   the registry is not ascending. A KyRecovery pairing claim is kind `recovery_pairing`:
+   `pairing` is a broker pairing, settled only by the Guard store's sweep, so neither
+   reconciler ends the other's intents. No KyGuard install exists, so no database holds a
+   history these renumbered migrations would contradict.
+19c. §9.3 (settings publication). `UpdateSettings` appends the record `store.WithAudit` attaches,
+   in its transaction, so the exempt-network list and its record commit together. Backup export,
+   unpair and schedule now fail on a failed audit append. Export sends no capsule bytes without
+   the record. Unpair and schedule answer 500, saying that the change landed and its record did
+   not.
+19d. §9.4 (broker CA). The capsule carries `data/broker-ca.key` and `data/broker-ca.crt` when the
+   data directory holds them. One without the other refuses to seal, because a restore could not
+   run brokers with half a CA. The start-time checks of the restored CA (its key matches its
+   certificate, and every paired broker's pinned hash matches) need the broker tables from the
+   broker stack, so they come with the stack join.
+19e. §9.4 (restore). The restored copy loses its sessions, every CLI login code, and the broker
+   pairing tokens not yet consumed. Consumed tokens stay as the record of which broker each one
+   paired. The CLI-code and pairing-token tables are cleared when present, so a capsule from
+   before either feature restores too.
+19f. §9.4 (seal gate). The gate compares the pinned key and topology against the verified
+   `RecoveryKeyManifest`. That verifier is on the trust stack (#4), which is not joined to this
+   stack, so the gate is not built here. Built fail-closed in this stack, it would refuse every
+   pin and backup; built fail-open, it would be a hole if merged alone. It is a join task.
+19g. §7.6 (CLI login). The login takes `cli_port` (1024–65535) and an S256 `cli_challenge`,
+   held in a state-bound cookie for the callback. The callback issues no browser session; the
+   code goes only to `http://127.0.0.1:<port>/cb`. A code is spent by its first redemption
+   attempt, even with a wrong verifier, and an expired code is deleted when it is tried. The
+   redemption's pending session goes through `CreateSession`, which inserts, commits and then
+   re-checks both fences against the original `iat`. After step-up, a bearer caller gets the new
+   active token in the body; a cookie caller never does, so page script cannot read it.
+   A factor reset deletes the user's outstanding CLI codes first, in its transaction.
+   Redemption deletes the code and inserts the session in one transaction, so the code row
+   orders the two: a code redeemed first loses its session to the reset, and a code the reset
+   reached first redeems nothing.
+
+## Crypto wire format and contracts (§3)
+
+Numbered separately: these came from the parallel crypto stack.
+
 4. §3.1 (JSON numbers). Signed objects allow only integers in [-(2^53-1), 2^53-1], with no
    fraction, exponent or `-0`; in that range RFC 8785 number serialization is plain decimal
    in every runtime. Counters stay decimal strings (rule 2).
@@ -309,6 +436,21 @@ contradicts itself. Each names its section. The most secure reading wins.
     stores an envelope only if it leaves 96 KiB of the 256 KiB chain (`store.MaxEnvelope`).
     That room holds `commit_target` plus a `release` with all 32 wraps, so an admitted
     rotation can always finish and give back its lock.
+78. §4.5, §7.3 rule 6, §7.5 (broker route classes). Every enrollment and transaction route
+    is `session` class in the #18 registry. Reserving and submitting an enrollment need a
+    step-up within five minutes (§4.5 "fresh step-up"); so does submitting a transaction,
+    as a broker action. The status reads, the possession proof and the check-in are
+    `session` with no window: they continue a transaction already submitted under step-up,
+    the proof is bound to it, and a check-in may come hours later when the lease ends.
+79. §3.6, §4.1 (transaction refusals). A refusal of a relayed transaction, proof or
+    check-in is journaled in a `refusals` bucket keyed by request ID and re-sent by every
+    tick and by recovery until the Control Plane acknowledges it. A refusal the Control
+    Plane rejects (a `RemoteError`, such as an unknown request) is dropped, since it would
+    be rejected again; a later accepted message for the same request drops its refusal.
+    The bucket holds at most 1,024 refusals, so a Control Plane that pushes junk while
+    withholding acknowledgements cannot grow the journal; past that a refusal is sent once.
+    A checkout wrap whose delivery fails is pending, not refused: the lease stays active
+    and the journaled wrap is re-sent.
 200. §8.2 (who writes attributes). An attribute definition has one source. The store refuses
     an admin write to a `scim` definition and a SCIM write to an `admin` one, so SCIM-synced
     values are read-only in the UI and API. The user keys `department`, `manager` and
@@ -316,7 +458,7 @@ contradicts itself. Each names its section. The most secure reading wins.
 201. §8.2 (enum edits). Removing an enum value that an account or user still holds is
     refused (409); clear or change those values first. Deleting a definition deletes its
     values.
-202. §8.2, §9.4 (no seeded rows). Migration 200 seeds no attribute definitions, because
+202. §8.2, §9.4 (no seeded rows). Migration 300 seeds no attribute definitions, because
     `migrate-postgres` and the PostgreSQL snapshot refuse non-empty target tables. The SCIM
     definitions are created the first time SCIM sends one of their values.
 203. §9.2, §10 (inventory writes). Accounts are created and edited by administrators only.
@@ -327,6 +469,12 @@ contradicts itself. Each names its section. The most secure reading wins.
     strictly, is in the 1A slice and names the bundle's deployment and the account's own
     account and asset. It stores the canonical bytes, so the digest a Custodian sees is the
     digest of the stored row.
+204a. §9.4 (migration versions). The reporting migrations take versions from 300: `main`'s
+    auth stack (#25) holds 200. No KyGuard install exists, so no database has the old numbers.
+204b. §7.3 rule 6, §7.5 (inventory route classes). Every inventory and attribute route is
+    `session` class. The writes (assets, accounts, target descriptors, attribute definitions
+    and values) also need a step-up within five minutes: a descriptor is what a policy pins,
+    and the rest feed the reports. The reads need none.
 205. §8.1 (overdue). An account is `overdue` when the newest occurrence due at least one
     `interval_seconds` ago came after its last `release` receipt (Control Plane time).
 206. §8.1 (one health value). Health is a single value: a non-`healthy` broker report wins,
@@ -334,9 +482,8 @@ contradicts itself. Each names its section. The most secure reading wins.
     changes the class.
 207. §8.3 (listed on in the policy). A non-admin is listed when a principal in any of the
     current policy's principal lists has a verified `KeyEnrollmentManifest` whose issuer
-    and subject are the caller's own; a subject alone never matches. This build knows the
-    issuer only for KySignOn sign-ins (`KY_KYSIGNON_ISSUER`); every other caller sees only
-    accounts they own until `users.sso_issuer` (§7.2) is joined in.
+    and subject are the caller's own (`users.sso_issuer`, §7.2); a subject alone never
+    matches, and a local account is never listed.
 208. §8.3 (what is audited). The dashboard view is not an export and is not audited; every
     `format=json` or `format=csv` download is, before its body is sent. CSV cells that a
     spreadsheet would run as a formula are prefixed with `'`.

@@ -43,3 +43,27 @@ func TestOAuthAuthorizationURLUsesDiscoveryAndPKCE(t *testing.T) {
 		t.Fatalf("unexpected authorization URL: %s", authURL)
 	}
 }
+
+// Acceptance 6 (rule): amr "otp", "hwk" or "swk" alone is not MFA; "mfa" is, and so is an acr
+// in the issuer profile's MFA set.
+func TestMFAAssertionRule(t *testing.T) {
+	set := []string{sso.KySignOnMFAACR}
+	for _, c := range []struct {
+		amr  []string
+		acr  string
+		want bool
+	}{
+		{[]string{"otp"}, "", false},
+		{[]string{"hwk", "swk", "pwd"}, "", false},
+		{[]string{"pwd", "mfa"}, "", true},
+		{nil, sso.KySignOnMFAACR, true},
+		{[]string{"otp"}, "urn:other:acr", false},
+	} {
+		if got := sso.MFAAsserted(c.amr, c.acr, set); got != c.want {
+			t.Errorf("amr %v acr %q: %v, want %v", c.amr, c.acr, got, c.want)
+		}
+	}
+	if sso.MFAAsserted([]string{"otp"}, "", nil) {
+		t.Error("an empty MFA set made otp count")
+	}
+}

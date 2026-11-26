@@ -93,7 +93,7 @@ Default section order:
 ## User Preferences
 - SQLite remains a first-class single-server default. PostgreSQL migration is an explicit,
   verified maintenance command; multi-host replicas and worker election require no Kubernetes.
-- KyIdentity directory synchronization uses its SCIM connector; the incompatible webhook is retired. The legacy HMAC-secret config remains accepted with a startup warning. Per-app `admin` roles must be assigned before upgrade; empty `roles` means ordinary user. SCIM username adoption refuses a different nonempty `externalId` with 409.
+- KyIdentity directory synchronization uses its SCIM connector; the incompatible webhook is retired. The legacy HMAC-secret config remains accepted with a startup warning. KyGuard admin comes only from the per-app `roles` claim, recomputed at every sign-in; SCIM never grants it (spec §7.2). Account identity is `(issuer, subject)`. SCIM username adoption refuses a different nonempty `externalId` with 409.
 - No bootstrap admin and no `init-admin`: break-glass administrators (at most five) are created and their TOTP reset only on the host (`kyguard-server break-glass create|reset-totp`, spec §7.4).
 
 When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md

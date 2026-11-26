@@ -28,6 +28,7 @@ type Store interface {
 	Vault() VaultStore
 	MFA() MFAStore
 	Inventory() InventoryStore
+	Intents() IntentStore
 	Drafts() DraftStore
 
 	// SnapshotToSQLite copies a PostgreSQL database, as of one transaction, into a new SQLite
@@ -57,7 +58,8 @@ type UserStore interface {
 	GetUserByID(ctx context.Context, id string) (*User, error)
 	GetUserByUsername(ctx context.Context, username string) (*User, error)
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
-	GetUserBySSO(ctx context.Context, provider, subject string) (*User, error)
+	// GetUserBySSO finds the account whose identity is (issuer, subject), of any provider.
+	GetUserBySSO(ctx context.Context, issuer, subject string) (*User, error)
 	UpdateUser(ctx context.Context, u *User) error
 	// UpdateUserProfile writes only username, email, display name, role and status, so a
 	// directory sync working from a stale read cannot undo a concurrent password reset or SSO
@@ -91,6 +93,9 @@ type UserStore interface {
 	// ListSCIMUsers is ListUsers restricted to accounts SCIM created (SCIMManaged).
 	ListSCIMUsers(ctx context.Context, offset, limit int, search string) ([]*User, int, error)
 	CountUsers(ctx context.Context) (int, error)
+	// CountUnissuedIdentities counts accounts with an SSO subject but no issuer: rows from
+	// before migration 13, which (issuer, subject) lookups cannot reach.
+	CountUnissuedIdentities(ctx context.Context) (int, error)
 }
 
 // SessionStore defines repository operations for active login sessions.
@@ -99,12 +104,26 @@ type SessionStore interface {
 	GetSession(ctx context.Context, tokenHash string) (*Session, error)
 	DeleteSession(ctx context.Context, tokenHash string) error
 	DeleteUserSessions(ctx context.Context, userID string) error
-	// EndSSOSubject ends the provider subject's sessions whose credentials were verified
-	// before cutoff and fences that subject's earlier logins until fenceUntil.
-	EndSSOSubject(ctx context.Context, provider, subject string, cutoff, fenceUntil time.Time) error
-	// EndSSOSession ends every session of an SSO login and fences its sid until fenceUntil.
-	EndSSOSession(ctx context.Context, sid string, fenceUntil time.Time) error
+	// EndSSOSubject fences the issuer's subject's logins verified before cutoff until
+	// fenceUntil, then ends its sessions whose original token iat is before cutoff.
+	EndSSOSubject(ctx context.Context, issuer, subject string, cutoff, fenceUntil time.Time) error
+	// EndSSOSession fences the issuer's login sid until fenceUntil, then ends its sessions.
+	EndSSOSession(ctx context.Context, issuer, sid string, fenceUntil time.Time) error
 	CleanExpiredSessions(ctx context.Context) error
+	// CreateCLICode stores a CLI login code with audit in one transaction (spec §7.6).
+	CreateCLICode(ctx context.Context, c *CLICode, audit *AuditRecord) error
+	// RedeemCLICode spends the unexpired code with this hash, right or wrong, and inserts the
+	// session accept builds for it, in the transaction that deleted the code; accept's
+	// error refuses. The logout fences are re-checked after commit. ErrNotFound when there
+	// is no such code.
+	RedeemCLICode(ctx context.Context, codeHash string, accept func(*CLICode) (*Session, error)) error
+	// ExchangeSession replaces a pending session with active (and a first factor when
+	// newFactor is set) in one transaction; see sessionStore.ExchangeSession.
+	ExchangeSession(ctx context.Context, pendingHash, passwordHash string, active *Session, newFactor *MFAFactor) error
+	// RefreshStepup sets an active session's stepup_at to now after a code from factorID.
+	RefreshStepup(ctx context.Context, sess *Session, passwordHash, factorID string) error
+	// SetPendingSecret stores the sealed enrollment secret on a pending session.
+	SetPendingSecret(ctx context.Context, tokenHash, sealed string) error
 	// SetBreakGlassReason records the reason once, with its audit record in the same
 	// transaction; ErrConflict when one is already set.
 	SetBreakGlassReason(ctx context.Context, tokenHash, reason string, audit *AuditRecord) error
@@ -125,7 +144,10 @@ type GroupStore interface {
 
 // AuditStore logs security events.
 type AuditStore interface {
+	// LogAudit appends r to the audit chain in its own transaction.
 	LogAudit(ctx context.Context, r *AuditRecord) error
+	// VerifyAuditChain checks the whole chain against its head (spec §9.3).
+	VerifyAuditChain(ctx context.Context) error
 	ListAuditRecords(ctx context.Context, offset, limit int) ([]*AuditRecord, int, error)
 }
 
@@ -139,4 +161,42 @@ type SettingsStore interface {
 	SetSettingIfAbsent(ctx context.Context, key, val string) (string, error)
 	DeleteSetting(ctx context.Context, key string) error
 	GetAllSettings(ctx context.Context) (map[string]string, error)
+}
+
+// Intent states (spec §9.3). A pending intent whose process died is reconciled to its noted
+// outcome, or to outcome_unknown; a later successful deposit supersedes unknown deposits.
+const (
+	IntentPending    = "pending"
+	IntentComplete   = "complete"
+	IntentFailed     = "failed"
+	IntentUnknown    = "outcome_unknown"
+	IntentSuperseded = "superseded"
+)
+
+// Intent is one external effect: kind is recovery_pairing, deposit or pin (broker pairing
+// intents, kind pairing, are the Guard store's).
+type Intent struct {
+	OperationID, Kind, Subject, State string
+	CreatedAt, UpdatedAt              time.Time
+}
+
+// IntentStore keeps the durable record of external effects (spec §9.3).
+type IntentStore interface {
+	// Begin commits a pending intent before the effect starts and returns its operation ID.
+	Begin(ctx context.Context, kind, subject string) (string, error)
+	// Settle ends the intent as state with r as its completion append, in one transaction.
+	// It notes r on the intent first, so a failed append is replayed by Reconcile.
+	Settle(ctx context.Context, operationID, state string, r *AuditRecord) error
+	// Reconcile settles kind's intents left pending for longer than olderThan: to the
+	// noted outcome, else to outcome_unknown with an audit record. It returns how many.
+	Reconcile(ctx context.Context, kind string, olderThan time.Duration) (int, error)
+	Get(ctx context.Context, operationID string) (*Intent, error)
+}
+
+// CLICode is a kyguard-cli login code (spec §7.6), bound to the verified login and to the
+// CLI's PKCE challenge (base64url SHA-256 of its verifier).
+type CLICode struct {
+	CodeHash, UserID, SSOIssuer, SSOSID, Challenge string
+	IssuedAt, ExpiresAt                            time.Time
+	MFAAsserted                                    bool
 }
