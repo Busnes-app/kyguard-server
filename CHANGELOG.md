@@ -157,7 +157,9 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   it in `kyguard-cli` and post it back, and it is admitted only at quorum.
 - Web screens (spec §10): one Accounts page with class, health, pool and attribute
   filters, the traffic light and one-click CSV/JSON export, plus Attributes, Policies and
-  Jobs, and a traffic-light Overview with a 1-of-1 Custodian warning.
+  Jobs, and a traffic-light Overview with a 1-of-1 Custodian warning. Closing account
+  details pauses edits and waits for saves, keeping the dialog open if a save fails.
+  Inventory also works when no account or owner attribute values are present.
 
 ### Upgrade impact
 

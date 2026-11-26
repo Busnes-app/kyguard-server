@@ -28,6 +28,8 @@ export const Accounts: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
   }, [all.data, defs.data]);
   const reload = () => { card.reload(); all.reload(); };
   const active = Object.values(filter).some(Boolean);
+  const accountKeys = card.data?.account_attribute_keys ?? [];
+  const ownerKeys = card.data?.owner_attribute_keys ?? [];
 
   return (
     <div className="dr-page kg-wide">
@@ -85,8 +87,8 @@ export const Accounts: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
                 <thead>
                   <tr>
                     <th>Account</th><th>Class</th><th>Health</th><th>Owner</th><th>Kind</th><th>Min age</th><th>Target</th>
-                    {card.data.account_attribute_keys.map((k) => <th key={k}>{label('account', k)}</th>)}
-                    {card.data.owner_attribute_keys.map((k) => <th key={'o' + k}>Owner {label('user', k).toLowerCase()}</th>)}
+                    {accountKeys.map((k) => <th key={k}>{label('account', k)}</th>)}
+                    {ownerKeys.map((k) => <th key={'o' + k}>Owner {label('user', k).toLowerCase()}</th>)}
                   </tr>
                 </thead>
                 <tbody>
@@ -101,8 +103,8 @@ export const Accounts: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
                       <td>{r.account_kind}</td>
                       <td>{r.min_password_age_seconds == null ? '—' : `${Math.round(r.min_password_age_seconds / 3600)} h`}</td>
                       <td className="dr-mono" title={r.target_descriptor_digest}>{r.target_descriptor_digest ? r.target_descriptor_digest.slice(0, 12) : '—'}</td>
-                      {card.data!.account_attribute_keys.map((k) => <td key={k}>{r.attributes[k] || '—'}</td>)}
-                      {card.data!.owner_attribute_keys.map((k) => <td key={'o' + k}>{r.owner_attributes[k] || '—'}</td>)}
+                      {accountKeys.map((k) => <td key={k}>{r.attributes[k] || '—'}</td>)}
+                      {ownerKeys.map((k) => <td key={'o' + k}>{r.owner_attributes[k] || '—'}</td>)}
                     </tr>
                   ))}
                 </tbody>
@@ -207,6 +209,7 @@ const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onCl
   const detail = useJSON<Detail>(`/api/accounts/${id}`);
   const defs = useJSON<Record<string, AttributeDefinition[]>>('/api/attributes');
   const [err, setErr] = useState('');
+  const [closing, setClosing] = useState(false);
   const ref = useRef<HTMLDialogElement>(null);
   // Writes still in flight: closing waits for them, so the page reloads after they land.
   const pending = useRef(new Set<Promise<string>>());
@@ -222,9 +225,15 @@ const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onCl
     }
   };
   const close = async () => {
-    // A refused save keeps the dialog open with its error (Escape already closed it: reopen).
-    if ((await Promise.all([...pending.current])).some(Boolean)) {
-      if (ref.current && !ref.current.open) ref.current.showModal?.();
+    if (closing) return;
+    // Escape can arrive while a text edit still has focus. Start its blur save before waiting.
+    const focused = document.activeElement;
+    if (focused instanceof HTMLInputElement && ref.current?.contains(focused)) focused.blur();
+    setClosing(true);
+    const error = (await Promise.all(pending.current)).find(Boolean);
+    if (error) {
+      setErr(error);
+      setClosing(false);
       return;
     }
     onClose();
@@ -237,15 +246,15 @@ const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onCl
   }, []);
 
   return (
-    // A native modal dialog: focus moves in and stays in, Escape closes it, focus returns.
-    <dialog ref={ref} className="modal-window kg-detail" aria-label="Account details" onClose={close}>
+    <dialog ref={ref} className="modal-window kg-detail" aria-label="Account details" aria-busy={closing}
+      onCancel={(event) => { event.preventDefault(); void close(); }}>
         <div className="panel-header">
           <h3>{d ? `${d.account.asset_name} / ${d.account.Name}` : 'Account'}</h3>
-          <button type="button" className="btn-secondary" onClick={close} aria-label="Close"><X size={16} /></button>
+          <button type="button" className="btn-secondary" onClick={close} disabled={closing} aria-label="Close"><X size={16} /></button>
         </div>
         {detail.error && <p role="alert" className="dr-danger">{detail.error}</p>}
         {d && (
-          <div className="dr-stack">
+          <div className="dr-stack" inert={closing}>
             <OwnerPicker current={d.account.owner_user_id} onPick={(owner) => act(send('PATCH', `/api/accounts/${id}`, { owner_user_id: owner }))} />
             {(defs.data?.account || []).map((a) => (
               <label key={a.id} className="dr-field">{a.label}

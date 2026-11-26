@@ -89,7 +89,7 @@ it('lets an admin reach decommissioned accounts', async () => {
     if (url === '/api/assets') return json([]);
     if (url === '/api/accounts?status=decommissioned') return json([{ ID: 'old', Name: 'old-sa', asset_name: 'db1' }]);
     if (url.startsWith('/api/reports/scorecard')) {
-      const c = card([row('a', 'green', 'Ops')]);
+      const c = { ...card([row('a', 'green', 'Ops')]), account_attribute_keys: null, owner_attribute_keys: null };
       c.totals.decommissioned = 1;
       return json(c);
     }
@@ -156,7 +156,7 @@ it('puts the stored attribute value back after a refused save', async () => {
 
 // Closing the detail while a save is in flight reloads the page only after the save lands,
 // so the table never keeps the value from before it.
-it('reloads the accounts after a save that was pending at close', async () => {
+it.each(['Close', 'Escape'])('waits for a save before closing with %s and reloading accounts', async (closeWith) => {
   const log: string[] = [];
   let release: () => void = () => {};
   const held = new Promise<void>((r) => { release = r; });
@@ -172,12 +172,24 @@ it('reloads the accounts after a save that was pending at close', async () => {
   fireEvent.click(await screen.findByText('dc1 / svc-a'));
   const field = (await screen.findByLabelText('Cost center')) as HTMLInputElement;
   fireEvent.change(field, { target: { value: 'CC2' } });
-  fireEvent.blur(field);
-  fireEvent.click(screen.getByLabelText('Close'));
-  await new Promise((r) => setTimeout(r, 20));
+  if (closeWith === 'Escape') {
+    const dialog = screen.getByLabelText('Account details');
+    dialog.setAttribute('open', ''); // jsdom does not open the native modal.
+    field.focus();
+    expect(document.activeElement === field).toBe(true);
+    expect(fireEvent(dialog, new Event('cancel', { cancelable: true }))).toBe(false);
+  } else {
+    fireEvent.blur(field);
+    fireEvent.click(screen.getByLabelText('Close'));
+  }
+  expect(field.closest('[inert]')).not.toBeNull();
+  expect(screen.getByLabelText('Account details')).toBeTruthy();
   release();
   await vi.waitFor(() => expect(screen.queryByLabelText('Account details')).toBeNull());
-  await vi.waitFor(() => expect(log.lastIndexOf('scorecard')).toBeGreaterThan(log.indexOf('saved')));
+  await vi.waitFor(() => {
+    expect(log).toContain('saved');
+    expect(log.lastIndexOf('scorecard')).toBeGreaterThan(log.indexOf('saved'));
+  });
 });
 
 // A save that was pending at close and then refused keeps the dialog open with its error.
@@ -204,5 +216,6 @@ it('keeps account details open when a save pending at close is refused', async (
   expect(await screen.findByText('refused')).toBeTruthy();
   await new Promise((r) => setTimeout(r, 20));
   expect(screen.getByLabelText('Account details')).toBeTruthy();
+  expect(field.closest('[inert]')).toBeNull();
   expect(onPage.mock.calls.length).toBe(before);
 });

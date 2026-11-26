@@ -33,7 +33,9 @@ Owns user interface components, service worker caching, PWA installation manifes
   `Attributes.tsx` (SCIM ones read-only), `Policies.tsx` (drafts with their digest for
   `kyguard-cli sign`; admin only), `Jobs.tsx` (admin only); the Overview shows the traffic
   light, health counts and a 1-of-1 Custodian warning. No screen handles a credential or
-  signs anything. Shared fetch helpers and API shapes live in `src/reporting.ts`.
+  signs anything. Closing account details by button or Escape pauses edits and waits for
+  pending saves. A failed save keeps the dialog open with its error. Shared fetch helpers
+  and API shapes live in `src/reporting.ts`.
 
 ## Verification
 - `npm run audit` runs the shared audit gate and regression checks; `../docs/NPM-AUDIT.md`

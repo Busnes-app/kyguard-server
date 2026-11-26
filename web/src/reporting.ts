@@ -34,8 +34,8 @@ export interface Totals {
 export interface Scorecard {
   generated_at: string;
   totals: Totals;
-  account_attribute_keys: string[];
-  owner_attribute_keys: string[];
+  account_attribute_keys: string[] | null;
+  owner_attribute_keys: string[] | null;
   rows: ScoreRow[];
 }
 
