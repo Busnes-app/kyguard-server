@@ -137,6 +137,10 @@ contradicts itself. Each names its section. The most secure reading wins.
    Redemption deletes the code and inserts the session in one transaction, so the code row
    orders the two: a code redeemed first loses its session to the reset, and a code the reset
    reached first redeems nothing.
+19h. §7.3 rule 6 (web re-step-up). `secureFetch` turns a 403 `stepup_stale` into a code prompt
+   (the shell's `ReStepUp` dialog posts it to `/api/auth/stepup/totp`). On success it sends the
+   original request once more; on cancel the caller gets the 403 as before. Every other 403 goes
+   straight to the caller.
 
 ## Crypto wire format and contracts (§3)
 
