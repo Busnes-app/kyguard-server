@@ -9,8 +9,9 @@ import (
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
 )
 
-// curves puts the hybrid post-quantum key exchange first (§4.1, §11).
-var curves = []tls.CurveID{tls.X25519MLKEM768, tls.X25519}
+// curves is the hybrid post-quantum key exchange only (§4.1, §11; PQC plan Q9): both ends
+// are KyGuard on Go 1.27, so there is no classical fallback to offer or accept.
+var curves = []tls.CurveID{tls.X25519MLKEM768}
 
 // ServerTLS is the listener configuration of §4.1. Client certificates are optional at the
 // TLS layer (pairing has none) and verified against the CA when present; the channel
