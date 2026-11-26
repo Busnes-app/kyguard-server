@@ -106,7 +106,8 @@ type VaultStore interface {
 	MirrorLease(ctx context.Context, l *Lease) error
 	GetLease(ctx context.Context, requestID string) (*Lease, error)
 	// TxMailbox holds what the broker sent back for a transaction: a challenge, a delivery
-	// wrap, a refusal. SetTxMailbox sets one field; an empty value leaves it.
+	// wrap, a refusal. SetTxMailbox sets one field; an empty value leaves it, and a new
+	// challenge clears the result.
 	TxMailbox(ctx context.Context, requestID string) (*TxMail, error)
 	SetTxMailbox(ctx context.Context, requestID string, m *TxMail) error
 	// TxAccount is the account a stored transaction names.
@@ -309,6 +310,19 @@ func (v vaultStore) heldBy(ctx context.Context, tx *sql.Tx, accountID string) (s
 	return op, uint64(ver), err
 }
 
+// notEnded refuses, with ErrConflict, an operation that already has receipts on the account.
+func (v vaultStore) notEnded(ctx context.Context, tx *sql.Tx, accountID, op string) error {
+	var ended int
+	if err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT COUNT(1) FROM envelope_receipts r JOIN secret_envelopes e ON e.envelope_id = r.envelope_id
+ WHERE r.operation_id = ? AND e.account_id = ?`), op, accountID).Scan(&ended); err != nil {
+		return err
+	}
+	if ended > 0 {
+		return ErrConflict
+	}
+	return nil
+}
+
 func (v vaultStore) Reserve(ctx context.Context, accountID, op string, reported uint64) (uint64, error) {
 	var version uint64
 	err := v.s.inTx(ctx, func(tx *sql.Tx) error {
@@ -329,13 +343,8 @@ func (v vaultStore) Reserve(ctx context.Context, accountID, op string, reported 
 		}
 		// An operation that already ended never reserves again: a late retry would take a new
 		// version and a lock nothing releases (PR Reviewer Guide on #10).
-		var ended int
-		if err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT COUNT(1) FROM envelope_receipts r JOIN secret_envelopes e ON e.envelope_id = r.envelope_id
- WHERE r.operation_id = ? AND e.account_id = ?`), op, accountID).Scan(&ended); err != nil {
+		if err := v.notEnded(ctx, tx, accountID, op); err != nil {
 			return err
-		}
-		if ended > 0 {
-			return ErrConflict
 		}
 		version = max(highest, reported) + 1
 		if version > 1<<63-1 {
@@ -656,6 +665,11 @@ func (v vaultStore) ReserveEnrollment(ctx context.Context, accountID, op string,
 			version = held
 			return nil
 		}
+		// A completed enrollment's retry takes no new version or lock (PR Reviewer Guide
+		// "Retry Idempotency" on #15).
+		if err := v.notEnded(ctx, tx, accountID, op); err != nil {
+			return err
+		}
 		quarantined := health == "quarantined" || health == "auth_failed"
 		var kind string
 		if holder != "" {
@@ -952,13 +966,15 @@ func (v vaultStore) TxMailbox(ctx context.Context, requestID string) (*TxMail, e
 	return &m, err
 }
 
+// SetTxMailbox sets the non-empty fields of a request's mailbox. A new challenge clears the
+// earlier result: it supersedes that outcome (PR Reviewer Guide "Stale refusal" on #16).
 func (v vaultStore) SetTxMailbox(ctx context.Context, requestID string, m *TxMail) error {
 	_, err := v.s.db.ExecContext(ctx, v.s.rebind(`UPDATE access_transactions SET
  challenge = CASE WHEN ? <> '' THEN ? ELSE challenge END,
  purpose = CASE WHEN ? <> '' THEN ? ELSE purpose END,
  delivery = CASE WHEN ? <> '' THEN ? ELSE delivery END,
- result = CASE WHEN ? <> '' THEN ? ELSE result END
- WHERE request_id = ?`), m.Challenge, m.Challenge, m.Purpose, m.Purpose, m.Delivery, m.Delivery, m.Result, m.Result, requestID)
+ result = CASE WHEN ? <> '' THEN ? WHEN ? <> '' THEN '' ELSE result END
+ WHERE request_id = ?`), m.Challenge, m.Challenge, m.Purpose, m.Purpose, m.Delivery, m.Delivery, m.Result, m.Result, m.Challenge, requestID)
 	return err
 }
 
