@@ -27,7 +27,7 @@ var attrKey = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 
 func (s *Server) inventoryRoutes() {
 	// Inventory and attribute writes are admin only, with a five-minute step-up: a descriptor
-	// is what a policy pins (decision 206).
+	// is what a policy pins (decision 204b).
 	w := func(h http.HandlerFunc) http.Handler { return http.HandlerFunc(s.requireAdmin(h)) }
 	s.route(ClassSession, "GET /api/assets", w(s.handleListAssets))
 	s.route(ClassSession, "POST /api/assets", w(s.handleCreateAsset), fresh(StepupWindow))

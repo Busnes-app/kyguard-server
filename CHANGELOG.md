@@ -169,7 +169,7 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   new dependency (the broker journal).
 - The module declares `go 1.27.0` (for `crypto/mldsa`); builds need Go 1.27, as the pinned
   `go1.27.4` toolchain already provides.
-- Migration 200 adds `attribute_definitions` and `attribute_values`; no data migrates.
+- Migration 300 adds `attribute_definitions` and `attribute_values`; no data migrates.
 
 ## Maintaining notes
 

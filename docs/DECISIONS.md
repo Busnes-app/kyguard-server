@@ -469,9 +469,9 @@ Numbered separately: these came from the parallel crypto stack.
     strictly, is in the 1A slice and names the bundle's deployment and the account's own
     account and asset. It stores the canonical bytes, so the digest a Custodian sees is the
     digest of the stored row.
-205. §9.4 (migration versions). The reporting migrations take versions from 300: `main`'s
+204a. §9.4 (migration versions). The reporting migrations take versions from 300: `main`'s
     auth stack (#25) holds 200. No KyGuard install exists, so no database has the old numbers.
-206. §7.3 rule 6, §7.5 (inventory route classes). Every inventory and attribute route is
+204b. §7.3 rule 6, §7.5 (inventory route classes). Every inventory and attribute route is
     `session` class. The writes (assets, accounts, target descriptors, attribute definitions
     and values) also need a step-up within five minutes: a descriptor is what a policy pins,
     and the rest feed the reports. The reads need none.
