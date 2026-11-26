@@ -322,6 +322,7 @@ func (s *Server) routes() {
 	// Auth
 	s.route(ClassPublic, "/api/auth/pow-challenge", f(s.handlePoWChallenge))
 	s.route(ClassPublic, "/api/auth/login", f(s.handleLogin))
+	s.route(ClassPublic, "POST /api/auth/cli/exchange", f(s.handleCLIExchange))
 	s.route(ClassPending, "/api/auth/logout", f(s.handleLogout))
 	s.route(ClassPending, "/api/auth/me", f(s.handleMe))
 	s.route(ClassPending, "POST /api/auth/stepup/totp", f(s.handleStepupTOTP))

@@ -493,6 +493,32 @@ CREATE TABLE audit_chain_head (
     head_hash TEXT NOT NULL
 );`,
 	},
+	{
+		// kyguard-cli login (spec §7.6): a one-time code, valid 60 seconds, bound to the verified
+		// login (issuer, sid, the ID token's iat, its MFA assertion) and the CLI's PKCE challenge.
+		Version: 17,
+		Name:    "kyguard_cli_login_codes",
+		SQLite: `CREATE TABLE cli_login_codes (
+    code_hash TEXT PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    sso_issuer TEXT NOT NULL,
+    sso_sid TEXT NOT NULL,
+    issued_at DATETIME NOT NULL,
+    mfa_asserted INTEGER NOT NULL,
+    challenge TEXT NOT NULL,
+    expires_at DATETIME NOT NULL
+);`,
+		Postgres: `CREATE TABLE cli_login_codes (
+    code_hash TEXT PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    sso_issuer TEXT NOT NULL,
+    sso_sid TEXT NOT NULL,
+    issued_at TIMESTAMPTZ NOT NULL,
+    mfa_asserted BOOLEAN NOT NULL,
+    challenge TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL
+);`,
+	},
 }
 
 // EnsureUsernameIndex builds the case-insensitive unique index on usernames when existing
