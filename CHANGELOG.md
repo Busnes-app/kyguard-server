@@ -149,7 +149,8 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   which is the only way out of quarantine.
 - Checkout and leases (spec §3.4, §3.6): `vault_checkout` with a single-use challenge and a
   possession proof opens a lease, verifies the credential once and wraps it to the
-  requester's key only; check-in or expiry starts the lease's cleanup rotation, the only
+  requester's key only. An accepted retry stays pending until its wrap arrives.
+  Check-in or expiry starts the lease's cleanup rotation, the only
   rotation path until it releases; scheduled rotations wait; `manual_rotation` runs a
   rotation or re-arms a pending cleanup. `cli.NewTransaction`, `Proof` and `OpenDelivery`
   are the CLI's half.

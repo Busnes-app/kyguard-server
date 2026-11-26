@@ -529,8 +529,8 @@ func TestLeaseUnderAReplacedPolicyDeliversNothing(t *testing.T) {
 }
 
 // Guide on #16 (lost delivery): a delivery the Control Plane did not acknowledge is
-// journaled and re-sent by the next tick, without a second login. Until then it is pending,
-// not refused: the proof succeeds and no result is published ("Premature refusal").
+// journaled and re-sent by the next tick, without a second login. The mailbox shows the
+// accepted checkout as pending even if a previous proof left a refusal there.
 func TestLostDeliveryIsResent(t *testing.T) {
 	c := newCheckoutRig(t)
 	ctx := context.Background()
@@ -539,6 +539,10 @@ func TestLostDeliveryIsResent(t *testing.T) {
 	co := c.checkoutTx(600)
 	if err := c.m.Tx(ctx, co.Tx); err != nil {
 		t.Fatal(err)
+	}
+	c.m.Refused(ctx, co.RequestID, broker.ErrLeaseOpen.Error())
+	if _, result := c.delivery(co.RequestID); result != broker.ErrLeaseOpen.Error() {
+		t.Fatalf("expected an earlier published refusal, got %q", result)
 	}
 	pop, _ := co.Proof(c.challenge(co.RequestID), pqcrypto.PurposeDeliver)
 	if err := c.m.Proof(ctx, co.RequestID, pop); err != nil {
@@ -552,8 +556,19 @@ func TestLostDeliveryIsResent(t *testing.T) {
 	if err := c.m.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if d, _ := c.delivery(co.RequestID); d == nil || c.account(c.m).Lease.Delivery != nil || len(c.target.hosts) != logins {
-		t.Fatalf("delivered=%v hosts=%v", d != nil, c.target.hosts)
+	if d, result := c.delivery(co.RequestID); d == nil || result != "ok" || c.account(c.m).Lease.Delivery != nil || len(c.target.hosts) != logins {
+		t.Fatalf("delivered=%v result=%q hosts=%v", d != nil, result, c.target.hosts)
+	}
+	vault := c.cp.Store.Vault()
+	lease, err := vault.GetLease(ctx, string(co.RequestID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vault.MirrorLease(ctx, lease); err != nil {
+		t.Fatal(err)
+	}
+	if d, result := c.delivery(co.RequestID); d == nil || result != "ok" {
+		t.Fatalf("mirror retry replaced delivery: delivered=%v result=%q", d != nil, result)
 	}
 }
 

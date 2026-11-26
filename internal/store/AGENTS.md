@@ -78,7 +78,8 @@ Owns data models, store interfaces (`UserStore`, `SessionStore`, `GroupStore`, `
 - Checkout (migration 103): `checkout_leases` mirrors broker leases with a partial unique
   index allowing one non-closed lease per account; a closed lease never reopens.
   `access_transactions` doubles as the CLI's relay mailbox (challenge, purpose, delivery
-  wrap, result).
+  wrap, result). Inserting an active lease clears any earlier refusal for that checkout
+  in the same transaction. Repeated lease mirrors preserve later mailbox outcomes.
 
 ## Verification
 - `go test -v ./internal/store/...`

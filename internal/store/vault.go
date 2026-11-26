@@ -950,7 +950,15 @@ func (v vaultStore) MirrorLease(ctx context.Context, l *Lease) error {
 		if err != nil {
 			return ErrConflict // the one-open-lease index, or a race on the same request
 		}
-		return nil
+		if l.State != "active" {
+			return nil
+		}
+		// A newly accepted proof supersedes a refusal before the wrap arrives. Clear
+		// it with the first lease mirror so retries preserve any later outcome.
+		_, err = tx.ExecContext(ctx, v.s.rebind(`UPDATE access_transactions SET result = ''
+ WHERE request_id = ? AND account_id = ? AND action_type = 'vault_checkout'
+ AND delivery = '' AND result NOT IN ('', 'ok')`), l.RequestID, l.AccountID)
+		return err
 	})
 }
 
