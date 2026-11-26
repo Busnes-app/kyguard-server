@@ -178,7 +178,7 @@ var migrationTables = []string{
 	"users", "groups", "group_members", "sessions", "audit_records", "server_settings",
 	"mfa_challenges", "sso_logouts", "sso_subject_logouts", "sso_directory_events",
 	"security_windows", "spent_challenges",
-	"mfa_factors", "totp_attempts", "audit_chain_head",
+	"mfa_factors", "totp_attempts", "audit_chain_head", "cli_login_codes",
 	"bootstrap_bundles", "trust_manifests", "broker_pools", "brokers", "pairing_tokens", "operation_intents",
 	"assets", "accounts", "target_descriptors", "secret_envelopes", "envelope_receipts", "rotation_locks", "rotation_runs",
 	"access_transactions", "broker_outbox", "checkout_leases",
