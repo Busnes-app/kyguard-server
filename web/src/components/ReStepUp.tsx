@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
+import type { FormEvent, KeyboardEvent } from 'react';
 import { onStepupStale, secureFetch } from '../api';
 
 // ReStepUp asks for a fresh authenticator code when a privileged action's step-up window has
@@ -82,9 +82,20 @@ export function ReStepUp() {
     }
   }
 
+  // Inert keeps focus off the shell but not out of the browser chrome, so Tab and Shift+Tab
+  // wrap at the dialog's edges.
+  function wrapTab(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== 'Tab') return;
+    const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('input, button:not(:disabled)'));
+    const edge = event.shiftKey ? items[0] : items[items.length - 1];
+    if (!edge || document.activeElement !== edge) return;
+    event.preventDefault();
+    (event.shiftKey ? items[items.length - 1] : items[0]).focus();
+  }
+
   if (!open) return null;
   return (
-    <div ref={dialog} role="dialog" aria-modal="true" aria-labelledby="restepup-title" className="modal-backdrop"
+    <div ref={dialog} role="dialog" aria-modal="true" aria-labelledby="restepup-title" className="modal-backdrop" onKeyDown={wrapTab}
       style={{ position: 'fixed', inset: 0, display: 'grid', placeItems: 'center', background: 'rgba(0,0,0,0.5)', zIndex: 1000 }}>
       <form className="panel" onSubmit={submit} style={{ width: '100%', maxWidth: 400 }}>
         <h2 id="restepup-title">Confirm it is you</h2>

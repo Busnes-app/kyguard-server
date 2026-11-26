@@ -181,3 +181,23 @@ it('ignores a cancelled check that finishes after a new prompt opened', async ()
   fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   expect((await second).status).toBe(403);
 });
+
+// Inert alone lets Tab leave the last control for the browser chrome: focus wraps both ways.
+it('wraps Tab and Shift+Tab inside the dialog', async () => {
+  stubServer();
+  render(<ReStepUp />);
+  const action = secureFetch('/api/backup/deposit', { method: 'POST' });
+  const input = await screen.findByLabelText('Authenticator code');
+  const cancel = screen.getByRole('button', { name: 'Cancel' });
+  cancel.focus();
+  expect(fireEvent.keyDown(cancel, { key: 'Tab' })).toBe(false);
+  expect(document.activeElement).toBe(input);
+  expect(fireEvent.keyDown(input, { key: 'Tab', shiftKey: true })).toBe(false);
+  expect(document.activeElement).toBe(cancel);
+  // Between the edges the browser moves focus itself.
+  input.focus();
+  expect(fireEvent.keyDown(input, { key: 'Tab' })).toBe(true);
+  fireEvent.click(cancel);
+  await action;
+});
+
