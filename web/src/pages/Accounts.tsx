@@ -207,7 +207,7 @@ const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onCl
   const detail = useJSON<Detail>(`/api/accounts/${id}`);
   const defs = useJSON<Record<string, AttributeDefinition[]>>('/api/attributes');
   const [err, setErr] = useState('');
-  const act = async (fail: Promise<string>) => { const f = await fail; setErr(f); if (!f) detail.reload(); };
+  const act = async (fail: Promise<string>) => { const f = await fail; setErr(f); if (!f) detail.reload(); return f; };
   const d = detail.data;
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -235,7 +235,11 @@ const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onCl
                     {a.enum_values.map((v) => <option key={v} value={v}>{v}</option>)}
                   </select>
                 ) : (
-                  <input defaultValue={d.attributes[a.key] || ''} onBlur={(e) => { if (e.target.value !== (d.attributes[a.key] || '')) act(send('PUT', `/api/attributes/${a.id}/values/${id}`, { value: e.target.value })); }} />
+                  // Keyed on the stored value so a reload shows it; a refused save puts it back.
+                  <input key={`${a.id}:${d.attributes[a.key] || ''}`} defaultValue={d.attributes[a.key] || ''} onBlur={async (e) => {
+                    const input = e.target, stored = d.attributes[a.key] || '';
+                    if (input.value !== stored && await act(send('PUT', `/api/attributes/${a.id}/values/${id}`, { value: input.value }))) input.value = stored;
+                  }} />
                 )}
               </label>
             ))}

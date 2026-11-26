@@ -130,3 +130,26 @@ it('creates one asset and one account when Add is clicked twice', async () => {
   expect(posts.filter((u) => u === '/api/assets')).toHaveLength(1);
   expect(posts.filter((u) => u === '/api/accounts')).toHaveLength(1);
 });
+
+// A refused attribute save does not stay on screen as if it were stored, even after another
+// edit succeeds and the detail reloads.
+it('puts the stored attribute value back after a refused save', async () => {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (init?.method === 'PUT') return json({ error: 'refused' }, 409);
+    if (init?.method === 'PATCH') return json({});
+    if (url === '/api/attributes') return json({ account: [{ id: 'cc', entity: 'account', key: 'cost_center', label: 'Cost center', type: 'string', enum_values: [], source: 'admin' }], user: [] });
+    if (url === '/api/accounts/a') return json({ account: { ID: 'a', Name: 'svc-a', AccountKind: 'managed', Status: 'active', asset_name: 'dc1', owner_user_id: 'u1', min_password_age_seconds: null }, descriptors: [], attributes: { cost_center: 'CC1' } });
+    if (url.startsWith('/api/reports/scorecard')) return json(card([row('a', 'green', 'Ops')]));
+    throw new Error(`unexpected fetch ${url}`);
+  }));
+  render(<Accounts isAdmin />);
+  fireEvent.click(await screen.findByText('dc1 / svc-a'));
+  const field = (await screen.findByLabelText('Cost center')) as HTMLInputElement;
+  fireEvent.change(field, { target: { value: 'CC2' } });
+  fireEvent.blur(field);
+  expect(await screen.findByText('refused')).toBeTruthy();
+  fireEvent.click(screen.getByText('Clear')); // a successful owner change reloads the detail
+  await vi.waitFor(() => expect(screen.queryByText('refused')).toBeNull());
+  expect((screen.getByLabelText('Cost center') as HTMLInputElement).value).toBe('CC1');
+});
