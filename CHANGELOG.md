@@ -110,6 +110,12 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   reports; envelopes, receipts (compare-and-swap) and rotation intents stored only after
   verification; completion moves the current envelope and releases the lock atomically,
   and re-sending a completed result changes nothing.
+- Broker rotation state machine (spec §4.2, §4.3, §4.6): the journal keeps verified
+  manifests, descriptors and a per-account copy of every chain; a rotation journals each
+  durable state, sends the target write only after the Control Plane acknowledged the
+  intent, and settles an unknown outcome only by one journaled `P_new` probe or quarantine.
+  A restart never writes twice. A denied current credential stops after one attempt and
+  quarantines. Sync refuses older or forked manifests and chains older than the broker's.
 
 ### Upgrade impact
 

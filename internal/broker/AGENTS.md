@@ -20,6 +20,31 @@ the wire and TLS are `internal/brokerproto`'s.
   `--bootstrap-fingerprint` and `--bootstrap-bundle`, reuses an unpaired key file, and
   prints `broker_id`, `sig_key_id`, `enc_key_id` and `cert_sha256` for the Custodians.
 - Nudges carry no authority or content; `App.Nudges` only wakes the scheduler.
+- Journal buckets (`state.go`): `manifests` (acceptance order; `Journal.Trust` replays them
+  from the pinned bundle), `descriptors` (by digest) and `accounts` (one JSON `Account` per
+  account: the chain copy of §3.7, the version high-water mark, health, quarantine, schedule
+  floor inputs and the latest `Run`). Every `Save` is one fsynced bbolt transaction.
+- Rotation (`machine.go`, §4.2–§4.4): journal `reserving` → reserve → seal and sign `P_new` → journal `prepared`
+  → store the envelope → log in with `P_old` and read the baseline → inside
+  `Session.Change`'s commit callback journal the intent, wait for the Control Plane
+  acknowledgement (`AckTimeout`, 30 s) and journal `ack_received` → the write. After the
+  connection closes, the one `P_new` probe is journaled before it is sent; anything but
+  success quarantines. There is no timer abort and no abort after `ack_received`.
+- `Recover` (startup, every reconnect): `reserving` → reserve again under the same operation
+  ID and abort it (a refusal means nothing was reserved); no `ack_received` → `abort` (`restart_before_send`);
+  `ack_received` → `write_outcome_unknown` and the one probe; a recorded probe without a
+  result → quarantine; journaled receipts not acknowledged → re-sent; a health report
+  not acknowledged (`Account.Unreported`) → re-sent. It never writes.
+- Health changes only through `setHealth`, which sets `Unreported` in the same journal save;
+  only an acknowledged `report` clears it (DECISIONS 73).
+- A run with unacknowledged receipts is never replaced: `start` re-sends them first and
+  returns `ErrBlocked` if that fails (DECISIONS 63).
+- `Sync` accepts manifests only through `Trust.Accept` (rollback and forks alerted, never
+  applied), descriptors only if their policy pins the digest, and chains only if they
+  verify and extend the broker's copy.
+- `Machine.Hook` is a test-only crash point; it must never be set in production.
+- Connectors implement `Connector`/`Session` (`connector.go`); `ErrAuthFailed` and
+  `ErrRefused` are the only deterministic outcomes, any other error is ambiguous.
 - `cmd/broker` sets `RLIMIT_CORE=0` before anything else. `deploy/broker/kyguard-broker.service`
   is the systemd unit (`LimitCORE=0`, `UMask=0077`, sandboxing).
 

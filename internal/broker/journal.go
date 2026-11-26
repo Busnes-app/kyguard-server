@@ -50,14 +50,12 @@ func OpenJournal(dir string) (*Journal, error) {
 		db.Close()
 		return nil, fmt.Errorf("broker: %s must be 0600", path)
 	}
-	if err := db.Update(func(tx *bolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists(bucketMeta)
-		return err
-	}); err != nil {
+	j := &Journal{db}
+	if err := j.init(); err != nil {
 		db.Close()
 		return nil, err
 	}
-	return &Journal{db}, nil
+	return j, nil
 }
 
 // Close releases the lock.

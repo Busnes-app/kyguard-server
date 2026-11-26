@@ -2,7 +2,6 @@ package broker
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +24,8 @@ type App struct {
 	// Nudges receives one value per Control Plane nudge; the scheduler drains it. A nudge
 	// carries no authority and no content (§3.4).
 	Nudges chan struct{}
+	// Connectors by connector type.
+	Connectors map[string]Connector
 }
 
 // Pair is `kyguard-broker pair --token <t> --bootstrap-fingerprint <hex>` (or
@@ -95,7 +96,8 @@ func pinnedFingerprint(fingerprint, bundleFile string) (pqcrypto.HexID, error) {
 	return d.Hex(), nil
 }
 
-// Run is the daemon: it holds the control channel open, reconnecting with backoff.
+// Run is the daemon: it holds the control channel open, reconnecting with backoff. On each
+// connection it syncs from the Control Plane, then settles journaled runs (§4.3 rule 3).
 func (a *App) Run(ctx context.Context) error {
 	j, err := OpenJournal(a.Dir)
 	if err != nil {
@@ -113,11 +115,11 @@ func (a *App) Run(ctx context.Context) error {
 	cert := k.ClientCert(id.Cert)
 	wait := time.Second
 	for {
-		c, err := brokerproto.Dial(ctx, id.ListenerURL, id.CACert, cert)
+		ws, err := brokerproto.Dial(ctx, id.ListenerURL, id.CACert, cert)
 		if err == nil {
 			log.Printf("[BROKER] channel open as %s", id.BrokerID)
 			wait = time.Second
-			err = a.serve(ctx, c)
+			err = a.serve(ctx, j, k, id.BrokerID, ws)
 		}
 		if ctx.Err() != nil {
 			return nil
@@ -132,25 +134,52 @@ func (a *App) Run(ctx context.Context) error {
 	}
 }
 
-func (a *App) serve(ctx context.Context, c *websocket.Conn) error {
-	defer c.CloseNow()
-	for {
-		_, data, err := c.Read(ctx)
-		if err != nil {
-			return err
-		}
-		var m brokerproto.Message
-		if err := json.Unmarshal(data, &m); err != nil || m.V != 1 {
-			return errors.New("unsupported message from the Control Plane")
-		}
-		switch m.Type {
+func (a *App) serve(ctx context.Context, j *Journal, k *Keys, id pqcrypto.UUID, ws *websocket.Conn) error {
+	cctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	conn := brokerproto.NewConn(cctx, ws)
+	defer conn.Close()
+	tr, err := j.Trust()
+	if err != nil {
+		return err
+	}
+	m := &Machine{J: j, Trust: tr, Keys: k, ID: id, CP: NewChannelCP(conn), Connectors: a.Connectors}
+	start := func(ctx context.Context) error { return errors.Join(m.Sync(ctx), m.Recover(ctx)) }
+	if err := start(cctx); err != nil {
+		// Retried while the channel is open, so unfinished work never waits for the next
+		// reconnect (Guide on #11). The retries end before serve returns.
+		log.Printf("[BROKER] start-up: %v", err)
+		done := make(chan struct{})
+		defer func() { cancel(); <-done }()
+		go func() { defer close(done); retry(cctx, time.Second, start) }()
+	}
+	for msg := range conn.Pushes {
+		switch msg.Type {
 		case brokerproto.MsgNudge:
 			select {
 			case a.Nudges <- struct{}{}:
 			default: // one pending nudge is enough
 			}
 		default:
-			log.Printf("[BROKER] ignoring message type %q", m.Type)
+			log.Printf("[BROKER] ignoring message type %q", msg.Type)
 		}
+	}
+	return errors.New("channel closed")
+}
+
+// retry runs f after wait, doubling the wait up to a minute, until f succeeds or ctx ends.
+func retry(ctx context.Context, wait time.Duration, f func(context.Context) error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		err := f(ctx)
+		if err == nil {
+			return
+		}
+		log.Printf("[BROKER] start-up retry: %v", err)
+		wait = min(2*wait, time.Minute)
 	}
 }
