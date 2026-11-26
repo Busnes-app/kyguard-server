@@ -400,10 +400,14 @@ func (m *Machine) checkinProof(ctx context.Context, a *Account, c *Challenge, ra
 		return err
 	}
 	a.Lease.State, a.Lease.NextAttemptAt, a.Lease.Mirrored, a.Lease.Delivery = LeaseRotationPending, m.now(), false, nil
+	// "ok" replaces an earlier refusal the mailbox may hold (PR Reviewer Guide "Stale
+	// refusal" on #16); it is journaled with the state and re-sent until acknowledged.
+	a.Results = append(a.Results, TxResult{RequestID: a.Lease.RequestID, Result: "ok"})
 	if err := m.J.SaveConsume(a, a.Lease.RequestID, time.Time{}); err != nil {
 		return err
 	}
 	_ = m.mirror(ctx, a)
+	m.results(ctx, a)
 	return nil
 }
 

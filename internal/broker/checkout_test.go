@@ -209,7 +209,7 @@ func TestLeaseBlocksSecondCheckoutAndDefersTheSchedule(t *testing.T) {
 }
 
 // §13 1A acceptance test 10: check-in with a different key is refused; with the same key it
-// triggers the cleanup rotation, which closes the lease.
+// replaces that refusal with "ok" and triggers the cleanup rotation, which closes the lease.
 func TestCheckinTriggersTheCleanupRotation(t *testing.T) {
 	c := newCheckoutRig(t)
 	ctx := context.Background()
@@ -224,9 +224,14 @@ func TestCheckinTriggersTheCleanupRotation(t *testing.T) {
 	if err := c.m.Proof(ctx, co.RequestID, bad); err == nil {
 		t.Fatal("check-in with another key accepted")
 	}
+	c.m.Refused(ctx, co.RequestID, "bad_proof") // as App.transaction publishes it
 	good, _ := co.Proof(ch, pqcrypto.PurposeCheckin)
 	if err := c.m.Proof(ctx, co.RequestID, good); err != nil {
 		t.Fatal(err)
+	}
+	// The accepted check-in replaces the earlier refusal (PR Reviewer Guide "Stale refusal").
+	if _, res := c.delivery(co.RequestID); res != "ok" {
+		t.Fatalf("result after the accepted check-in %q", res)
 	}
 	if l := c.account(c.m).Lease; l.State != broker.LeaseRotationPending {
 		t.Fatalf("lease %s", l.State)
