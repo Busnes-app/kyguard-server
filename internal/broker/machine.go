@@ -190,6 +190,12 @@ func (m *Machine) Rotate(ctx context.Context, account pqcrypto.UUID, occurrence 
 	if err != nil {
 		return err
 	}
+	return m.rotate(ctx, a, occurrence, due)
+}
+
+// rotate is Rotate with m.mu held and the account loaded.
+func (m *Machine) rotate(ctx context.Context, a *Account, occurrence pqcrypto.Counter, due time.Time) error {
+	account := a.ID
 	if a.Quarantined {
 		return ErrQuarantined
 	}
@@ -670,7 +676,7 @@ func (m *Machine) report(ctx context.Context, a *Account, runState string) {
 }
 
 // Recover settles every journaled run after a restart (§4.3 rule 3) and re-sends results and
-// health the Control Plane has not acknowledged. It never sends a second write: an intent
+// health the Control Plane has not acknowledged; it fails while any health is undelivered. It never sends a second write: an intent
 // with ack_received gets only the one probe, and a recorded probe without a result
 // quarantines.
 func (m *Machine) Recover(ctx context.Context) error {
@@ -680,6 +686,7 @@ func (m *Machine) Recover(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	m.refusals(ctx)
 	var errs []error
 	for _, a := range accts {
 		if a.Unreported {
@@ -696,6 +703,9 @@ func (m *Machine) Recover(ctx context.Context) error {
 			if err := m.applyDeferred(b); err != nil {
 				errs = append(errs, fmt.Errorf("account %s deferred policy: %w", a.ID, err))
 			}
+		}
+		if b, err := m.J.Account(a.ID); err == nil && b.Unreported { // keeps the start-up retry going until the health is delivered
+			errs = append(errs, fmt.Errorf("account %s: health not delivered", a.ID))
 		}
 	}
 	return errors.Join(errs...)

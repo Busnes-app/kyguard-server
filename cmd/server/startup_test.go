@@ -12,6 +12,8 @@ import (
 	"github.com/Busnes-app/ky-primitives/recoverykey"
 	"github.com/Busnes-app/kyguard-server/internal/backup"
 	"github.com/Busnes-app/kyguard-server/internal/config"
+	"github.com/Busnes-app/kyguard-server/internal/store"
+	"github.com/Busnes-app/kyguard-server/internal/testdb"
 )
 
 // The start runServer makes, not the functions it calls: a replica holding a recovery.pub
@@ -77,5 +79,24 @@ func TestStartupRemovesLeftoverSnapshots(t *testing.T) {
 	}
 	if _, err := os.Stat(cfg.Database.DSN); err != nil {
 		t.Fatalf("the live database: %v", err)
+	}
+}
+
+// §7.2: a database holding SSO subjects without an issuer (pre-migration-13 rows) is refused
+// at startup instead of letting sign-in provision duplicates.
+func TestStartRefusesUnissuedIdentities(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("KY_DATA_DIR", t.TempDir())
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Database = testdb.Config(t)
+	st := openStore(t, cfg)
+	if err := st.Users().CreateUser(ctx, &store.User{ID: "usr_old", Username: "old", Role: "user", Status: "active", SSOProvider: "kysignon", SSOSubject: "legacy"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareStart(ctx, cfg, st); err == nil || !strings.Contains(err.Error(), "no issuer") {
+		t.Fatalf("start with an unissued identity: %v", err)
 	}
 }

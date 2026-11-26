@@ -13,6 +13,7 @@ const backchannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logo
 // LogoutClaims names the login an OpenID Connect Back-Channel Logout token ended.
 // SessionID is empty when the provider ended every login of Subject issued by IssuedAt.
 type LogoutClaims struct {
+	Issuer    string
 	Subject   string
 	SessionID string
 	IssuedAt  time.Time
@@ -47,7 +48,7 @@ func (f *oauthFlow) verifyLogout(ctx context.Context, raw string) (*LogoutClaims
 	if err := json.Unmarshal(claims.Events[backchannelLogoutEvent], &event); err != nil || event == nil {
 		return nil, ErrInvalidLogoutToken
 	}
-	return &LogoutClaims{Subject: claims.Sub, SessionID: claims.SID, IssuedAt: time.Unix(claims.IAT, 0).UTC()}, nil
+	return &LogoutClaims{Issuer: token.Issuer, Subject: claims.Sub, SessionID: claims.SID, IssuedAt: time.Unix(claims.IAT, 0).UTC()}, nil
 }
 
 // jwtType reads the protected header's typ; call it only after the signature verified.

@@ -105,7 +105,16 @@ func (m *Machine) acceptManifest(raw []byte) error {
 	if len(m.Trust.Records()) == before {
 		return nil
 	}
-	if err := m.J.AppendManifest(rec.Canonical); err != nil {
+	err = m.hook("append_manifest") // a test stands a failed write in here
+	if err == nil {
+		err = m.J.AppendManifest(rec.Canonical)
+	}
+	if err != nil {
+		// Trust already holds the manifest: rebuild it from the journal, so the next sync
+		// accepts and persists it again (Guide on #11, "Lost manifest").
+		if tr, terr := m.J.Trust(); terr == nil {
+			m.Trust = tr
+		}
 		return err
 	}
 	if rec.Type == pqcrypto.TypePolicy {

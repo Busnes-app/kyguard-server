@@ -407,6 +407,118 @@ CREATE TABLE totp_attempts (
 CREATE INDEX idx_totp_attempts_user ON totp_attempts(user_id, created_at);
 CREATE INDEX idx_totp_attempts_session ON totp_attempts(session_hash) WHERE session_hash <> '';`,
 	},
+	{
+		// Identity is (issuer, subject), never subject alone (spec §7.2): two issuers with the
+		// same subject are two people. Sessions record the issuer of their login, and both
+		// back-channel logout fences are keyed by issuer. The fences are short-lived (minutes),
+		// so the old provider-keyed tables are replaced rather than converted. Older rows get
+		// an empty issuer and may share a subject across providers, so the unique index skips
+		// them; the start refuses them until an operator sets each issuer. Existing SSO sessions
+		// carry no issuer, so no issuer-keyed logout could end them: they are deleted, and
+		// local (break-glass) sessions stay.
+		Version: 13,
+		Name:    "kyguard_sso_issuer",
+		SQLite: `ALTER TABLE users ADD COLUMN sso_issuer TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX idx_users_sso_identity ON users(sso_issuer, sso_subject) WHERE sso_subject <> '' AND sso_issuer <> '';
+ALTER TABLE sessions ADD COLUMN sso_issuer TEXT NOT NULL DEFAULT '';
+DELETE FROM sessions WHERE sso_sid <> '' OR user_id IN (SELECT id FROM users WHERE sso_subject <> '');
+DROP TABLE sso_logouts;
+CREATE TABLE sso_logouts (
+    issuer TEXT NOT NULL,
+    sid TEXT NOT NULL,
+    expires_at DATETIME NOT NULL,
+    PRIMARY KEY (issuer, sid)
+);
+DROP TABLE sso_subject_logouts;
+CREATE TABLE sso_subject_logouts (
+    issuer TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    cutoff DATETIME NOT NULL,
+    expires_at DATETIME NOT NULL,
+    PRIMARY KEY (issuer, subject)
+);`,
+		Postgres: `ALTER TABLE users ADD COLUMN sso_issuer TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX idx_users_sso_identity ON users(sso_issuer, sso_subject) WHERE sso_subject <> '' AND sso_issuer <> '';
+ALTER TABLE sessions ADD COLUMN sso_issuer TEXT NOT NULL DEFAULT '';
+DELETE FROM sessions WHERE sso_sid <> '' OR user_id IN (SELECT id FROM users WHERE sso_subject <> '');
+DROP TABLE sso_logouts;
+CREATE TABLE sso_logouts (
+    issuer TEXT NOT NULL,
+    sid TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (issuer, sid)
+);
+DROP TABLE sso_subject_logouts;
+CREATE TABLE sso_subject_logouts (
+    issuer TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    cutoff TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (issuer, subject)
+);`,
+	},
+	{
+		// A pending SSO session (spec §7.3) records whether its ID token asserted MFA, which
+		// alone allows first-factor enrollment, and holds the sealed TOTP secret offered for
+		// enrollment until a code confirms it.
+		Version: 14,
+		Name:    "kyguard_pending_sessions",
+		SQLite: `ALTER TABLE sessions ADD COLUMN mfa_asserted INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE sessions ADD COLUMN pending_secret_enc TEXT NOT NULL DEFAULT '';`,
+		Postgres: `ALTER TABLE sessions ADD COLUMN mfa_asserted BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE sessions ADD COLUMN pending_secret_enc TEXT NOT NULL DEFAULT '';`,
+	},
+	{
+		// The audit chain (spec §9.3): each record carries its sequence number, the previous
+		// record's hash and its own HMAC hash; audit_chain_head is the anchor. The head is not
+		// seeded: an empty table means genesis, and migrate-postgres and snapshots copy it.
+		Version: 15,
+		Name:    "kyguard_audit_chain",
+		SQLite: `ALTER TABLE audit_records ADD COLUMN seq INTEGER;
+ALTER TABLE audit_records ADD COLUMN prev_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE audit_records ADD COLUMN hash TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX idx_audit_records_seq ON audit_records(seq);
+CREATE TABLE audit_chain_head (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    seq INTEGER NOT NULL,
+    head_hash TEXT NOT NULL
+);`,
+		Postgres: `ALTER TABLE audit_records ADD COLUMN seq BIGINT;
+ALTER TABLE audit_records ADD COLUMN prev_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE audit_records ADD COLUMN hash TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX idx_audit_records_seq ON audit_records(seq);
+CREATE TABLE audit_chain_head (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    seq BIGINT NOT NULL,
+    head_hash TEXT NOT NULL
+);`,
+	},
+	{
+		// kyguard-cli login (spec §7.6): a one-time code, valid 60 seconds, bound to the verified
+		// login (issuer, sid, the ID token's iat, its MFA assertion) and the CLI's PKCE challenge.
+		Version: 17,
+		Name:    "kyguard_cli_login_codes",
+		SQLite: `CREATE TABLE cli_login_codes (
+    code_hash TEXT PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    sso_issuer TEXT NOT NULL,
+    sso_sid TEXT NOT NULL,
+    issued_at DATETIME NOT NULL,
+    mfa_asserted INTEGER NOT NULL,
+    challenge TEXT NOT NULL,
+    expires_at DATETIME NOT NULL
+);`,
+		Postgres: `CREATE TABLE cli_login_codes (
+    code_hash TEXT PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    sso_issuer TEXT NOT NULL,
+    sso_sid TEXT NOT NULL,
+    issued_at TIMESTAMPTZ NOT NULL,
+    mfa_asserted BOOLEAN NOT NULL,
+    challenge TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL
+);`,
+	},
 }
 
 // EnsureUsernameIndex builds the case-insensitive unique index on usernames when existing
@@ -449,6 +561,14 @@ func EnsureUsernameIndex(ctx context.Context, db *sql.DB) (clashes [][]string, e
 
 // Run executes all pending migrations for the specified database driver.
 func Run(ctx context.Context, db *sql.DB, driver string) error {
+	_, err := RunApplied(ctx, db, driver, nil)
+	return err
+}
+
+// RunApplied is Run that also returns the versions it applied in this call. after[v], when
+// set, runs inside version v's transaction once its DDL has, so the schema change and the
+// work that must accompany it commit together or not at all.
+func RunApplied(ctx context.Context, db *sql.DB, driver string, after map[int]func(context.Context, *sql.Tx) error) (applied []int, err error) {
 	driver = strings.ToLower(driver)
 	if driver == "postgresql" {
 		driver = "postgres"
@@ -471,7 +591,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 	}
 
 	if _, err := db.ExecContext(ctx, initTableQuery); err != nil {
-		return fmt.Errorf("failed to init schema_migrations: %w", err)
+		return nil, fmt.Errorf("failed to init schema_migrations: %w", err)
 	}
 
 	for _, m := range registry {
@@ -481,7 +601,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 			// Try SQLite positional ? parameter if $1 failed
 			err = db.QueryRowContext(ctx, "SELECT COUNT(1) FROM schema_migrations WHERE version = ?", m.Version).Scan(&exists)
 			if err != nil {
-				return fmt.Errorf("failed to check migration version %d: %w", m.Version, err)
+				return applied, fmt.Errorf("failed to check migration version %d: %w", m.Version, err)
 			}
 		}
 
@@ -496,12 +616,18 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
-			return fmt.Errorf("failed to begin migration tx for v%d: %w", m.Version, err)
+			return applied, fmt.Errorf("failed to begin migration tx for v%d: %w", m.Version, err)
 		}
 
 		if _, err := tx.ExecContext(ctx, ddl); err != nil {
 			_ = tx.Rollback()
-			return fmt.Errorf("failed executing migration v%d (%s): %w", m.Version, m.Name, err)
+			return applied, fmt.Errorf("failed executing migration v%d (%s): %w", m.Version, m.Name, err)
+		}
+		if hook := after[m.Version]; hook != nil {
+			if err := hook(ctx, tx); err != nil {
+				_ = tx.Rollback()
+				return applied, fmt.Errorf("migration v%d (%s): %w", m.Version, m.Name, err)
+			}
 		}
 
 		recordQuery := "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)"
@@ -511,15 +637,16 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 		if _, err := tx.ExecContext(ctx, recordQuery, m.Version, m.Name, time.Now().UTC()); err != nil {
 			_ = tx.Rollback()
-			return fmt.Errorf("failed to record migration v%d: %w", m.Version, err)
+			return applied, fmt.Errorf("failed to record migration v%d: %w", m.Version, err)
 		}
 
 		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("failed to commit migration v%d: %w", m.Version, err)
+			return applied, fmt.Errorf("failed to commit migration v%d: %w", m.Version, err)
 		}
+		applied = append(applied, m.Version)
 	}
 
-	return nil
+	return applied, nil
 }
 
 // Querier is what history validation reads through: a *sql.DB or a *sql.Tx.

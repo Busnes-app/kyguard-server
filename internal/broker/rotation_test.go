@@ -610,6 +610,31 @@ func TestUndeliveredHealthIsResentOnRecover(t *testing.T) {
 	}
 }
 
+// A health report that fails on an open channel fails Recover, so the start-up retry runs
+// again and delivers it without a reconnect (PR Reviewer Guide "Lost retry" on #11).
+func TestRecoverFailsWhileHealthIsUndelivered(t *testing.T) {
+	r := newRig(t)
+	r.target.ambiguous = errors.New("connection reset") // not applied: the probe fails
+	w := &brokerrig.WrapCP{ControlPlane: r.CPW, StatusErr: errors.New("control plane unreachable")}
+	r.CPW = w
+	m := r.machine()
+	defer m.J.Close()
+	ctx := context.Background()
+	if err := m.Rotate(ctx, r.pol.AccountID, 0, due); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Recover(ctx); err == nil {
+		t.Fatal("Recover succeeded with the health undelivered")
+	}
+	w.StatusErr = nil // same machine and channel: no reconnect
+	if err := m.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if h := r.cpAccount().Health; h != broker.HealthQuarantined || r.account(m).Unreported {
+		t.Fatalf("control plane health %s unreported %v", h, r.account(m).Unreported)
+	}
+}
+
 // A crash after a quarantine is journaled and before its health reaches the Control Plane
 // leaves it to be sent by recovery, without another probe (security review of #11).
 func TestQuarantineHealthSurvivesACrashBeforeItsReport(t *testing.T) {
@@ -680,5 +705,33 @@ func TestSyncFollowsTheAccountCursor(t *testing.T) {
 	stuck = true
 	if err := m.Sync(ctx); err == nil || !strings.Contains(err.Error(), "no progress") {
 		t.Fatalf("a page that does not advance: %v", err)
+	}
+}
+
+// A manifest whose journal append failed is persisted by the next sync, so it survives a
+// restart (Guide on #11, "Lost manifest").
+func TestFailedManifestAppendIsPersistedOnRetry(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	r.cp.Submit(r.cp.Dep.Signed(t, r.cp.Dep.ManagedPolicy(r.pol.AccountID, r.pol.PoolID, 2, r.pol.TargetDescriptorDigest)))
+	m := r.machine()
+	m.Hook = func(p string) error {
+		if p == "append_manifest" {
+			return errors.New("disk full")
+		}
+		return nil
+	}
+	if err := m.Sync(ctx); err == nil {
+		t.Fatal("the failed append was not reported")
+	}
+	m.Hook = nil
+	if err := m.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	m.J.Close()
+	m2 := r.machine()
+	defer m2.J.Close()
+	if p, _ := m2.Trust.Policy(r.pol.AccountID); p == nil || p.Epoch != 2 {
+		t.Fatalf("after a restart the policy is %+v", p)
 	}
 }

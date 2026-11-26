@@ -17,14 +17,14 @@ import (
 // by userName only without externalId. Local accounts still get 409, a refused
 // take-over changes nothing, and the take-over cannot grant admin.
 func TestSCIMCreateTakesOverTheKyIdentityAccount(t *testing.T) {
-	st, do := scopedSCIM(t, false)
+	st, do := scopedSCIM(t)
 	ctx := context.Background()
 	for _, u := range []*store.User{
-		{ID: "usr_ann", Username: "ann", Role: "user", Status: "active", SSOProvider: "kysignon", SSOSubject: "sub-ann"},
-		{ID: "usr_bob", Username: "bob", Role: "admin", Status: "active", SSOProvider: "kysignon", SSOSubject: "sub-bob"},
-		{ID: "usr_cat", Username: "cat", Role: "user", Status: "active", SSOProvider: "kysignon", SSOSubject: "sub-cat"},
+		{ID: "usr_ann", Username: "ann", Role: "user", Status: "active", SSOProvider: "kysignon", SSOSubject: "sub-ann", SSOIssuer: testIssuer},
+		{ID: "usr_bob", Username: "bob", Role: "admin", Status: "active", SSOProvider: "kysignon", SSOSubject: "sub-bob", SSOIssuer: testIssuer},
+		{ID: "usr_cat", Username: "cat", Role: "user", Status: "active", SSOProvider: "kysignon", SSOSubject: "sub-cat", SSOIssuer: testIssuer},
 		{ID: "usr_dan", Username: "dan", Role: "user", Status: "active", SSOProvider: "local"},
-		{ID: "usr_eve", Username: "eve", Role: "user", Status: "active", SSOProvider: "kysignon", SSOSubject: "sub-eve"},
+		{ID: "usr_eve", Username: "eve", Role: "user", Status: "active", SSOProvider: "kysignon", SSOSubject: "sub-eve", SSOIssuer: testIssuer},
 	} {
 		if err := st.Users().CreateUser(ctx, u); err != nil {
 			t.Fatal(err)
@@ -104,7 +104,7 @@ func TestSCIMCreateTakesOverTheKyIdentityAccount(t *testing.T) {
 // Removing externalId unlinks the account, so a KyIdentity sign-in under the old subject can
 // no longer adopt it (it answered 200 and kept the link).
 func TestSCIMExternalIDRemoveUnlinks(t *testing.T) {
-	st, do := scopedSCIM(t, false)
+	st, do := scopedSCIM(t)
 	ctx := context.Background()
 	if w := do("POST", "/scim/v2/Users", map[string]any{"schemas": []string{scim.SchemaUser}, "userName": "fay", "externalId": "sub-fay"}); w.Code != http.StatusCreated {
 		t.Fatal(w.Code, w.Body)
@@ -113,14 +113,14 @@ func TestSCIMExternalIDRemoveUnlinks(t *testing.T) {
 	if w := do("PATCH", "/scim/v2/Users/"+u.ID, map[string]any{"schemas": patchSchema, "Operations": []any{map[string]any{"op": "remove", "path": "externalId"}}}); w.Code != http.StatusOK {
 		t.Fatal(w.Code, w.Body)
 	}
-	if _, err := st.Users().GetUserBySSO(ctx, "scim", "sub-fay"); err == nil {
+	if _, err := st.Users().GetUserBySSO(ctx, testIssuer, "sub-fay"); err == nil {
 		t.Fatal("externalId remove kept the link")
 	}
 }
 
 // Concurrent PATCHes of different attributes of one user both take effect.
 func TestSCIMConcurrentUserPatchesKeepEveryChange(t *testing.T) {
-	st, do := scopedSCIM(t, false)
+	st, do := scopedSCIM(t)
 	ctx := context.Background()
 	if w := do("POST", "/scim/v2/Users", map[string]any{"schemas": []string{scim.SchemaUser}, "userName": "gus"}); w.Code != http.StatusCreated {
 		t.Fatal(w.Code, w.Body)

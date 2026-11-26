@@ -21,9 +21,9 @@ func TestKyIdentitySignInAdoptsTheSCIMAccount(t *testing.T) {
 	srv = api.NewServer(cfg, st)
 	ctx := context.Background()
 	for _, u := range []*store.User{
-		{ID: "usr_scim", Username: "frank", Role: "user", Status: "active", SSOProvider: "scim", SSOSubject: "frank", SCIMManaged: true},
+		{ID: "usr_scim", Username: "frank", Role: "user", Status: "active", SSOProvider: "scim", SSOSubject: "frank", SSOIssuer: f.issuer, SCIMManaged: true},
 		{ID: "usr_local", Username: "gina", Role: "user", Status: "active", SSOProvider: "local"},
-		{ID: "usr_off", Username: "hal", Role: "user", Status: "inactive", SSOProvider: "scim", SSOSubject: "hal", SCIMManaged: true},
+		{ID: "usr_off", Username: "hal", Role: "user", Status: "inactive", SSOProvider: "scim", SSOSubject: "hal", SSOIssuer: f.issuer, SCIMManaged: true},
 	} {
 		if err := st.Users().CreateUser(ctx, u); err != nil {
 			t.Fatal(err)
@@ -57,10 +57,10 @@ func TestKyIdentitySignInAdoptsTheSCIMAccount(t *testing.T) {
 	}
 }
 
-// The role follows KyIdentity's per-app `roles` on every sign-in (legacy `role` when there
-// are no `roles`); a change revokes the other sessions; a token with neither leaves the
-// role alone.
-func TestKyIdentitySignInAppliesTheMappedRole(t *testing.T) {
+// Acceptance 8: the role follows the per-app `roles` claim on every sign-in and nothing else.
+// A global `role: admin` without per-app roles signs in as user, a stored admin without
+// per-app admin is demoted, and a change revokes the other sessions.
+func TestSignInRoleComesOnlyFromPerAppRoles(t *testing.T) {
 	srv, st, cfg := setupTestServer(t)
 	f := newFakeKySignOn(t)
 	cfg.SSO.KySignOnIssuer, cfg.SSO.KySignOnClientID, cfg.SSO.AutoProvision = f.issuer, "client", true
@@ -77,35 +77,29 @@ func TestKyIdentitySignInAppliesTheMappedRole(t *testing.T) {
 	}
 	role := func() string {
 		t.Helper()
-		u, err := st.Users().GetUserBySSO(ctx, "kysignon", "ivy")
+		u, err := st.Users().GetUserBySSO(ctx, f.issuer, "ivy")
 		if err != nil {
 			t.Fatal(err)
 		}
 		return u.Role
 	}
 
-	first := login("s1", map[string]any{"roles": []string{"editor", "admin"}})
-	if role() != "admin" {
-		t.Fatalf("auto-provisioned role %q, want admin from roles", role())
+	globalOnly := login("s0", map[string]any{"role": "admin"})
+	if role() != "user" {
+		t.Fatalf("global role admin without per-app roles provisioned %q, want user", role())
 	}
-	// An IdP-wide admin without the app's admin role is a user here.
-	second := login("s2", map[string]any{"roles": []string{}, "role": "admin"})
+	first := login("s1", map[string]any{"roles": []string{"editor", "admin"}})
+	if role() != "admin" || signedIn(srv, globalOnly) {
+		t.Fatalf("per-app admin: role %q, old session kept %v", role(), signedIn(srv, globalOnly))
+	}
+	// A stored admin whose token has no per-app admin is demoted, whatever `role` says.
+	second := login("s2", map[string]any{"role": "admin"})
 	if role() != "user" || signedIn(srv, first) || !signedIn(srv, second) {
 		t.Fatalf("demotion: role %q, old session kept %v, new session %v", role(), signedIn(srv, first), signedIn(srv, second))
 	}
-	// No roles claim: the legacy role applies.
-	third := login("s3", map[string]any{"role": "admin"})
-	if role() != "admin" || signedIn(srv, second) {
-		t.Fatalf("legacy role: %q, old session kept %v", role(), signedIn(srv, second))
-	}
-	// Neither claim: unchanged, and no session is revoked.
-	login("s4", nil)
-	if role() != "admin" || !signedIn(srv, third) {
-		t.Fatalf("no role claims: role %q, other session kept %v", role(), signedIn(srv, third))
-	}
 	// A malformed roles claim (null, or not an array) fails the sign-in; nothing changes.
 	for _, bad := range []any{nil, "admin"} {
-		if w := ssoLoginClaims(t, srv, f, "ivy", "s5", time.Now(), map[string]any{"roles": bad, "role": "user"}); w.Code != http.StatusUnauthorized || role() != "admin" {
+		if w := ssoLoginClaims(t, srv, f, "ivy", "s5", time.Now(), map[string]any{"roles": bad}); w.Code != http.StatusUnauthorized || role() != "user" {
 			t.Fatalf("roles %v: %d, role %q", bad, w.Code, role())
 		}
 	}

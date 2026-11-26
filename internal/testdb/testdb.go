@@ -18,14 +18,18 @@ import (
 )
 
 // Config returns a database config pointing at an isolated, empty database.
+// AuditKey is the audit chain key test stores use.
+var AuditKey = []byte("test-audit-chain-key-0123456789abcdef")
+
 func Config(t *testing.T) config.DatabaseConfig {
 	t.Helper()
 
 	dsn := os.Getenv("KY_TEST_POSTGRES_DSN")
 	if dsn == "" {
 		return config.DatabaseConfig{
-			Driver: "sqlite",
-			DSN:    filepath.Join(t.TempDir(), "test.db"),
+			Driver:   "sqlite",
+			DSN:      filepath.Join(t.TempDir(), "test.db"),
+			AuditKey: AuditKey,
 		}
 	}
 	return postgresConfig(t, dsn)
@@ -57,7 +61,8 @@ func postgresConfig(t *testing.T, dsn string) config.DatabaseConfig {
 	}
 
 	return config.DatabaseConfig{
-		Driver: "postgres",
-		DSN:    dsn + sep + "search_path=" + schema,
+		Driver:   "postgres",
+		DSN:      dsn + sep + "search_path=" + schema,
+		AuditKey: AuditKey,
 	}
 }

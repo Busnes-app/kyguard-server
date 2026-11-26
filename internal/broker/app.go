@@ -213,7 +213,11 @@ func (a *App) transaction(ctx context.Context, m *Machine, msg brokerproto.Messa
 			id, err = p.RequestID, m.Checkin(ctx, p.RequestID)
 		}
 	}
-	if err == nil || !id.Valid() {
+	if !id.Valid() {
+		return
+	}
+	if err == nil {
+		m.Refused(ctx, id, "") // a later message for the request supersedes its refusal
 		return
 	}
 	log.Printf("[BROKER] %s %s refused: %v", msg.Type, id, err)
@@ -222,9 +226,7 @@ func (a *App) transaction(ctx context.Context, m *Machine, msg brokerproto.Messa
 	if errors.As(err, &perr) {
 		code = string(perr)
 	}
-	if rerr := m.CP.TxResult(ctx, brokerproto.TxResultRequest{RequestID: id, Result: code}); rerr != nil {
-		log.Printf("[BROKER] result for %s not delivered: %v", id, rerr)
-	}
+	m.Refused(ctx, id, code)
 }
 
 // retry runs f after wait, doubling the wait up to a minute, until f succeeds or ctx ends.
