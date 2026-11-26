@@ -423,3 +423,17 @@ Numbered separately: these came from the parallel crypto stack.
     as a broker action. The status reads, the possession proof and the check-in are
     `session` with no window: they continue a transaction already submitted under step-up,
     the proof is bound to it, and a check-in may come hours later when the lease ends.
+
+## Post-quantum key exchange (PQC plan W0, owner-approved 2026-11-25)
+
+80. §4.4, §11 (SSH key exchange). The `ssh_passwd` connector sets `KeyExchanges` explicitly to
+    `mlkem768x25519-sha256`, `curve25519-sha256`, `curve25519-sha256@libssh.org` and
+    `ecdh-sha2-nistp256/384/521`, in that order. The x/crypto default also offers
+    `diffie-hellman-group14-sha1` and `diffie-hellman-group14-sha256`; a target offering only
+    those is refused before any credential is sent. Under `fips140=on` x/crypto registers no
+    curve25519 exchange, so the list narrows to the hybrid and NIST ECDH.
+81. §4.1, §11 (broker TLS groups). Both ends of the broker channel are KyGuard on Go 1.27, so
+    the listener and the broker client offer and accept only `X25519MLKEM768` (PQC plan Q9).
+    A peer offering only classical X25519 fails the handshake. The pinned-CA check is unchanged.
+    This departs from the literal `CurvePreferences` in §4.1 by the owner's approval; SPEC.md is
+    left as signed.
