@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Trash2 } from 'lucide-react';
-import { localInput, Scorecard, send, useJSON, useReportingWrite } from '../reporting';
+import { localInput, send, useJSON, useReportingWrite, useScorecard } from '../reporting';
 
 interface Draft {
   id: string;
@@ -70,7 +70,7 @@ export const Policies: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
 
 const DraftForm: React.FC<{ escrowDefault: boolean }> = ({ escrowDefault }) => {
   const { pending, run } = useReportingWrite('policy-drafts');
-  const accounts = useJSON<Scorecard>('/api/reports/scorecard');
+  const accounts = useScorecard();
   const principals = useJSON<Principal[]>('/api/principals');
   const [account, setAccount] = useState('');
   const [mode, setMode] = useState('ephemeral');
@@ -82,14 +82,14 @@ const DraftForm: React.FC<{ escrowDefault: boolean }> = ({ escrowDefault }) => {
   const [escrow, setEscrow] = useState<boolean | null>(null);
   const [err, setErr] = useState('');
   const [saved, setSaved] = useState('');
-  const descs = useJSON<{ descriptors: { digest: string; host: string; connector_type: string }[] }>(account ? `/api/accounts/${account}` : null);
   const row = accounts.data?.rows.find((r) => r.account_id === account);
+  const descs = useJSON<{ descriptors: { digest: string; host: string; connector_type: string }[] }>(row ? `/api/accounts/${row.account_id}` : null);
   const managed = row?.account_kind === 'managed';
 
   const toggle = (list: string, id: string) => setLists((l) => ({ ...l, [list]: l[list].includes(id) ? l[list].filter((x) => x !== id) : [...l[list], id] }));
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (account) void run(save);
+    if (row) void run(save);
   };
   const save = async () => {
     const body: Record<string, unknown> = {
@@ -131,7 +131,7 @@ const DraftForm: React.FC<{ escrowDefault: boolean }> = ({ escrowDefault }) => {
       <h3 className="kg-sub">New draft</h3>
       <div className="dr-row">
         <label className="dr-field">Account
-          <select value={account} onChange={(e) => { setAccount(e.target.value); setTarget(''); }} required>
+          <select value={row ? account : ''} onChange={(e) => { setAccount(e.target.value); setTarget(''); }} required>
             <option value="">Choose…</option>
             {(accounts.data?.rows || []).map((r) => <option key={r.account_id} value={r.account_id}>{r.asset} / {r.name} ({r.account_kind})</option>)}
           </select>
@@ -152,7 +152,7 @@ const DraftForm: React.FC<{ escrowDefault: boolean }> = ({ escrowDefault }) => {
           </>
         )}
       </div>
-      {account && (
+      {row && (
         <>
           <div className="dr-two">
             {picker('users', managed ? 'Requesters' : 'Recipients')}
@@ -176,7 +176,7 @@ const DraftForm: React.FC<{ escrowDefault: boolean }> = ({ escrowDefault }) => {
       )}
       {err && <p role="alert" className="dr-danger">{err}</p>}
       {saved && <p role="status" className="dr-ok">{saved}</p>}
-      <button type="submit" disabled={!account || pending}>Save draft</button>
+      <button type="submit" disabled={!row || pending}>Save draft</button>
     </form>
   );
 };

@@ -164,6 +164,16 @@ export function scorecardURL(filter: Record<string, string>, format?: 'csv' | 'j
   return '/api/reports/scorecard' + (s ? '?' + s : '');
 }
 
+// All scorecard views reload after writes that change inventory membership or report columns.
+export function useScorecard(filter: Record<string, string> = {}) {
+  const creation = useReportingWrite('create-account');
+  const status = useReportingWrite('account-status');
+  const definitions = useReportingWrite('attribute-definitions');
+  return useJSON<Scorecard>(scorecardURL(filter), {
+    writeRevision: creation.revision + status.revision + definitions.revision,
+  });
+}
+
 // localInput formats d for a datetime-local input in the browser's own time zone.
 export function localInput(d: Date): string {
   const p = (n: number) => String(n).padStart(2, '0');

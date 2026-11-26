@@ -291,7 +291,7 @@ it('blocks a newer owner selection until the current change finishes', async () 
   expect(writes).toEqual(['', 'u2']);
 });
 
-it('guards decommission and refreshes a reopened dialog when its PATCH settles', async () => {
+it('refreshes the dialog and inventory when a pending status change settles after reopening', async () => {
   let release: () => void = () => {};
   const held = new Promise<void>((resolve) => { release = resolve; });
   const patches = vi.fn();
@@ -302,12 +302,23 @@ it('guards decommission and refreshes a reopened dialog when its PATCH settles',
     if (url === '/api/accounts/a' && init?.method === 'PATCH') {
       patches(init.body);
       await held;
-      status = 'decommissioned';
+      status = init.body === JSON.stringify({ status: 'active' }) ? 'active' : 'decommissioned';
       return json({});
     }
     if (url === '/api/accounts/a') return json({ account: { ID: 'a', Name: 'svc-a', Status: status, asset_name: 'dc1' }, descriptors: [], attributes: {} });
     if (url === '/api/attributes') return json({ account: [], user: [] });
-    if (url.startsWith('/api/reports/scorecard')) return json(card([row('a', 'green', 'Ops')]));
+    if (url === '/api/accounts?status=decommissioned') {
+      return json([
+        { ID: 'b', Name: 'svc-b', asset_name: 'dc1' },
+        ...(status === 'decommissioned' ? [{ ID: 'a', Name: 'svc-a', asset_name: 'dc1' }] : []),
+      ]);
+    }
+    if (url.startsWith('/api/reports/scorecard')) {
+      const result = card(status === 'active' ? [row('a', 'green', 'Ops')] : []);
+      result.totals.decommissioned = status === 'active' ? 1 : 2;
+      return json(result);
+    }
+
     throw new Error('unexpected fetch ' + url);
   }));
   try {
@@ -329,6 +340,21 @@ it('guards decommission and refreshes a reopened dialog when its PATCH settles',
     await screen.findByRole('button', { name: 'Reactivate' });
     expect(patches.mock.calls).toEqual([[JSON.stringify({ status: 'decommissioned' })]]);
     expect(disabled).toBe(true);
+    await screen.findByText('No accounts yet.');
+    fireEvent.click(screen.getByLabelText('Close'));
+    await vi.waitFor(() => expect(screen.queryByLabelText('Account details')).toBeNull());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show decommissioned accounts' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'dc1 / svc-a' }));
+    const detail = screen.getByLabelText('Account details');
+    detail.setAttribute('open', '');
+    fireEvent.click(await screen.findByRole('button', { name: 'Reactivate' }));
+    await screen.findByRole('button', { name: 'Decommission' });
+    await vi.waitFor(() => {
+      expect(screen.queryByText('No accounts yet.')).toBeNull();
+      expect(screen.getAllByRole('button', { name: 'dc1 / svc-a' })).toHaveLength(1);
+    });
+    expect(screen.getByRole('button', { name: 'dc1 / svc-b' })).toBeTruthy();
   } finally {
     release();
     vi.restoreAllMocks();

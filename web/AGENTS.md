@@ -37,8 +37,9 @@ Owns user interface components, service worker caching, PWA installation manifes
   pending saves. A failed save keeps the dialog open with its error. Text attributes are
   read-only while saving. Each enum selector is disabled while its own save is in flight.
   Owner search, clear, and selection controls are disabled until an owner change finishes.
-  Account creation and status changes each allow one pending write. A reopened detail
-  dialog refreshes when an in-flight status change commits. Draft Save and Delete
+  Account creation and status changes each allow one pending write. Successful status
+  changes refresh open details, scorecards, and the decommissioned list across navigation.
+  Draft Save and Delete
   share a pending write across navigation, as do attribute definition Add and Delete.
   Account attribute editors load after a pending definition change settles.
   Successful and temporarily failed detail refreshes preserve unsaved text and focus.

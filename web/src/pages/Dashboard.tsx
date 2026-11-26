@@ -1,7 +1,7 @@
 import React from 'react';
 import { Key, Archive, Database, Users, CheckCircle2, ArrowRight } from 'lucide-react';
 import { TrafficLight } from '../components/TrafficLight';
-import { HEALTH_LABEL, Scorecard, useJSON } from '../reporting';
+import { HEALTH_LABEL, useJSON, useScorecard } from '../reporting';
 
 interface DashboardProps {
   settings: any;
@@ -10,7 +10,7 @@ interface DashboardProps {
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({ settings, user, onNavigate }) => {
-  const card = useJSON<Scorecard>('/api/reports/scorecard');
+  const card = useScorecard();
   const trust = useJSON<{ imported: boolean; threshold?: number; custodians?: number }>('/api/trust');
   const totals = card.data?.totals;
   const health = Object.entries(totals?.health || {}).filter(([h]) => h !== 'healthy');

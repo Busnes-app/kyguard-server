@@ -2,20 +2,19 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Download, Plus, X } from 'lucide-react';
 import { ClassBadge, HealthBadge, TrafficLight } from '../components/TrafficLight';
 import { secureFetch } from '../api';
-import { AttributeDefinition, CLASS_LABEL, HEALTH_LABEL, Scorecard, ScoreRow, scorecardURL, send, useJSON, useReportingWrite } from '../reporting';
+import { AttributeDefinition, CLASS_LABEL, HEALTH_LABEL, ScoreRow, scorecardURL, send, useJSON, useReportingWrite, useScorecard } from '../reporting';
 
 // Accounts is the one reporting page (spec §8.3, §10 item 2): obvious filters, the traffic
 // light for exactly those filters, the inventory table and one-click CSV/JSON export.
 export const Accounts: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
   const [filter, setFilter] = useState<Record<string, string>>({});
-  const { revision: accountRevision } = useReportingWrite('create-account');
-  const card = useJSON<Scorecard>(scorecardURL(filter), { writeRevision: accountRevision });
+  const card = useScorecard(filter);
   // Filter choices come from the unfiltered set, so picking one never hides the others.
-  const all = useJSON<Scorecard>(scorecardURL({}), { writeRevision: accountRevision });
-  const defs = useJSON<Record<string, AttributeDefinition[]>>('/api/attributes');
+  const all = useScorecard();
+  const { revision: definitionRevision } = useReportingWrite('attribute-definitions');
+  const defs = useJSON<Record<string, AttributeDefinition[]>>('/api/attributes', { writeRevision: definitionRevision });
   const label = (entity: string, key: string) => defs.data?.[entity]?.find((d) => d.key === key)?.label || key;
   const [open, setOpen] = useState<string>('');
-  const [saved, setSaved] = useState(0); // bumps after a detail closes, so every list reloads
   const set = (k: string, v: string) => setFilter((f) => ({ ...f, [k]: v }));
 
   const choices = useMemo(() => {
@@ -114,8 +113,8 @@ export const Accounts: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
           </div>
         </>
       )}
-      {isAdmin && (card.data?.totals.decommissioned ?? 0) > 0 && <Retired version={saved} onOpen={setOpen} />}
-      {open && <AccountDetail id={open} onClose={() => { setOpen(''); reload(); setSaved((n) => n + 1); }} />}
+      {isAdmin && (card.data?.totals.decommissioned ?? 0) > 0 && <Retired onOpen={setOpen} />}
+      {open && <AccountDetail id={open} onClose={() => { setOpen(''); reload(); }} />}
     </div>
   );
 };
@@ -399,11 +398,13 @@ const OwnerPicker: React.FC<{ current: string; onPick: (id: string) => Promise<s
 
 // Retired lists decommissioned accounts, which the traffic light counts but never shows, so an
 // admin can open one and reactivate it.
-const Retired: React.FC<{ version: number; onOpen: (id: string) => void }> = ({ version, onOpen }) => {
+const Retired: React.FC<{ onOpen: (id: string) => void }> = ({ onOpen }) => {
   const [shown, setShown] = useState(false);
-  const list = useJSON<{ ID: string; Name: string; asset_name: string }[]>(shown ? '/api/accounts?status=decommissioned' : null);
-  const { reload } = list;
-  useEffect(() => { if (version > 0) reload(); }, [version, reload]); // a status may have changed
+  const { revision: statusRevision } = useReportingWrite('account-status');
+  const list = useJSON<{ ID: string; Name: string; asset_name: string }[]>(
+    shown ? '/api/accounts?status=decommissioned' : null,
+    { writeRevision: statusRevision },
+  );
   return (
     <div className="panel dr-section kg-top">
       <button type="button" className="btn-secondary" aria-expanded={shown} onClick={() => setShown(!shown)}>{shown ? 'Hide' : 'Show'} decommissioned accounts</button>
