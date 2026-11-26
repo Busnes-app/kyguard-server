@@ -359,19 +359,37 @@ const EnumAttribute: React.FC<{
 };
 
 // OwnerPicker searches the whole directory on the server, so any user can be chosen.
-const OwnerPicker: React.FC<{ current: string; onPick: (id: string) => void }> = ({ current, onPick }) => {
+const OwnerPicker: React.FC<{ current: string; onPick: (id: string) => Promise<string> }> = ({ current, onPick }) => {
   const [q, setQ] = useState('');
+  const [saving, setSaving] = useState(false);
   const found = useJSON<{ users: { id: string; username: string; display_name: string }[] }>(
     q.trim().length >= 2 ? `/api/admin/users?limit=20&search=${encodeURIComponent(q.trim())}` : null);
+  const candidates = found.data?.users ?? [];
+
+  const saveOwner = async (id: string) => {
+    if (saving) return;
+    setSaving(true);
+    if (id) setQ('');
+    try {
+      await onPick(id);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="dr-field">
       <span>Owner: <span className="dr-mono">{current || 'none'}</span>
-        {current && <button type="button" className="btn-secondary kg-inline" onClick={() => onPick('')}>Clear</button>}</span>
-      <input aria-label="Find owner" placeholder="Type 2+ letters of a name" value={q} onChange={(e) => setQ(e.target.value)} />
-      {(found.data?.users || []).length > 0 && (
+        {current && <button type="button" className="btn-secondary kg-inline" disabled={saving} onClick={() => void saveOwner('')}>Clear</button>}</span>
+      <input aria-label="Find owner" placeholder="Type 2+ letters of a name" value={q} disabled={saving} onChange={(e) => setQ(e.target.value)} />
+      {candidates.length > 0 && (
         <ul className="kg-plain kg-results">
-          {found.data!.users.map((u) => (
-            <li key={u.id}><button type="button" className="kg-link" onClick={() => { onPick(u.id); setQ(''); }}>{u.username}{u.display_name && u.display_name !== u.username ? ` (${u.display_name})` : ''}</button></li>
+          {candidates.map((u) => (
+            <li key={u.id}>
+              <button type="button" className="kg-link" disabled={saving} onClick={() => void saveOwner(u.id)}>
+                {u.username}{u.display_name && u.display_name !== u.username ? ` (${u.display_name})` : ''}
+              </button>
+            </li>
           ))}
         </ul>
       )}

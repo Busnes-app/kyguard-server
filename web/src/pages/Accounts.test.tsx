@@ -241,6 +241,50 @@ it('allows only one save at a time for an enum attribute', async () => {
   expect(field.value).toBe('IT');
 });
 
+it('blocks a newer owner selection until the current change finishes', async () => {
+  const writes: string[] = [];
+  let owner = 'u1';
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === '/api/accounts/a' && init?.method === 'PATCH') {
+      const nextOwner = init.body === JSON.stringify({ owner_user_id: '' }) ? '' : 'u2';
+      writes.push(nextOwner);
+      if (!nextOwner) await held;
+      owner = nextOwner;
+      return json({});
+    }
+    if (url === '/api/accounts/a') return json({ account: { ID: 'a', Name: 'svc-a', AccountKind: 'managed', Status: 'active', asset_name: 'dc1', owner_user_id: owner, min_password_age_seconds: null }, descriptors: [], attributes: {} });
+    if (url.startsWith('/api/admin/users?')) return json({ users: [{ id: 'u2', username: 'bob', display_name: 'Bob' }] });
+    if (url === '/api/attributes') return json({ account: [], user: [] });
+    if (url.startsWith('/api/reports/scorecard')) return json(card([row('a', 'green', 'Ops')]));
+    throw new Error('unexpected fetch ' + url);
+  }));
+  render(<Accounts isAdmin />);
+  fireEvent.click(await screen.findByText('dc1 / svc-a'));
+  screen.getByLabelText('Account details').setAttribute('open', '');
+  const search = await screen.findByRole('textbox', { name: 'Find owner' });
+  const clear = screen.getByRole('button', { name: 'Clear' });
+  fireEvent.change(search, { target: { value: 'Bo' } });
+  const candidate = await screen.findByRole('button', { name: 'bob (Bob)' });
+
+  fireEvent.click(clear);
+  fireEvent.click(candidate);
+  const writesWhilePending = [...writes];
+  const controlsWhilePending = [search, clear, candidate].map((control) => control.hasAttribute('disabled'));
+  release();
+
+  await vi.waitFor(() => expect(screen.queryByRole('button', { name: 'Clear' })).toBeNull());
+  expect(writesWhilePending).toEqual(['']);
+  expect(controlsWhilePending).toEqual([true, true, true]);
+  expect(search.hasAttribute('disabled')).toBe(false);
+
+  fireEvent.click(screen.getByRole('button', { name: 'bob (Bob)' }));
+  await screen.findByText('u2');
+  expect(writes).toEqual(['', 'u2']);
+});
+
 // Closing the detail while a save is in flight reloads the page only after the save lands,
 // so the table never keeps the value from before it.
 it.each(['Close', 'Escape'])('waits for a save before closing with %s and reloading accounts', async (closeWith) => {
