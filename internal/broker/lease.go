@@ -227,6 +227,16 @@ func (m *Machine) deliver(ctx context.Context, a *Account, c *Challenge, raw []b
 	// Re-check expiry, the current policy and envelope, then the proof.
 	tx, d, chain, err := m.verifyTx(a, c.Tx)
 	if err != nil {
+		// A requester who proves possession learns its transaction went stale; any other
+		// proof publishes nothing (PR Reviewer Guide "Missing outcome" on #16).
+		var old pqcrypto.AccessTransaction
+		if _, derr := canonical.Decode(c.Tx, &old); derr == nil {
+			if od, derr := pqcrypto.ObjDigest(&old); derr == nil {
+				if _, perr := pqcrypto.VerifyPoP(raw, &old, od, c.Challenge, pqcrypto.PurposeDeliver); perr == nil {
+					m.outcome(ctx, old.RequestID, err)
+				}
+			}
+		}
 		return err
 	}
 	if _, err := pqcrypto.VerifyPoP(raw, tx, d, c.Challenge, pqcrypto.PurposeDeliver); err != nil {

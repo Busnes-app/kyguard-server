@@ -381,14 +381,29 @@ func TestCheckoutAcrossADescriptorChangeIsRefused(t *testing.T) {
 	if err := c.m.Tx(ctx, early.Tx); err != nil {
 		t.Fatal(err)
 	}
-	pop, _ := early.Proof(c.challenge(early.RequestID), pqcrypto.PurposeDeliver)
+	ch := c.challenge(early.RequestID)
+	pop, _ := early.Proof(ch, pqcrypto.PurposeDeliver)
 	moveTarget(t, c.rig)
 	if err := c.m.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// A transaction signed under the old policy is stale now.
+	// A transaction signed under the old policy is stale now. A proof by anyone else
+	// publishes nothing; the requester's own proof publishes the refusal (PR Reviewer Guide
+	// "Missing outcome" on #16).
+	stranger := *early
+	stranger.Cnf, _ = pqcrypto.GenerateSigningKey()
+	forged, _ := stranger.Proof(ch, pqcrypto.PurposeDeliver)
+	if err := c.m.Proof(ctx, early.RequestID, forged); err == nil {
+		t.Fatal("a forged proof accepted")
+	}
+	if _, res := c.delivery(early.RequestID); res != "" {
+		t.Fatalf("result after a forged proof %q", res)
+	}
 	if err := c.m.Proof(ctx, early.RequestID, pop); !errors.Is(err, pqcrypto.ErrStale) {
 		t.Fatalf("proof after the change: %v", err)
+	}
+	if _, res := c.delivery(early.RequestID); res != string(pqcrypto.ErrStale) {
+		t.Fatalf("result after the stale proof %q", res)
 	}
 	late := c.tx(c.alice, pqcrypto.Action{ActionType: pqcrypto.ActionVaultCheckout, SecretVersion: c.account(c.m).HighestCopied(),
 		EncKeyID: pqcrypto.HexID(c.alice.Enc.Public().ID()), CheckoutTTLSeconds: 600})
