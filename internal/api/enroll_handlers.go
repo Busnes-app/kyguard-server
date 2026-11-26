@@ -66,7 +66,7 @@ func (s *Server) handleReserveEnrollment(w http.ResponseWriter, r *http.Request)
 		s.writeError(w, http.StatusBadRequest, "invalid request_id")
 		return
 	}
-	v, err := s.store.Vault().ReserveEnrollment(r.Context(), string(account), string(op), 0, time.Now().UTC(), EnrollmentReservationTTL)
+	v, err := s.store.Vault().ReserveEnrollment(r.Context(), string(account), string(op), string(req.RequestID), time.Now().UTC(), EnrollmentReservationTTL)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		s.writeError(w, http.StatusNotFound, "account not found")
@@ -75,7 +75,7 @@ func (s *Server) handleReserveEnrollment(w http.ResponseWriter, r *http.Request)
 		s.writeError(w, http.StatusConflict, "a rotation is open on a healthy account, or another enrollment is in progress")
 		return
 	case errors.Is(err, store.ErrConflict):
-		s.writeError(w, http.StatusConflict, "this enrollment already ended")
+		s.writeError(w, http.StatusConflict, "this enrollment already ended or was submitted; start a new one")
 		return
 	case err != nil:
 		s.writeError(w, http.StatusInternalServerError, "could not reserve")

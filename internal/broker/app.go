@@ -187,46 +187,26 @@ func (a *App) serve(ctx context.Context, j *Journal, k *Keys, id pqcrypto.UUID, 
 	return errors.New("channel closed")
 }
 
-// transaction handles a relayed transaction, proof or check-in request and tells the CLI,
-// through the Control Plane, when the broker refuses it.
+// transaction handles a relayed transaction, proof or check-in request. The machine tells
+// the CLI, through the Control Plane, when it refuses one.
 func (a *App) transaction(ctx context.Context, m *Machine, msg brokerproto.Message) {
-	var id pqcrypto.UUID
-	var err error
 	switch msg.Type {
 	case brokerproto.MsgTx:
 		var p brokerproto.TxPush
-		if err = json.Unmarshal(msg.Body, &p); err == nil {
-			var tx struct {
-				RequestID pqcrypto.UUID `json:"request_id"`
-			}
-			json.Unmarshal(p.Tx, &tx)
-			id, err = tx.RequestID, m.Tx(ctx, p.Tx)
+		if json.Unmarshal(msg.Body, &p) == nil {
+			m.Tx(ctx, p.Tx)
 		}
 	case brokerproto.MsgProof:
 		var p brokerproto.ProofPush
-		if err = json.Unmarshal(msg.Body, &p); err == nil {
-			id, err = p.RequestID, m.Proof(ctx, p.RequestID, p.Proof)
+		if json.Unmarshal(msg.Body, &p) == nil {
+			m.Proof(ctx, p.RequestID, p.Proof)
 		}
 	case brokerproto.MsgCheckin:
 		var p brokerproto.CheckinPush
-		if err = json.Unmarshal(msg.Body, &p); err == nil {
-			id, err = p.RequestID, m.Checkin(ctx, p.RequestID)
+		if json.Unmarshal(msg.Body, &p) == nil {
+			m.Checkin(ctx, p.RequestID)
 		}
 	}
-	if !id.Valid() {
-		return
-	}
-	if err == nil {
-		m.Refused(ctx, id, "") // a later message for the request supersedes its refusal
-		return
-	}
-	log.Printf("[BROKER] %s %s refused: %v", msg.Type, id, err)
-	code := err.Error()
-	var perr pqcrypto.Error
-	if errors.As(err, &perr) {
-		code = string(perr)
-	}
-	m.Refused(ctx, id, code)
 }
 
 // retry runs f after wait, doubling the wait up to a minute, until f succeeds or ctx ends.

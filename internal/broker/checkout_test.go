@@ -209,7 +209,7 @@ func TestLeaseBlocksSecondCheckoutAndDefersTheSchedule(t *testing.T) {
 }
 
 // §13 1A acceptance test 10: check-in with a different key is refused; with the same key it
-// triggers the cleanup rotation, which closes the lease.
+// replaces that refusal with "ok" and triggers the cleanup rotation, which closes the lease.
 func TestCheckinTriggersTheCleanupRotation(t *testing.T) {
 	c := newCheckoutRig(t)
 	ctx := context.Background()
@@ -224,9 +224,18 @@ func TestCheckinTriggersTheCleanupRotation(t *testing.T) {
 	if err := c.m.Proof(ctx, co.RequestID, bad); err == nil {
 		t.Fatal("check-in with another key accepted")
 	}
+	// The refusal is published before Proof returns, under the same mutex hold, so a later
+	// accepted proof always supersedes it (PR Reviewer Guide "Stale refusal" on #16).
+	if _, res := c.delivery(co.RequestID); res == "" || res == "ok" {
+		t.Fatalf("result after the refused check-in %q", res)
+	}
 	good, _ := co.Proof(ch, pqcrypto.PurposeCheckin)
 	if err := c.m.Proof(ctx, co.RequestID, good); err != nil {
 		t.Fatal(err)
+	}
+	// The accepted check-in replaces the earlier refusal (PR Reviewer Guide "Stale refusal").
+	if _, res := c.delivery(co.RequestID); res != "ok" {
+		t.Fatalf("result after the accepted check-in %q", res)
 	}
 	if l := c.account(c.m).Lease; l.State != broker.LeaseRotationPending {
 		t.Fatalf("lease %s", l.State)
@@ -760,5 +769,48 @@ func TestRecoveredManualRotationKeepsItsResult(t *testing.T) {
 	}
 	if _, res := c.delivery(mr.RequestID); res != broker.StateAborted {
 		t.Fatalf("manual_rotation result %q", res)
+	}
+}
+
+// A duplicate of a completed manual_rotation is refused as a replay without replacing the
+// "ok" its requester already has (PR Reviewer Guide "Overwritten success" on #16).
+func TestAReplayKeepsTheEarlierOutcome(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	mr := c.tx(c.alice, pqcrypto.Action{ActionType: pqcrypto.ActionManualRotation})
+	if err := c.m.Tx(ctx, mr.Tx); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.m.Tx(ctx, mr.Tx); !errors.Is(err, pqcrypto.ErrReplay) {
+		t.Fatalf("duplicate: %v", err)
+	}
+	if _, res := c.delivery(mr.RequestID); res != "ok" {
+		t.Fatalf("result after the replay %q", res)
+	}
+}
+
+// A lease that expires with its wrap still undelivered tells the requester so, instead of
+// leaving the mailbox at the challenge (PR Reviewer Guide "Missing outcome" on #16).
+func TestAnUndeliveredWrapThatExpiresIsReported(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	w := c.wrapCP()
+	w.DeliveryErr = errors.New("connection lost")
+	co := c.checkoutTx(60)
+	if err := c.m.Tx(ctx, co.Tx); err != nil {
+		t.Fatal(err)
+	}
+	pop, _ := co.Proof(c.challenge(co.RequestID), pqcrypto.PurposeDeliver)
+	if err := c.m.Proof(ctx, co.RequestID, pop); err != nil {
+		t.Fatal(err)
+	}
+	c.now = c.now.Add(time.Hour)
+	c.m.Tick(ctx) // expires the lease
+	c.m.Tick(ctx) // drops the wrap
+	if d, res := c.delivery(co.RequestID); d != nil || res != broker.ReasonLeaseExpired {
+		t.Fatalf("delivered=%v result=%q", d != nil, res)
+	}
+	if c.account(c.m).Lease.Delivery != nil {
+		t.Fatal("the wrap is still journaled")
 	}
 }
