@@ -56,7 +56,7 @@ func (r *enrollRig) submit(who *pqtest.Principal, password string, now time.Time
 	ctx := context.Background()
 	reqID := pqtest.UUID()
 	op, _ := pqcrypto.RequestOpID(reqID, 0)
-	v, err := r.cp.Store.Vault().ReserveEnrollment(ctx, string(r.pol.AccountID), string(op), 0, now, 15*time.Minute)
+	v, err := r.cp.Store.Vault().ReserveEnrollment(ctx, string(r.pol.AccountID), string(op), "", now, 15*time.Minute)
 	if err != nil {
 		r.T.Fatal(err)
 	}
@@ -418,7 +418,7 @@ func TestCandidateWithAForeignRecipientIsRefused(t *testing.T) {
 	defer m.J.Close()
 	reqID := pqtest.UUID()
 	op, _ := pqcrypto.RequestOpID(reqID, 0)
-	v, err := r.cp.Store.Vault().ReserveEnrollment(context.Background(), string(r.pol.AccountID), string(op), 0, time.Now().UTC(), 15*time.Minute)
+	v, err := r.cp.Store.Vault().ReserveEnrollment(context.Background(), string(r.pol.AccountID), string(op), "", time.Now().UTC(), 15*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +458,7 @@ func TestAnotherAccountsEnvelopeIsNotACandidate(t *testing.T) {
 	}
 	reqID := pqtest.UUID()
 	op, _ := pqcrypto.RequestOpID(reqID, 0)
-	v, err := r.cp.Store.Vault().ReserveEnrollment(context.Background(), string(r.pol.AccountID), string(op), 0, time.Now().UTC(), 15*time.Minute)
+	v, err := r.cp.Store.Vault().ReserveEnrollment(context.Background(), string(r.pol.AccountID), string(op), "", time.Now().UTC(), 15*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
