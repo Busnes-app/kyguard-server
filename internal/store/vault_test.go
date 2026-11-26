@@ -583,3 +583,29 @@ func TestConcurrentIdenticalDescriptorStoresSucceed(t *testing.T) {
 		}
 	}
 }
+
+// A new challenge clears an earlier result: a checkout refused while another lease was open
+// and then retried does not still read as refused (PR Reviewer Guide "Stale refusal" on #16).
+func TestANewChallengeClearsTheEarlierResult(t *testing.T) {
+	v, a := vaultAccount(t)
+	ctx := context.Background()
+	if err := v.PutTx(ctx, "req", a, "vault_checkout", "d-req", []byte("tx")); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.SetTxMailbox(ctx, "req", &TxMail{Result: "lease_open"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.SetTxMailbox(ctx, "req", &TxMail{Challenge: "c2", Purpose: "deliver"}); err != nil {
+		t.Fatal(err)
+	}
+	mb, err := v.TxMailbox(ctx, "req")
+	if err != nil || mb.Challenge != "c2" || mb.Result != "" {
+		t.Fatalf("mailbox %+v %v", mb, err)
+	}
+	if err := v.SetTxMailbox(ctx, "req", &TxMail{Delivery: "w", Result: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	if mb, _ := v.TxMailbox(ctx, "req"); mb.Result != "ok" || mb.Challenge != "c2" {
+		t.Fatalf("after delivery %+v", mb)
+	}
+}
