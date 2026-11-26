@@ -264,11 +264,10 @@ const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onCl
                     {a.enum_values.map((v) => <option key={v} value={v}>{v}</option>)}
                   </select>
                 ) : (
-                  // Keyed on the stored value so a reload shows it; a refused save puts it back.
-                  <input key={`${a.id}:${d.attributes[a.key] || ''}`} defaultValue={d.attributes[a.key] || ''} onBlur={async (e) => {
-                    const input = e.target, stored = d.attributes[a.key] || '';
-                    if (input.value !== stored && await act(send('PUT', `/api/attributes/${a.id}/values/${id}`, { value: input.value }))) input.value = stored;
-                  }} />
+                  <TextAttribute
+                    stored={d.attributes[a.key] || ''}
+                    onSave={(value) => act(send('PUT', `/api/attributes/${a.id}/values/${id}`, { value }))}
+                  />
                 )}
               </label>
             ))}
@@ -301,6 +300,32 @@ const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onCl
         )}
     </dialog>
   );
+};
+
+const TextAttribute: React.FC<{ stored: string; onSave: (value: string) => Promise<string> }> = ({ stored, onSave }) => {
+  const ref = useRef<HTMLInputElement>(null);
+  const saved = useRef(stored);
+  useEffect(() => {
+    // Refresh untouched text without replacing the input or overwriting a newer edit.
+    const input = ref.current;
+    if (input && input.value === saved.current) input.value = stored;
+    saved.current = stored;
+  }, [stored]);
+
+  const saveOnBlur = async (event: React.FocusEvent<HTMLInputElement>) => {
+    const input = event.currentTarget;
+    const value = input.value;
+    if (input.readOnly || value === saved.current) return;
+    input.readOnly = true;
+    try {
+      if (await onSave(value)) input.value = saved.current;
+      else saved.current = value;
+    } finally {
+      input.readOnly = false;
+    }
+  };
+
+  return <input ref={ref} defaultValue={stored} onBlur={saveOnBlur} />;
 };
 
 // OwnerPicker searches the whole directory on the server, so any user can be chosen.

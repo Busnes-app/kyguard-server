@@ -154,6 +154,45 @@ it('puts the stored attribute value back after a refused save', async () => {
   expect((screen.getByLabelText('Cost center') as HTMLInputElement).value).toBe('CC1');
 });
 
+it('preserves a new edit and focus when the previous save reloads account details', async () => {
+  const saves = vi.fn();
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (init?.method === 'PUT') { saves(init.body); return json({}); }
+    if (url === '/api/attributes') return json({ account: [{ id: 'cc', entity: 'account', key: 'cost_center', label: 'Cost center', type: 'string', enum_values: [], source: 'admin' }], user: [] });
+    if (url === '/api/accounts/a') {
+      const saved = saves.mock.calls.length;
+      if (saved > 0) await held;
+      return json({ account: { ID: 'a', Name: 'svc-a', AccountKind: 'managed', Status: 'active', asset_name: 'dc1', owner_user_id: '', min_password_age_seconds: saved ? 60 : null }, descriptors: [], attributes: { cost_center: ['CC1', 'CC2', 'CC3'][saved] } });
+    }
+    if (url.startsWith('/api/reports/scorecard')) return json(card([row('a', 'green', 'Ops')]));
+    throw new Error('unexpected fetch ' + url);
+  }));
+  render(<Accounts isAdmin />);
+  fireEvent.click(await screen.findByText('dc1 / svc-a'));
+  const field = await screen.findByLabelText('Cost center');
+  if (!(field instanceof HTMLInputElement)) throw new Error('Expected a text input');
+  screen.getByLabelText('Account details').setAttribute('open', ''); // jsdom does not open the native modal.
+  fireEvent.change(field, { target: { value: 'CC2' } });
+  fireEvent.blur(field);
+  const readOnlyDuringSave = field.readOnly;
+  await vi.waitFor(() => expect(field.readOnly).toBe(false));
+
+  field.focus();
+  fireEvent.change(field, { target: { value: 'CC3' } });
+  release();
+  await screen.findByText('Minimum password age: 60 s');
+  expect(screen.getByLabelText('Cost center') === field).toBe(true);
+  expect(document.activeElement === field).toBe(true);
+  expect(field.value).toBe('CC3');
+  expect(readOnlyDuringSave).toBe(true);
+
+  fireEvent.blur(field);
+  await vi.waitFor(() => expect(saves).toHaveBeenLastCalledWith(JSON.stringify({ value: 'CC3' })));
+});
+
 // Closing the detail while a save is in flight reloads the page only after the save lands,
 // so the table never keeps the value from before it.
 it.each(['Close', 'Escape'])('waits for a save before closing with %s and reloading accounts', async (closeWith) => {
