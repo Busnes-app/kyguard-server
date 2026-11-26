@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Trash2 } from 'lucide-react';
-import { localInput, Scorecard, send, useJSON } from '../reporting';
+import { localInput, Scorecard, send, useJSON, useReportingWrite } from '../reporting';
 
 interface Draft {
   id: string;
@@ -19,14 +19,15 @@ interface Principal { principal_id: string; issuer: string; subject: string; act
 // Policies drafts the next PolicyManifest of an account and shows its digest for Custodian
 // signing in kyguard-cli (spec §10 item 4). The browser signs nothing.
 export const Policies: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
-  const drafts = useJSON<Draft[]>('/api/policy-drafts');
+  const { pending, revision, run } = useReportingWrite('policy-drafts');
+  const drafts = useJSON<Draft[]>('/api/policy-drafts', { writeRevision: revision });
   const [delErr, setDelErr] = useState('');
-  const remove = async (id: string) => {
-    if (!window.confirm('Delete this draft and its signatures?')) return;
+  const remove = (id: string) => run(async () => {
+    if (!window.confirm('Delete this draft and its signatures?')) return false;
     const fail = await send('DELETE', `/api/policy-drafts/${id}`);
     setDelErr(fail);
-    if (!fail) drafts.reload();
-  };
+    return !fail;
+  });
   const trust = useJSON<{ imported: boolean; threshold?: number; custodians?: number; escrow_default_enabled?: boolean }>('/api/trust');
 
   return (
@@ -55,19 +56,20 @@ export const Policies: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
                     : d.status === 'ready'
                       ? <span className="badge badge-success" title="Fully signed; signing it again retries admission">Ready</span>
                       : <span className="badge badge-accent">Needs signatures</span>}</td>
-                  {isAdmin && <td><button type="button" className="btn-secondary" aria-label="Delete draft" onClick={() => remove(d.id)}><Trash2 size={14} /></button></td>}
+                  {isAdmin && <td><button type="button" className="btn-secondary" aria-label="Delete draft" disabled={pending} onClick={() => remove(d.id)}><Trash2 size={14} /></button></td>}
                 </tr>
               ))}
             </tbody>
           </table>
         )}
       </div>
-      {isAdmin && <DraftForm escrowDefault={!!trust.data?.escrow_default_enabled} onSaved={drafts.reload} />}
+      {isAdmin && <DraftForm escrowDefault={!!trust.data?.escrow_default_enabled} />}
     </div>
   );
 };
 
-const DraftForm: React.FC<{ escrowDefault: boolean; onSaved: () => void }> = ({ escrowDefault, onSaved }) => {
+const DraftForm: React.FC<{ escrowDefault: boolean }> = ({ escrowDefault }) => {
+  const { pending, run } = useReportingWrite('policy-drafts');
   const accounts = useJSON<Scorecard>('/api/reports/scorecard');
   const principals = useJSON<Principal[]>('/api/principals');
   const [account, setAccount] = useState('');
@@ -85,15 +87,19 @@ const DraftForm: React.FC<{ escrowDefault: boolean; onSaved: () => void }> = ({ 
   const managed = row?.account_kind === 'managed';
 
   const toggle = (list: string, id: string) => setLists((l) => ({ ...l, [list]: l[list].includes(id) ? l[list].filter((x) => x !== id) : [...l[list], id] }));
-  const submit = async (e: React.FormEvent) => {
+  const submit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (account) void run(save);
+  };
+  const save = async () => {
     const body: Record<string, unknown> = {
       allowed_user_principal_ids: lists.users, allowed_approver_principal_ids: lists.approvers,
       required_approver_count: approvals, max_checkout_ttl_seconds: ttl, recovery_escrow_enabled: escrow ?? escrowDefault,
     };
     if (managed && schedule.on && Number.isNaN(new Date(schedule.anchor).getTime())) {
       setErr('Choose when the first rotation runs.');
-      return;
+      setSaved('');
+      return false;
     }
     if (managed) {
       Object.assign(body, {
@@ -105,7 +111,7 @@ const DraftForm: React.FC<{ escrowDefault: boolean; onSaved: () => void }> = ({ 
     const fail = await send('PUT', `/api/accounts/${account}/policy-draft`, body);
     setErr(fail);
     setSaved(fail ? '' : 'Draft saved. Custodians can now sign it.');
-    if (!fail) onSaved();
+    return !fail;
   };
   const picker = (list: string, label: string) => (
     <fieldset className="kg-pick">
@@ -170,7 +176,7 @@ const DraftForm: React.FC<{ escrowDefault: boolean; onSaved: () => void }> = ({ 
       )}
       {err && <p role="alert" className="dr-danger">{err}</p>}
       {saved && <p role="status" className="dr-ok">{saved}</p>}
-      <button type="submit" disabled={!account}>Save draft</button>
+      <button type="submit" disabled={!account || pending}>Save draft</button>
     </form>
   );
 };

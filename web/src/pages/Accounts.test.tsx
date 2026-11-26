@@ -101,7 +101,7 @@ it('lets an admin reach decommissioned accounts', async () => {
 });
 
 // A second Add while the first is still pending creates nothing more (one asset, one account).
-it('creates one asset and one account when Add is clicked twice', async () => {
+it('creates one asset and one account across duplicate submits and a page change', async () => {
   const posts: string[] = [];
   let release: () => void = () => {};
   const held = new Promise<void>((r) => { release = r; });
@@ -117,16 +117,22 @@ it('creates one asset and one account when Add is clicked twice', async () => {
     if (url.startsWith('/api/reports/scorecard')) return json(card([]));
     throw new Error(`unexpected fetch ${url}`);
   }));
-  render(<Accounts isAdmin />);
+  const view = render(<Accounts isAdmin />);
   fireEvent.click(await screen.findByText('Add account'));
   fireEvent.change(screen.getByLabelText('New asset name'), { target: { value: 'db1' } });
   fireEvent.change(screen.getByLabelText('Account name'), { target: { value: 'svc' } });
   const form = screen.getByRole('form', { name: 'Add account' });
   fireEvent.submit(form);
   fireEvent.submit(form);
+  view.rerender(<div />);
+  view.rerender(<Accounts isAdmin />);
+  const reopenedAdd = await screen.findByRole('button', { name: 'Add account' });
+  const disabled = reopenedAdd.hasAttribute('disabled');
+  fireEvent.click(reopenedAdd);
   release();
-  await vi.waitFor(() => expect(posts).toContain('/api/accounts'));
-  await new Promise((r) => setTimeout(r, 20));
+  expect(disabled).toBe(true);
+  expect(screen.queryByRole('form', { name: 'Add account' })).toBeNull();
+  await vi.waitFor(() => expect(reopenedAdd.hasAttribute('disabled')).toBe(false));
   expect(posts.filter((u) => u === '/api/assets')).toHaveLength(1);
   expect(posts.filter((u) => u === '/api/accounts')).toHaveLength(1);
 });
@@ -283,6 +289,43 @@ it('blocks a newer owner selection until the current change finishes', async () 
   fireEvent.click(screen.getByRole('button', { name: 'bob (Bob)' }));
   await screen.findByText('u2');
   expect(writes).toEqual(['', 'u2']);
+});
+
+it('blocks a duplicate decommission while the status PATCH is pending', async () => {
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const patches = vi.fn();
+  let status = 'active';
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === '/api/accounts/a' && init?.method === 'PATCH') {
+      patches(init.body);
+      await held;
+      status = 'decommissioned';
+      return json({});
+    }
+    if (url === '/api/accounts/a') return json({ account: { ID: 'a', Name: 'svc-a', Status: status, asset_name: 'dc1' }, descriptors: [], attributes: {} });
+    if (url === '/api/attributes') return json({ account: [], user: [] });
+    if (url.startsWith('/api/reports/scorecard')) return json(card([row('a', 'green', 'Ops')]));
+    throw new Error('unexpected fetch ' + url);
+  }));
+  try {
+    render(<Accounts isAdmin />);
+    fireEvent.click(await screen.findByText('dc1 / svc-a'));
+    screen.getByLabelText('Account details').setAttribute('open', '');
+    const button = await screen.findByRole('button', { name: 'Decommission' });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    const disabled = button.hasAttribute('disabled');
+    release();
+    await screen.findByRole('button', { name: 'Reactivate' });
+    expect(patches.mock.calls).toEqual([[JSON.stringify({ status: 'decommissioned' })]]);
+    expect(disabled).toBe(true);
+  } finally {
+    release();
+    vi.restoreAllMocks();
+  }
 });
 
 // Closing the detail while a save is in flight reloads the page only after the save lands,

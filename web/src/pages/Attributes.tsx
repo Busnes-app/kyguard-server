@@ -1,28 +1,33 @@
 import React, { useState } from 'react';
 import { Trash2 } from 'lucide-react';
-import { AttributeDefinition, send, useJSON } from '../reporting';
+import { AttributeDefinition, send, useJSON, useReportingWrite } from '../reporting';
 
 // Attributes lists definitions for accounts and users (spec §8.2, §10 item 3). SCIM-synced
 // ones are read-only; admins add and remove their own.
 export const Attributes: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
-  const defs = useJSON<Record<'account' | 'user', AttributeDefinition[]>>('/api/attributes');
+  const { pending, revision, run } = useReportingWrite('attribute-definitions');
+  const defs = useJSON<Record<'account' | 'user', AttributeDefinition[]>>('/api/attributes', { writeRevision: revision });
   const [err, setErr] = useState('');
   const [form, setForm] = useState({ entity: 'account', key: '', label: '', type: 'string', values: '' });
 
-  const create = async (e: React.FormEvent) => {
+  const submit = (e: React.FormEvent) => {
     e.preventDefault();
+    void run(create);
+  };
+  const create = async () => {
     const body: Record<string, unknown> = { entity: form.entity, key: form.key, label: form.label, type: form.type };
     if (form.type === 'enum') body.enum_values = form.values.split(',').map((v) => v.trim()).filter(Boolean);
     const fail = await send('POST', '/api/attributes', body);
     setErr(fail);
-    if (!fail) { setForm({ ...form, key: '', label: '', values: '' }); defs.reload(); }
+    if (!fail) setForm((current) => current === form ? { ...current, key: '', label: '', values: '' } : current);
+    return !fail;
   };
-  const remove = async (d: AttributeDefinition) => {
-    if (!window.confirm(`Delete ${d.label} and every value it holds?`)) return;
+  const remove = (d: AttributeDefinition) => run(async () => {
+    if (!window.confirm(`Delete ${d.label} and every value it holds?`)) return false;
     const fail = await send('DELETE', `/api/attributes/${d.id}`);
     setErr(fail);
-    if (!fail) defs.reload();
-  };
+    return !fail;
+  });
 
   return (
     <div className="dr-page">
@@ -43,7 +48,7 @@ export const Attributes: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
                       <td className="dr-mono">{d.key}</td>
                       <td>{d.type === 'enum' ? `enum: ${d.enum_values.join(', ')}` : 'string'}</td>
                       <td><span className={`badge ${d.source === 'scim' ? 'badge-accent' : 'dr-badge-muted'}`}>{d.source === 'scim' ? 'SCIM, read-only' : 'Admin'}</span></td>
-                      {isAdmin && <td>{d.source === 'admin' && <button type="button" className="btn-secondary" aria-label={`Delete ${d.label}`} onClick={() => remove(d)}><Trash2 size={14} /></button>}</td>}
+                      {isAdmin && <td>{d.source === 'admin' && <button type="button" className="btn-secondary" aria-label={`Delete ${d.label}`} disabled={pending} onClick={() => remove(d)}><Trash2 size={14} /></button>}</td>}
                     </tr>
                   ))}
                 </tbody>
@@ -54,7 +59,7 @@ export const Attributes: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
         ))}
       </div>
       {isAdmin && (
-        <form className="panel dr-section kg-top" onSubmit={create} aria-label="New attribute">
+        <form className="panel dr-section kg-top" onSubmit={submit} aria-label="New attribute">
           <h3 className="kg-sub">New attribute</h3>
           <div className="dr-row">
             <label className="dr-field dr-narrow">For
@@ -72,7 +77,7 @@ export const Attributes: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
             {form.type === 'enum' && <label className="dr-field">Values (comma separated)<input value={form.values} onChange={(e) => setForm({ ...form, values: e.target.value })} required /></label>}
           </div>
           {err && <p role="alert" className="dr-danger">{err}</p>}
-          <button type="submit">Add attribute</button>
+          <button type="submit" disabled={pending}>Add attribute</button>
         </form>
       )}
     </div>

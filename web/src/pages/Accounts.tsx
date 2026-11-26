@@ -2,15 +2,16 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Download, Plus, X } from 'lucide-react';
 import { ClassBadge, HealthBadge, TrafficLight } from '../components/TrafficLight';
 import { secureFetch } from '../api';
-import { AttributeDefinition, CLASS_LABEL, HEALTH_LABEL, Scorecard, ScoreRow, scorecardURL, send, useJSON } from '../reporting';
+import { AttributeDefinition, CLASS_LABEL, HEALTH_LABEL, Scorecard, ScoreRow, scorecardURL, send, useJSON, useReportingWrite } from '../reporting';
 
 // Accounts is the one reporting page (spec §8.3, §10 item 2): obvious filters, the traffic
 // light for exactly those filters, the inventory table and one-click CSV/JSON export.
 export const Accounts: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
   const [filter, setFilter] = useState<Record<string, string>>({});
-  const card = useJSON<Scorecard>(scorecardURL(filter));
+  const { revision: accountRevision } = useReportingWrite('create-account');
+  const card = useJSON<Scorecard>(scorecardURL(filter), { writeRevision: accountRevision });
   // Filter choices come from the unfiltered set, so picking one never hides the others.
-  const all = useJSON<Scorecard>(scorecardURL({}));
+  const all = useJSON<Scorecard>(scorecardURL({}), { writeRevision: accountRevision });
   const defs = useJSON<Record<string, AttributeDefinition[]>>('/api/attributes');
   const label = (entity: string, key: string) => defs.data?.[entity]?.find((d) => d.key === key)?.label || key;
   const [open, setOpen] = useState<string>('');
@@ -78,7 +79,7 @@ export const Accounts: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
       {card.data && (
         <>
           <div className="panel dr-section"><TrafficLight totals={card.data.totals} onPick={(c) => set('class', c)} /></div>
-          {isAdmin && <AddAccount onDone={reload} />}
+          {isAdmin && <AddAccount />}
           <div className="panel kg-scroll">
             {card.data.rows.length === 0 ? (
               <p className="dr-hint">{active ? 'No accounts match these filters.' : 'No accounts yet.'}</p>
@@ -119,8 +120,9 @@ export const Accounts: React.FC<{ isAdmin: boolean }> = ({ isAdmin }) => {
   );
 };
 
-const AddAccount: React.FC<{ onDone: () => void }> = ({ onDone }) => {
-  const assets = useJSON<{ ID: string; Name: string }[]>('/api/assets');
+const AddAccount: React.FC = () => {
+  const { pending, revision, run } = useReportingWrite('create-account');
+  const assets = useJSON<{ ID: string; Name: string }[]>('/api/assets', { writeRevision: revision });
   const [shown, setShown] = useState(false);
   const [asset, setAsset] = useState('');
   const [newAsset, setNewAsset] = useState('');
@@ -128,30 +130,19 @@ const AddAccount: React.FC<{ onDone: () => void }> = ({ onDone }) => {
   const [kind, setKind] = useState<'managed' | 'vaulted'>('managed');
   const [pool, setPool] = useState('');
   const [err, setErr] = useState('');
-  // One submission at a time: a second click would POST a second asset and account.
-  const inFlight = useRef(false);
-  const [busy, setBusy] = useState(false);
 
   if (!shown) {
-    return <div className="dr-section"><button type="button" className="btn-secondary" onClick={() => setShown(true)}><Plus size={16} />Add account</button></div>;
+    return <div className="dr-section"><button type="button" className="btn-secondary" disabled={pending} onClick={() => setShown(true)}><Plus size={16} />Add account</button></div>;
   }
-  const submit = async (e: React.FormEvent) => {
+  const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (inFlight.current) return;
-    inFlight.current = true;
-    setBusy(true);
-    try {
-      await create();
-    } finally {
-      inFlight.current = false;
-      setBusy(false);
-    }
+    void run(create);
   };
   const create = async () => {
     let assetID = asset;
     if (!assetID) {
       const r = await fetchJSON('POST', '/api/assets', { name: newAsset });
-      if (typeof r === 'string') { setErr(r); return; }
+      if (typeof r === 'string') { setErr(r); return false; }
       assetID = r.ID;
       setAsset(assetID); // a retry or the next account reuses it
       assets.reload();
@@ -160,11 +151,12 @@ const AddAccount: React.FC<{ onDone: () => void }> = ({ onDone }) => {
     if (kind === 'managed' && pool) body.pool_id = pool;
     const fail = await send('POST', '/api/accounts', body);
     setErr(fail);
-    if (!fail) { setName(''); setShown(false); onDone(); }
+    if (!fail) { setName(''); setShown(false); }
+    return !fail;
   };
   return (
     <form className="panel dr-section" onSubmit={submit} aria-label="Add account">
-      <div className="dr-row">
+      <div className="dr-row" inert={pending}>
         <label className="dr-field">Asset
           <select value={asset} onChange={(e) => setAsset(e.target.value)}>
             <option value="">New asset…</option>
@@ -181,7 +173,7 @@ const AddAccount: React.FC<{ onDone: () => void }> = ({ onDone }) => {
         {kind === 'managed' && <label className="dr-field">Broker pool ID<input value={pool} onChange={(e) => setPool(e.target.value)} placeholder="optional" /></label>}
       </div>
       {err && <p role="alert" className="dr-danger">{err}</p>}
-      <div className="dr-actions"><button type="submit" disabled={busy}>Add</button><button type="button" className="btn-secondary" onClick={() => setShown(false)}>Cancel</button></div>
+      <div className="dr-actions"><button type="submit" disabled={pending}>Add</button><button type="button" className="btn-secondary" disabled={pending} onClick={() => setShown(false)}>Cancel</button></div>
     </form>
   );
 };
@@ -207,7 +199,9 @@ interface Detail {
 // live only in kyguard-cli (spec §10).
 const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onClose }) => {
   const detail = useJSON<Detail>(`/api/accounts/${id}`, { keepOnTemporaryError: true });
-  const defs = useJSON<Record<string, AttributeDefinition[]>>('/api/attributes');
+  const statusWrite = useReportingWrite('account-status');
+  const { pending: definitionsPending } = useReportingWrite('attribute-definitions');
+  const defs = useJSON<Record<string, AttributeDefinition[]>>(definitionsPending ? null : '/api/attributes');
   const [err, setErr] = useState('');
   const [closing, setClosing] = useState(false);
   const ref = useRef<HTMLDialogElement>(null);
@@ -224,6 +218,11 @@ const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onCl
       pending.current.delete(fail);
     }
   };
+  const changeStatus = (status: 'active' | 'decommissioned') => statusWrite.run(async () => {
+    if (status === 'decommissioned' && !window.confirm('Decommission this account? It leaves the traffic light.')) return false;
+    const fail = await act(send('PATCH', `/api/accounts/${id}`, { status }));
+    return !fail;
+  });
   const close = async () => {
     if (closing) return;
     // Escape can arrive while a text edit still has focus. Start its blur save before waiting.
@@ -256,7 +255,8 @@ const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onCl
         {d && (
           <div className="dr-stack" inert={closing}>
             <OwnerPicker current={d.account.owner_user_id} onPick={(owner) => act(send('PATCH', `/api/accounts/${id}`, { owner_user_id: owner }))} />
-            {(defs.data?.account || []).map((a) => {
+            {definitionsPending && <p role="status" className="dr-hint">Updating attribute definitions…</p>}
+            {!definitionsPending && (defs.data?.account || []).map((a) => {
               const stored = d.attributes[a.key] || '';
               const onSave = (value: string) => act(send('PUT', `/api/attributes/${a.id}/values/${id}`, { value }));
               return (
@@ -289,8 +289,8 @@ const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onCl
             {err && <p role="alert" className="dr-danger">{err}</p>}
             <div className="dr-actions">
               {d.account.Status === 'active'
-                ? <button type="button" className="btn-danger" onClick={() => window.confirm('Decommission this account? It leaves the traffic light.') && act(send('PATCH', `/api/accounts/${id}`, { status: 'decommissioned' }))}>Decommission</button>
-                : <button type="button" className="btn-secondary" onClick={() => act(send('PATCH', `/api/accounts/${id}`, { status: 'active' }))}>Reactivate</button>}
+                ? <button type="button" className="btn-danger" disabled={statusWrite.pending} onClick={() => changeStatus('decommissioned')}>Decommission</button>
+                : <button type="button" className="btn-secondary" disabled={statusWrite.pending} onClick={() => changeStatus('active')}>Reactivate</button>}
             </div>
           </div>
         )}

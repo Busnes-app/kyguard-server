@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { secureFetch } from './api';
 
 // Shapes of the reporting API (docs/INTERFACES.md, spec §8). The browser never handles a
@@ -66,10 +66,39 @@ export const HEALTH_LABEL: Record<string, string> = {
   checkout_open: 'Checkout open',
 };
 
+type WriteScope = 'policy-drafts' | 'attribute-definitions' | 'create-account' | 'account-status';
+const idleWrite = { pending: false, revision: 0 };
+const writeStates = new Map<WriteScope, typeof idleWrite>();
+const writeListeners = new Set<() => void>();
+
+function subscribeToWrites(listener: () => void) {
+  writeListeners.add(listener);
+  return () => { writeListeners.delete(listener); };
+}
+
+// Keep pending writes and list refreshes tied to the resource across page changes.
+export function useReportingWrite(scope: WriteScope) {
+  const state = useSyncExternalStore(subscribeToWrites, () => writeStates.get(scope) ?? idleWrite);
+  const run = async (write: () => Promise<boolean>) => {
+    const current = writeStates.get(scope) ?? idleWrite;
+    if (current.pending) return;
+    writeStates.set(scope, { ...current, pending: true });
+    writeListeners.forEach((notify) => notify());
+    let changed = false;
+    try {
+      changed = await write();
+    } finally {
+      writeStates.set(scope, { pending: false, revision: current.revision + Number(changed) });
+      writeListeners.forEach((notify) => notify());
+    }
+  };
+  return { ...state, run };
+}
+
 // useJSON loads a GET route and exposes reload; errors are shown, never swallowed.
 export function useJSON<T>(
   url: string | null,
-  { keepOnTemporaryError = false } = {},
+  { keepOnTemporaryError = false, writeRevision = 0 } = {},
 ): { data: T | null; error: string; reload: () => void } {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState('');
@@ -99,7 +128,7 @@ export function useJSON<T>(
         setError(error instanceof Error ? error.message : String(error));
       });
     return () => { live = false; };
-  }, [url, tick, keepOnTemporaryError]);
+  }, [url, tick, keepOnTemporaryError, writeRevision]);
   return { data, error, reload };
 }
 
