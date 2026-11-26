@@ -35,7 +35,8 @@ Owns user interface components, service worker caching, PWA installation manifes
   light, health counts and a 1-of-1 Custodian warning. No screen handles a credential or
   signs anything. Closing account details by button or Escape pauses edits and waits for
   pending saves. A failed save keeps the dialog open with its error. Text attributes are
-  read-only while saving, and refreshed values leave newer edits and focus in place.
+  read-only while saving. Each enum selector is disabled while its own save is in flight.
+  Successful and temporarily failed detail refreshes preserve unsaved text and focus.
   Shared fetch helpers and API shapes live in `src/reporting.ts`.
 
 ## Verification

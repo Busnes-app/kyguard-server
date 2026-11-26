@@ -206,7 +206,7 @@ interface Detail {
 // AccountDetail edits inventory metadata. Credentials are never shown or entered here: they
 // live only in kyguard-cli (spec §10).
 const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onClose }) => {
-  const detail = useJSON<Detail>(`/api/accounts/${id}`);
+  const detail = useJSON<Detail>(`/api/accounts/${id}`, { keepOnTemporaryError: true });
   const defs = useJSON<Record<string, AttributeDefinition[]>>('/api/attributes');
   const [err, setErr] = useState('');
   const [closing, setClosing] = useState(false);
@@ -256,21 +256,17 @@ const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onCl
         {d && (
           <div className="dr-stack" inert={closing}>
             <OwnerPicker current={d.account.owner_user_id} onPick={(owner) => act(send('PATCH', `/api/accounts/${id}`, { owner_user_id: owner }))} />
-            {(defs.data?.account || []).map((a) => (
-              <label key={a.id} className="dr-field">{a.label}
-                {a.type === 'enum' ? (
-                  <select value={d.attributes[a.key] || ''} onChange={(e) => act(send('PUT', `/api/attributes/${a.id}/values/${id}`, { value: e.target.value }))}>
-                    <option value="">—</option>
-                    {a.enum_values.map((v) => <option key={v} value={v}>{v}</option>)}
-                  </select>
-                ) : (
-                  <TextAttribute
-                    stored={d.attributes[a.key] || ''}
-                    onSave={(value) => act(send('PUT', `/api/attributes/${a.id}/values/${id}`, { value }))}
-                  />
-                )}
-              </label>
-            ))}
+            {(defs.data?.account || []).map((a) => {
+              const stored = d.attributes[a.key] || '';
+              const onSave = (value: string) => act(send('PUT', `/api/attributes/${a.id}/values/${id}`, { value }));
+              return (
+                <label key={a.id} className="dr-field">{a.label}
+                  {a.type === 'enum'
+                    ? <EnumAttribute stored={stored} options={a.enum_values} onSave={onSave} />
+                    : <TextAttribute stored={stored} onSave={onSave} />}
+                </label>
+              );
+            })}
             <div>
               <h4 className="kg-sub">Target descriptors</h4>
               {d.descriptors.length === 0 ? <p className="dr-hint">None uploaded. Upload one with PUT /api/accounts/{id}/target-descriptor.</p> : (
@@ -326,6 +322,40 @@ const TextAttribute: React.FC<{ stored: string; onSave: (value: string) => Promi
   };
 
   return <input ref={ref} defaultValue={stored} onBlur={saveOnBlur} />;
+};
+
+const EnumAttribute: React.FC<{
+  stored: string;
+  options: string[];
+  onSave: (value: string) => Promise<string>;
+}> = ({ stored, options, onSave }) => {
+  const ref = useRef<HTMLSelectElement>(null);
+  const saved = useRef(stored);
+  useEffect(() => {
+    const select = ref.current;
+    if (select && !select.disabled) select.value = stored;
+    saved.current = stored;
+  }, [stored]);
+
+  const saveOnChange = async (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const select = event.currentTarget;
+    const value = select.value;
+    if (select.disabled || value === saved.current) return;
+    select.disabled = true;
+    try {
+      if (!(await onSave(value))) saved.current = value;
+      select.value = saved.current;
+    } finally {
+      select.disabled = false;
+    }
+  };
+
+  return (
+    <select ref={ref} defaultValue={stored} onChange={saveOnChange}>
+      <option value="">—</option>
+      {options.map((value) => <option key={value} value={value}>{value}</option>)}
+    </select>
+  );
 };
 
 // OwnerPicker searches the whole directory on the server, so any user can be chosen.

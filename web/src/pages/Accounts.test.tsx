@@ -154,7 +154,7 @@ it('puts the stored attribute value back after a refused save', async () => {
   expect((screen.getByLabelText('Cost center') as HTMLInputElement).value).toBe('CC1');
 });
 
-it('preserves a new edit and focus when the previous save reloads account details', async () => {
+it.each([200, 503, 403])('handles an edit during a detail refresh returning HTTP %i', async (status) => {
   const saves = vi.fn();
   let release: () => void = () => {};
   const held = new Promise<void>((resolve) => { release = resolve; });
@@ -164,7 +164,10 @@ it('preserves a new edit and focus when the previous save reloads account detail
     if (url === '/api/attributes') return json({ account: [{ id: 'cc', entity: 'account', key: 'cost_center', label: 'Cost center', type: 'string', enum_values: [], source: 'admin' }], user: [] });
     if (url === '/api/accounts/a') {
       const saved = saves.mock.calls.length;
-      if (saved > 0) await held;
+      if (saved === 1) {
+        await held;
+        if (status !== 200) return json({ error: 'Detail refresh failed' }, status);
+      }
       return json({ account: { ID: 'a', Name: 'svc-a', AccountKind: 'managed', Status: 'active', asset_name: 'dc1', owner_user_id: '', min_password_age_seconds: saved ? 60 : null }, descriptors: [], attributes: { cost_center: ['CC1', 'CC2', 'CC3'][saved] } });
     }
     if (url.startsWith('/api/reports/scorecard')) return json(card([row('a', 'green', 'Ops')]));
@@ -183,7 +186,13 @@ it('preserves a new edit and focus when the previous save reloads account detail
   field.focus();
   fireEvent.change(field, { target: { value: 'CC3' } });
   release();
-  await screen.findByText('Minimum password age: 60 s');
+  if (status === 200) await screen.findByText('Minimum password age: 60 s');
+  else await screen.findByText('Detail refresh failed');
+  if (status === 403) {
+    expect(screen.queryByLabelText('Cost center')).toBeNull();
+    return;
+  }
+
   expect(screen.getByLabelText('Cost center') === field).toBe(true);
   expect(document.activeElement === field).toBe(true);
   expect(field.value).toBe('CC3');
@@ -191,6 +200,45 @@ it('preserves a new edit and focus when the previous save reloads account detail
 
   fireEvent.blur(field);
   await vi.waitFor(() => expect(saves).toHaveBeenLastCalledWith(JSON.stringify({ value: 'CC3' })));
+});
+
+it('allows only one save at a time for an enum attribute', async () => {
+  const saves = vi.fn();
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let team = 'Ops';
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === '/api/attributes/team/values/a' && init?.method === 'PUT') {
+      saves(init.body);
+      await held;
+      team = init.body === JSON.stringify({ value: 'Sales' }) ? 'Sales' : 'IT';
+      return json({});
+    }
+    if (url === '/api/attributes') return json({ account: [{ id: 'team', entity: 'account', key: 'team', label: 'Team', type: 'enum', enum_values: ['Ops', 'Sales', 'IT'], source: 'admin' }], user: [] });
+    if (url === '/api/accounts/a') return json({ account: { ID: 'a', Name: 'svc-a', AccountKind: 'managed', Status: 'active', asset_name: 'dc1', owner_user_id: '', min_password_age_seconds: null }, descriptors: [], attributes: { team } });
+    if (url.startsWith('/api/reports/scorecard')) return json(card([row('a', 'green', 'Ops')]));
+    throw new Error('unexpected fetch ' + url);
+  }));
+  render(<Accounts isAdmin />);
+  fireEvent.click(await screen.findByText('dc1 / svc-a'));
+  const field = await screen.findByLabelText('Team');
+  if (!(field instanceof HTMLSelectElement)) throw new Error('Expected a select');
+
+  fireEvent.change(field, { target: { value: 'Sales' } });
+  expect(field.disabled).toBe(true);
+  fireEvent.change(field, { target: { value: 'IT' } });
+  expect(saves).toHaveBeenCalledTimes(1);
+  release();
+  await vi.waitFor(() => {
+    expect(field.disabled).toBe(false);
+    expect(field.value).toBe('Sales');
+  });
+
+  fireEvent.change(field, { target: { value: 'IT' } });
+  await vi.waitFor(() => expect(field.disabled).toBe(false));
+  expect(saves.mock.calls).toEqual([[JSON.stringify({ value: 'Sales' })], [JSON.stringify({ value: 'IT' })]]);
+  expect(field.value).toBe('IT');
 });
 
 // Closing the detail while a save is in flight reloads the page only after the save lands,

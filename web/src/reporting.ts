@@ -67,7 +67,10 @@ export const HEALTH_LABEL: Record<string, string> = {
 };
 
 // useJSON loads a GET route and exposes reload; errors are shown, never swallowed.
-export function useJSON<T>(url: string | null): { data: T | null; error: string; reload: () => void } {
+export function useJSON<T>(
+  url: string | null,
+  { keepOnTemporaryError = false } = {},
+): { data: T | null; error: string; reload: () => void } {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState('');
   const [tick, setTick] = useState(0);
@@ -80,15 +83,23 @@ export function useJSON<T>(url: string | null): { data: T | null; error: string;
     shown.current = url;
     if (!url) return;
     let live = true;
+    let keepData = keepOnTemporaryError;
     fetch(url)
       .then(async (r) => {
-        if (!r.ok) throw new Error(await errorText(r));
+        if (!r.ok) {
+          keepData = keepData && r.status >= 500;
+          throw new Error(await errorText(r));
+        }
         return r.json();
       })
       .then((j) => { if (live) { setData(j); setError(''); } })
-      .catch((e: Error) => { if (live) { setData(null); setError(e.message); } });
+      .catch((error: unknown) => {
+        if (!live) return;
+        if (!keepData) setData(null);
+        setError(error instanceof Error ? error.message : String(error));
+      });
     return () => { live = false; };
-  }, [url, tick]);
+  }, [url, tick, keepOnTemporaryError]);
   return { data, error, reload };
 }
 

@@ -21,6 +21,8 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 
 ### Changes
 
+- Account details keep unsaved text through temporary refresh errors and save enum changes
+  one at a time per field.
 - Documentation cleanup: clarified `README.md` quick-start and documentation index, added breadcrumbs to retained guides, and removed leftover base-scaffold UI verification logs, captures, and interop spike notes.
 - The web shell asks for a fresh authenticator code when a privileged action is refused because
   its step-up window passed (`stepup_stale`), then sends the action again.
