@@ -269,6 +269,19 @@ func (v vaultStore) heldBy(ctx context.Context, tx *sql.Tx, accountID string) (s
 	return op, uint64(ver), err
 }
 
+// notEnded refuses, with ErrConflict, an operation that already has receipts on the account.
+func (v vaultStore) notEnded(ctx context.Context, tx *sql.Tx, accountID, op string) error {
+	var ended int
+	if err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT COUNT(1) FROM envelope_receipts r JOIN secret_envelopes e ON e.envelope_id = r.envelope_id
+ WHERE r.operation_id = ? AND e.account_id = ?`), op, accountID).Scan(&ended); err != nil {
+		return err
+	}
+	if ended > 0 {
+		return ErrConflict
+	}
+	return nil
+}
+
 func (v vaultStore) Reserve(ctx context.Context, accountID, op string, reported uint64) (uint64, error) {
 	var version uint64
 	err := v.s.inTx(ctx, func(tx *sql.Tx) error {
@@ -289,13 +302,8 @@ func (v vaultStore) Reserve(ctx context.Context, accountID, op string, reported 
 		}
 		// An operation that already ended never reserves again: a late retry would take a new
 		// version and a lock nothing releases (PR Reviewer Guide on #10).
-		var ended int
-		if err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT COUNT(1) FROM envelope_receipts r JOIN secret_envelopes e ON e.envelope_id = r.envelope_id
- WHERE r.operation_id = ? AND e.account_id = ?`), op, accountID).Scan(&ended); err != nil {
+		if err := v.notEnded(ctx, tx, accountID, op); err != nil {
 			return err
-		}
-		if ended > 0 {
-			return ErrConflict
 		}
 		version = max(highest, reported) + 1
 		if version > 1<<63-1 {
@@ -615,6 +623,11 @@ func (v vaultStore) ReserveEnrollment(ctx context.Context, accountID, op string,
 		if holder == op {
 			version = held
 			return nil
+		}
+		// A completed enrollment's retry takes no new version or lock (PR Reviewer Guide
+		// "Retry Idempotency" on #15).
+		if err := v.notEnded(ctx, tx, accountID, op); err != nil {
+			return err
 		}
 		quarantined := health == "quarantined" || health == "auth_failed"
 		var kind string

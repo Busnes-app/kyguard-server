@@ -514,3 +514,34 @@ func TestConcurrentIdenticalDescriptorStoresSucceed(t *testing.T) {
 		}
 	}
 }
+
+// A retry of a completed enrollment's reservation takes no new version and no lock (PR
+// Reviewer Guide "Retry Idempotency" on #15).
+func TestACompletedEnrollmentIsNotReservedAgain(t *testing.T) {
+	v, acct := vaultAccount(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	ver, err := v.ReserveEnrollment(ctx, acct, "enr", 0, now, 15*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.AcceptEnrollment(ctx, acct, "enr", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.PutEnvelope(ctx, "enr", &StoredEnvelope{EnvelopeID: "e1", AccountID: acct, SecretVersion: ver, EnvelopeKind: "managed", Digest: "de1", Envelope: []byte("e1")}); err != nil {
+		t.Fatal(err)
+	}
+	rs := []*StoredReceipt{{EnvelopeID: "e1", ReceiptSeq: 1, ReceiptType: "release", OperationID: "enr", Digest: "he1", PrevReceiptHash: zeroHash, Receipt: []byte("re1")}}
+	if err := v.Complete(ctx, "enr", acct, rs, "e1", "", LockDelete); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.ReserveEnrollment(ctx, acct, "enr", 0, now, 15*time.Minute); !errors.Is(err, ErrConflict) {
+		t.Fatalf("retry of a completed enrollment: %v", err)
+	}
+	if op, _, _ := v.Lock(ctx, acct); op != "" {
+		t.Fatalf("lock %q after the refused retry", op)
+	}
+	if a, _ := v.GetAccount(ctx, acct); a.HighestSecretVersion != ver {
+		t.Fatalf("highest version %d, want %d", a.HighestSecretVersion, ver)
+	}
+}
