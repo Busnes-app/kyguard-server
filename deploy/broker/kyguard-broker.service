@@ -1,0 +1,47 @@
+# KyGuard Resource Broker (spec §4.1). Install the binary as /usr/local/bin/kyguard-broker,
+# pair once as the kyguard-broker user:
+#   sudo -u kyguard-broker KYGUARD_BROKER_DIR=/var/lib/kyguard-broker \
+#     kyguard-broker pair --token <t> --bootstrap-fingerprint <hex>
+# then enable this unit. Keep swap encrypted or off on broker hosts.
+[Unit]
+Description=KyGuard Resource Broker
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=kyguard-broker
+Group=kyguard-broker
+Environment=KYGUARD_BROKER_DIR=/var/lib/kyguard-broker
+ExecStart=/usr/local/bin/kyguard-broker run
+Restart=on-failure
+RestartSec=5s
+StateDirectory=kyguard-broker
+StateDirectoryMode=0700
+UMask=0077
+# No core dumps; the binary also sets RLIMIT_CORE=0 itself.
+LimitCORE=0
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target

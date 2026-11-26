@@ -25,6 +25,7 @@ type Store interface {
 	Settings() SettingsStore
 	Coordination() CoordinationStore
 	Guard() GuardStore
+	Vault() VaultStore
 	MFA() MFAStore
 	Intents() IntentStore
 

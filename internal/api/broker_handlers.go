@@ -21,8 +21,6 @@ import (
 // PairingTokenTTL is the lifetime of a broker pairing token (§4.1 pairing step 1).
 const PairingTokenTTL = 10 * time.Minute
 
-const maxManifestBody = 512 << 10
-
 func (s *Server) brokerRoutes() {
 	// Broker and pairing actions need a step-up in the last five minutes (spec §7.3 rule 6).
 	s.route(ClassSession, "POST /api/broker-pools", http.HandlerFunc(s.requireAdmin(s.handleCreatePool)), fresh(StepupWindow))
@@ -98,7 +96,7 @@ func (s *Server) handleCreatePairingToken(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleSubmitManifest(w http.ResponseWriter, r *http.Request) {
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxManifestBody))
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, cptrust.MaxManifest))
 	if err != nil {
 		s.writeError(w, http.StatusRequestEntityTooLarge, "manifest too large")
 		return

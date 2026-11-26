@@ -18,6 +18,13 @@ import (
 // ErrNoBundle means the operator has not imported the bootstrap bundle yet.
 var ErrNoBundle = errors.New("cptrust: bootstrap bundle not imported")
 
+// MaxManifest is the largest manifest Submit accepts, so that any one stored manifest fits
+// a broker channel frame (decision 61).
+const MaxManifest = 512 << 10
+
+// ErrTooLarge refuses a manifest over MaxManifest.
+var ErrTooLarge = errors.New("cptrust: manifest too large")
+
 // Trust caches the replayed state and catches up from the database before every use, so
 // replicas that accepted manifests are seen without a restart.
 type Trust struct {
@@ -75,6 +82,9 @@ func (c *Trust) View(ctx context.Context, fn func(tr *pqcrypto.Trust) error) err
 // state already holds is an idempotent success (added false). Equivocation is audited as an
 // alert before the error is returned.
 func (c *Trust) Submit(ctx context.Context, raw []byte, actor, ip string) (rec *pqcrypto.Record, added bool, err error) {
+	if len(raw) > MaxManifest {
+		return nil, false, ErrTooLarge
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for attempt := 0; ; attempt++ {

@@ -61,6 +61,15 @@ func seedEveryTable(t *testing.T, st *SQLStore) {
 	must(g.CreatePool(ctx, &BrokerPool{ID: "p1", Name: "pool", CreatedAt: now}, nil))
 	must(g.CreatePairingToken(ctx, &PairingToken{TokenHash: "th", PoolID: "p1", CreatedBy: "u1", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}, nil))
 	must(g.ClaimPairing(ctx, "th", now, &Broker{ID: "b1", CertSHA256: "c", CASHA256: "ca", SigKeyID: "s", EncKeyID: "e", Version: "0.1.0"}, "i1", nil))
+	v := st.Vault()
+	must(v.CreateAsset(ctx, &Asset{ID: "as1", Name: "host"}))
+	must(v.CreateAccount(ctx, &Account{ID: "ac1", AssetID: "as1", Name: "svc", AccountKind: "managed", PoolID: "p1"}))
+	must(v.PutTargetDescriptor(ctx, "td", "ac1", []byte(`{"t":1}`)))
+	ver, err := v.Reserve(ctx, "ac1", "op1", 0)
+	must(err)
+	must(v.PutEnvelope(ctx, "op1", &StoredEnvelope{EnvelopeID: "e1", AccountID: "ac1", SecretVersion: ver, EnvelopeKind: "managed", Digest: "ed", Envelope: []byte(`{"e":1}`)}))
+	must(v.RecordIntent(ctx, &RotationRun{OperationID: "op1", AccountID: "ac1", BrokerID: "b1", SecretVersion: ver, Intent: []byte(`{"i":1}`)}))
+	must(v.Complete(ctx, "op1", "ac1", []*StoredReceipt{{EnvelopeID: "e1", ReceiptSeq: 1, ReceiptType: "commit_target", OperationID: "op1", Digest: "r1", PrevReceiptHash: zeroHash, Receipt: []byte(`{"r":1}`)}}, "", "target_verified", false))
 	for _, q := range []string{
 		`INSERT INTO mfa_challenges (token_hash, user_id, expires_at) VALUES ('m1', 'u1', now())`,
 		`INSERT INTO sso_directory_events (provider, subject, last_timestamp) VALUES ('kysignon', 'sub-1', 42)`,

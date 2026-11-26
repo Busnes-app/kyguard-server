@@ -16,6 +16,8 @@ type GuardStore interface {
 	ImportBundle(ctx context.Context, b *BootstrapBundle, actor string) error
 	// Manifests returns verified manifests with seq > after, in acceptance order.
 	Manifests(ctx context.Context, after int64) ([]*TrustManifest, error)
+	// ManifestsPage returns at most limit of them.
+	ManifestsPage(ctx context.Context, after int64, limit int) ([]*TrustManifest, error)
 	// AppendManifest stores the next verified manifest; m.Seq must be the current maximum
 	// plus one, otherwise ErrConflict (another writer appended first: catch up and retry).
 	AppendManifest(ctx context.Context, m *TrustManifest, audit *AuditRecord) error
@@ -163,7 +165,15 @@ func (g guardStore) ImportBundle(ctx context.Context, b *BootstrapBundle, actor 
 }
 
 func (g guardStore) Manifests(ctx context.Context, after int64) ([]*TrustManifest, error) {
-	rows, err := g.s.db.QueryContext(ctx, g.s.rebind(`SELECT seq, type, scope_id, epoch, digest, manifest, accepted_at FROM trust_manifests WHERE seq > ? ORDER BY seq`), after)
+	return g.manifests(ctx, ``, after)
+}
+
+func (g guardStore) ManifestsPage(ctx context.Context, after int64, limit int) ([]*TrustManifest, error) {
+	return g.manifests(ctx, ` LIMIT ?`, after, max(limit, 0))
+}
+
+func (g guardStore) manifests(ctx context.Context, limit string, args ...any) ([]*TrustManifest, error) {
+	rows, err := g.s.db.QueryContext(ctx, g.s.rebind(`SELECT seq, type, scope_id, epoch, digest, manifest, accepted_at FROM trust_manifests WHERE seq > ? ORDER BY seq`+limit), args...)
 	if err != nil {
 		return nil, err
 	}
