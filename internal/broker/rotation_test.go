@@ -615,8 +615,8 @@ func TestUndeliveredHealthIsResentOnRecover(t *testing.T) {
 func TestRecoverFailsWhileHealthIsUndelivered(t *testing.T) {
 	r := newRig(t)
 	r.target.ambiguous = errors.New("connection reset") // not applied: the probe fails
-	w := &wrapCP{ControlPlane: r.cpw, statusErr: errors.New("control plane unreachable")}
-	r.cpw = w
+	w := &brokerrig.WrapCP{ControlPlane: r.CPW, StatusErr: errors.New("control plane unreachable")}
+	r.CPW = w
 	m := r.machine()
 	defer m.J.Close()
 	ctx := context.Background()
@@ -626,7 +626,7 @@ func TestRecoverFailsWhileHealthIsUndelivered(t *testing.T) {
 	if err := m.Recover(ctx); err == nil {
 		t.Fatal("Recover succeeded with the health undelivered")
 	}
-	w.statusErr = nil // same machine and channel: no reconnect
+	w.StatusErr = nil // same machine and channel: no reconnect
 	if err := m.Recover(ctx); err != nil {
 		t.Fatal(err)
 	}
