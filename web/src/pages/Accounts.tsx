@@ -207,7 +207,20 @@ const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onCl
   const detail = useJSON<Detail>(`/api/accounts/${id}`);
   const defs = useJSON<Record<string, AttributeDefinition[]>>('/api/attributes');
   const [err, setErr] = useState('');
-  const act = async (fail: Promise<string>) => { const f = await fail; setErr(f); if (!f) detail.reload(); return f; };
+  // Writes still in flight: closing waits for them, so the page reloads after they land.
+  const pending = useRef(new Set<Promise<string>>());
+  const act = async (fail: Promise<string>) => {
+    pending.current.add(fail);
+    try {
+      const f = await fail;
+      setErr(f);
+      if (!f) detail.reload();
+      return f;
+    } finally {
+      pending.current.delete(fail);
+    }
+  };
+  const close = async () => { await Promise.allSettled([...pending.current]); onClose(); };
   const d = detail.data;
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -218,10 +231,10 @@ const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onCl
 
   return (
     // A native modal dialog: focus moves in and stays in, Escape closes it, focus returns.
-    <dialog ref={ref} className="modal-window kg-detail" aria-label="Account details" onClose={onClose}>
+    <dialog ref={ref} className="modal-window kg-detail" aria-label="Account details" onClose={close}>
         <div className="panel-header">
           <h3>{d ? `${d.account.asset_name} / ${d.account.Name}` : 'Account'}</h3>
-          <button type="button" className="btn-secondary" onClick={onClose} aria-label="Close"><X size={16} /></button>
+          <button type="button" className="btn-secondary" onClick={close} aria-label="Close"><X size={16} /></button>
         </div>
         {detail.error && <p role="alert" className="dr-danger">{detail.error}</p>}
         {d && (
