@@ -527,4 +527,22 @@ Numbered separately: these came from the parallel crypto stack.
     attribute values. GET responses do not echo the synced attributes back.
     A SCIM write and its synced attributes are one transaction: the profile, session
     revocation, attribute values and their audit rows commit or roll back together.
-
+210. §9.2, §10 (policy drafts). One draft per account, always for the next epoch. Saving it
+    runs every `Trust.Check` rule except the quorum, so a draft no Custodian could ever get
+    accepted is refused before anyone signs it. Every principal it names must already have
+    a verified `KeyEnrollmentManifest`. Saving again replaces the draft and drops its
+    signatures, because any change makes a new digest.
+211. §3.2 rule 1 (collecting signatures). A returned draft must have the stored digest and
+    keep every signature already collected; at quorum the Control Plane submits it as a
+    manifest through the normal admission path and deletes the draft. The Control Plane
+    never adds a signature itself. Storing a below-quorum copy is a compare-and-swap on the
+    exact object that was checked, so two submissions from one snapshot cannot overwrite
+    each other's signatures; the loser gets 409 and re-fetches. At quorum the fully signed
+    object is stored by the same compare-and-swap before admission (a draft already replaced
+    gets 409) and the draft is removed only after admission, so a failed admission keeps the
+    signatures (status `ready`). Deleting a draft does not veto a policy already at quorum:
+    it is a valid Custodian-signed manifest that anyone may submit at `POST /api/manifests`.
+212. §7.3 rule 6, §7.5 (policy draft route classes). Every draft route is `session` class.
+    Saving and deleting a draft need a step-up within five minutes. Fetching a draft, posting
+    signatures, and `GET /api/principals` and `GET /api/trust` need none: the signatures are
+    what authorize a policy, as for `POST /api/manifests` (16a).

@@ -372,6 +372,7 @@ func (s *Server) routes() {
 	s.txRoutes()
 	s.inventoryRoutes()
 	s.reportRoutes()
+	s.draftRoutes()
 
 	s.route(ClassPublic, "/saml/", http.NotFoundHandler())
 

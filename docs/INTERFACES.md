@@ -609,6 +609,21 @@ Source: [report handlers](../internal/api/report_handlers.go), [reporting](../in
 | GET `/api/reports/scorecard?format=json\|csv` | Same | 200 download (`Content-Disposition: attachment`, `no-store`) with the same rows and totals; CSV has the fixed columns, then `attr.<key>` and `owner.<key>`. Audited `report.exported` (format, row count, filter) before the body is sent; 500 and no body if the audit fails |
 | GET `/api/jobs` | Administrator | 200 `{runs, leases}`: the 200 newest rotation runs and checkout leases, open leases first |
 
+### Policy drafts and Custodian signing (spec §3.2, §3.3, §10)
+
+Source: [draft handlers](../internal/api/draft_handlers.go). The Control Plane holds no
+signing key: it builds and checks the unsigned object, relays it and admits it only at quorum.
+
+| Route | Authentication and input | Success |
+|---|---|---|
+| PUT `/api/accounts/{id}/policy-draft` | Administrator (step-up window pending §7.5); JSON policy body: `checkout_mode`, `target_descriptor_digest` (an uploaded descriptor of this account), principal lists, `required_approver_count`, `max_checkout_ttl_seconds`, `rotation_schedule`, `recovery_escrow_enabled`, `auto_standing_release`; kind and pool come from the account | 201 `{id, account_id, epoch, digest}` for the next epoch, replacing any earlier draft and its signatures; 400 for a field the kind forbids or an unknown descriptor; 422 `{"code"}` when it could never be accepted (`unknown_principal`, `unsupported` for `proxy_only`, …). Audited `policy.draft_saved` |
+| GET `/api/policy-drafts` | Any session | 200 `[{…draft, account, signatures, status: needs_signatures\|ready\|stale, code?}]` |
+| GET `/api/policy-drafts/{id}` | Any session | 200 `{draft, object, target, labels}`: the canonical object to sign, the descriptor it pins and unverified labels |
+| POST `/api/policy-drafts/{id}/signatures` | Any session; body is the object with more Custodian signatures | 200 `{accepted:false, signatures}` below quorum; 201 `{accepted:true, epoch, digest}` at quorum, when it is submitted as a manifest and the draft removed (also when that policy was already admitted and only the removal was lost); 409 for another digest or a dropped signature; 422 `{"code"}` for a bad signature. Audited `policy.draft_signed` |
+| DELETE `/api/policy-drafts/{id}` | Administrator | 204 |
+| GET `/api/principals` | Administrator | 200 `[{principal_id, issuer, subject, active_keys}]` from verified key enrollments |
+| GET `/api/trust` | Any session | 200 `{imported, fingerprint, threshold, custodians, escrow_default_enabled}`; the dashboard warns at 1 of 1 |
+
 ## Replicas and database migration
 
 [Replication and migration](REPLICAS.md) owns deployment requirements and the cutover runbook.

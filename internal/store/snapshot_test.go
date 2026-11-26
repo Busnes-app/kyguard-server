@@ -78,6 +78,7 @@ func seedEveryTable(t *testing.T, st *SQLStore) {
 	def, err := inv.EnsureDefinition(ctx, &AttributeDefinition{ID: "ad1", Entity: EntityAccount, Key: "tier", Label: "Tier", Type: AttrEnum, EnumValues: []string{"gold"}, Source: SourceAdmin}, nil)
 	must(err)
 	must(inv.SetValue(ctx, def.ID, "ac1", "gold", SourceAdmin, nil))
+	must(st.Drafts().PutDraft(ctx, &PolicyDraft{ID: "pd1", AccountID: "ac1", Epoch: 1, Digest: "pdg", Object: []byte(`{"p":1}`), CreatedBy: "u1"}, nil))
 	for _, q := range []string{
 		`INSERT INTO mfa_challenges (token_hash, user_id, expires_at) VALUES ('m1', 'u1', now())`,
 		`INSERT INTO sso_directory_events (provider, subject, last_timestamp) VALUES ('kysignon', 'sub-1', 42)`,

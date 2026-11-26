@@ -29,6 +29,7 @@ type Store interface {
 	MFA() MFAStore
 	Inventory() InventoryStore
 	Intents() IntentStore
+	Drafts() DraftStore
 
 	// SnapshotToSQLite copies a PostgreSQL database, as of one transaction, into a new SQLite
 	// file; ErrSnapshotSchema for a schema this build does not know.

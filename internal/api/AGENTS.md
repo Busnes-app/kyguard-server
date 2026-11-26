@@ -22,6 +22,10 @@ Owns HTTP routing, request parsing, session cookie validation, CORS headers, and
   with `format=json|csv`, an audited download from the same `reporting.Build` dataset and
   filter; GET `/api/jobs` (admin). Both are session class with no step-up window.
   `callerIssuer` is `users.sso_issuer`, empty for a local account.
+- `draft_handlers.go`: policy drafts are built from the form, checked with `Trust.Check`
+  (only `ErrThreshold` may remain) and stored canonical; signed copies must keep the digest
+  and every collected signature, and at quorum go through `trust.Submit`. Also GET
+  `/api/principals` and `/api/trust`.
 - Update `docs/INTERFACES.md` when a route's inputs, outputs, permissions or errors change.
 - POST `/api/auth/change-password` accepts a break-glass session (restricted or not; SSO accounts get 409), current password, a TOTP code (checked after the password) and a different policy-valid new password. Browser CSRF and per-IP/account limits apply. Success revokes all sessions and requires sign-in again; flagged sessions get `password_change_required` on protected routes and public-only settings.
 - `GET|HEAD /livez` and `/readyz` (`health.go`) are unauthenticated, `Cache-Control: no-store`,

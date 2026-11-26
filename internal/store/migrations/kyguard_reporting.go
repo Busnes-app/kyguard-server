@@ -23,5 +23,16 @@ CREATE TABLE attribute_values (
     updated_at {{ts}} NOT NULL,
     UNIQUE (definition_id, entity_id)
 );
-CREATE INDEX idx_attribute_values_entity ON attribute_values(entity_id);`))
+CREATE INDEX idx_attribute_values_entity ON attribute_values(entity_id);`),
+		dialects(301, "kyguard_policy_drafts", `
+CREATE TABLE policy_drafts (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL UNIQUE REFERENCES accounts(id),
+    epoch BIGINT NOT NULL CHECK (epoch > 0),
+    digest TEXT NOT NULL,
+    object TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at {{ts}} NOT NULL,
+    updated_at {{ts}} NOT NULL
+);`))
 }
