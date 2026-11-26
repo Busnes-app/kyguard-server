@@ -252,6 +252,9 @@ func (m *Machine) start(ctx context.Context, a *Account, rc *rotationContext, sp
 			return fmt.Errorf("%w: earlier results not delivered: %w", ErrBlocked, err)
 		}
 	}
+	// A manual_rotation's outcome is queued before its run is replaced, or it is lost (PR
+	// Reviewer Guide "Lost result" on #16).
+	m.results(ctx, a)
 	// The attempt is journaled before the reservation, so a crash or a lost reply can
 	// never leave a Control Plane lock with no local run to settle it.
 	// A manual_rotation burns its request_id with this first durable state (§3.4 step 6).
