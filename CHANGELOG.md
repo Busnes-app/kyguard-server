@@ -155,6 +155,10 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   rotation path until it releases; scheduled rotations wait; `manual_rotation` runs a
   rotation or re-arms a pending cleanup. `cli.NewTransaction`, `Proof` and `OpenDelivery`
   are the CLI's half.
+- Inventory and attributes (spec §8.2, §10): admins add assets and accounts, set an
+  account's owner and status, upload target descriptors (strictly decoded, 1A slice only,
+  bound to this deployment, account and asset) and define account and user attributes
+  (`string` or `enum`); SCIM-sourced attributes are read-only.
 
 ### Upgrade impact
 
@@ -179,6 +183,7 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   new dependency (the broker journal).
 - The module declares `go 1.27.0` (for `crypto/mldsa`); builds need Go 1.27, as the pinned
   `go1.27.4` toolchain already provides.
+- Migration 300 adds `attribute_definitions` and `attribute_values`; no data migrates.
 
 ## Maintaining notes
 

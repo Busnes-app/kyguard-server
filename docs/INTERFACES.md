@@ -570,6 +570,26 @@ holds a mailbox; the broker decides. A delivery is sealed to the requester's key
 The listener is TLS 1.3 only with `X25519MLKEM768` preferred. Startup refuses a broker CA
 whose SHA-256 differs from the one any paired broker pinned.
 
+## Inventory and attributes
+
+Source: [inventory handlers](../internal/api/inventory_handlers.go). Spec §8.2, §10. Writes
+are administrator only, audited in the same transaction, and use cookie CSRF. Every route
+is session class; the writes need a step-up within five minutes (decision 204b).
+
+| Route | Authentication and input | Success |
+|---|---|---|
+| GET `/api/assets` | Administrator | 200 `[{ID, Name, CreatedAt}]` |
+| POST `/api/assets` | Administrator; JSON `{"name"}` (1–128 characters) | 201 asset (UUIDv7 id); audited `inventory.asset_created` |
+| POST `/api/accounts` | Administrator; JSON `{"asset_id","name","account_kind":"managed"\|"vaulted","pool_id"?,"owner_user_id"?}`; unknown fields refused | 201 account, status `active`; 400 for an unknown asset, pool or owner; audited `inventory.account_created` |
+| GET `/api/accounts/{id}` | Administrator | 200 `{account, descriptors, attributes}`; descriptors show connector, identity, host, port, the SSH host-key SHA-256 and the SHA-256 of the pinned CA PEM |
+| PATCH `/api/accounts/{id}` | Administrator; any of `name`, `owner_user_id` (`""` clears), `status` (`active`\|`decommissioned`); asset, kind and pool never change; only the named fields are written | 200 account; audited `inventory.account_updated` |
+| PUT `/api/accounts/{id}/target-descriptor` | Administrator; body is one `TargetDescriptor` (≤64 KiB) for a managed account | 200 `{"digest"}`, stored as canonical JSON; 400 for an out-of-slice descriptor (§3.3) or one naming another deployment, account or asset; 409 when the digest belongs to another account; 413 over 64 KiB; 503 before `import-bundle`; audited `inventory.descriptor_uploaded` |
+| GET `/api/attributes` | Any active session | 200 `{"account":[definition],"user":[definition]}` |
+| POST `/api/attributes` | Administrator; JSON `{"entity":"account"\|"user","key":"^[a-z][a-z0-9_]{0,63}$","label","type":"string"\|"enum","enum_values"?}` (enum: 1–64 distinct values) | 201 definition, `source: "admin"`; 400 for the SCIM user keys `department`, `manager`, `title`; 409 for a used key |
+| PATCH `/api/attributes/{id}` | Administrator; JSON `{"label","enum_values"?}` (omitted keeps the list) | 200; 400 for a SCIM definition; 409 when an enum value still in use would be removed |
+| DELETE `/api/attributes/{id}` | Administrator | 204; the values go with it; 400 for a SCIM definition |
+| PUT `/api/attributes/{id}/values/{entity_id}` | Administrator; JSON `{"value"}` (≤256 printable characters, `""` clears) | 200; 400 for a SCIM attribute, an enum value outside the list or an unknown account or user; audited `attribute.value_set` |
+
 ## Replicas and database migration
 
 [Replication and migration](REPLICAS.md) owns deployment requirements and the cutover runbook.

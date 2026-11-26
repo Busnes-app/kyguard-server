@@ -27,6 +27,7 @@ type Store interface {
 	Guard() GuardStore
 	Vault() VaultStore
 	MFA() MFAStore
+	Inventory() InventoryStore
 	Intents() IntentStore
 
 	// SnapshotToSQLite copies a PostgreSQL database, as of one transaction, into a new SQLite

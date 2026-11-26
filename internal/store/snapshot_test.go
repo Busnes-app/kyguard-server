@@ -74,6 +74,10 @@ func seedEveryTable(t *testing.T, st *SQLStore) {
 	must(v.QueuePush(ctx, &Push{BrokerID: "b1", Type: "enroll", Body: []byte(`{"p":1}`), ExpiresAt: now.Add(time.Hour)}))
 	must(g.AppendManifest(ctx, &TrustManifest{Seq: 2, Type: "policy", ScopeID: "ac1", Epoch: 1, Digest: "pd", Manifest: []byte(`{"p":1}`), TargetDescriptor: "td"}, nil))
 	must(v.MirrorLease(ctx, &Lease{RequestID: "rq1", AccountID: "ac1", BrokerID: "b1", SecretVersion: 1, State: "active", PolicyDigest: "pd", TargetDescriptorDigest: "td", OpenedAt: now, ExpiresAt: now.Add(time.Hour)}))
+	inv := st.Inventory()
+	def, err := inv.EnsureDefinition(ctx, &AttributeDefinition{ID: "ad1", Entity: EntityAccount, Key: "tier", Label: "Tier", Type: AttrEnum, EnumValues: []string{"gold"}, Source: SourceAdmin}, nil)
+	must(err)
+	must(inv.SetValue(ctx, def.ID, "ac1", "gold", SourceAdmin, nil))
 	for _, q := range []string{
 		`INSERT INTO mfa_challenges (token_hash, user_id, expires_at) VALUES ('m1', 'u1', now())`,
 		`INSERT INTO sso_directory_events (provider, subject, last_timestamp) VALUES ('kysignon', 'sub-1', 42)`,

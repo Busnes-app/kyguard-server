@@ -81,6 +81,14 @@ Owns data models, store interfaces (`UserStore`, `SessionStore`, `GroupStore`, `
   wrap, result). Inserting an active lease clears any earlier refusal for that checkout
   in the same transaction. Repeated lease mirrors preserve later mailbox outcomes.
 
+- `Inventory()` (`inventory.go`, migration 300; reporting migrations take versions from 300)
+  holds the account inventory columns (`owner_user_id`, status, asset name, broker-reported
+  minimum age), uploaded descriptors and `attribute_definitions`/`attribute_values`. Each
+  write audits through `auditTx` in its own transaction. `SetValue` refuses a writer whose
+  source differs from the definition's (`ErrInvalid`), an enum value outside the list and
+  an unknown entity; `UpdateDefinition` refuses removing an enum value in use
+  (`ErrConflict`). Both tables are in `migrationTables`; the migration seeds nothing.
+
 ## Verification
 - `go test -v ./internal/store/...`
 
