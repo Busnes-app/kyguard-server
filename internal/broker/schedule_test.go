@@ -274,8 +274,8 @@ func TestTickRechecksAPolicyAcceptedMeanwhile(t *testing.T) {
 func TestTickFinishesAStoppedRun(t *testing.T) {
 	start := time.Now().UTC()
 	r := newRig(t, scheduled(start))
-	w := &wrapCP{ControlPlane: r.cpw, receiptsErr: errors.New("control plane unreachable")}
-	r.cpw = w
+	w := &brokerrig.WrapCP{ControlPlane: r.CPW, ReceiptsErr: errors.New("control plane unreachable")}
+	r.CPW = w
 	m := r.machine()
 	defer m.J.Close()
 	ctx := context.Background()
@@ -284,7 +284,7 @@ func TestTickFinishesAStoppedRun(t *testing.T) {
 	if a := r.account(m); !a.Run.Open() {
 		t.Fatalf("the run did not stop open: %s", a.Run.State)
 	}
-	w.receiptsErr = nil
+	w.ReceiptsErr = nil
 	if err := m.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
