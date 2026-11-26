@@ -15,8 +15,8 @@ Owns HTTP routing, request parsing, session cookie validation, CORS headers, and
   base admin/session middleware and carry `TODO(hawthorn §7.5)` until the route registry and
   step-up land. `BrokerListener` hands `cmd/server` the separate listener (§4.1).
 - Inventory and attribute routes live in `inventory_handlers.go`: admin-only writes, strict
-  JSON (unknown fields refused), audited in the store transaction, `TODO(hawthorn §7.5)`
-  until classified. Descriptor upload decodes with `pqcrypto.DecodeTargetDescriptor` and
+  JSON (unknown fields refused), audited in the store transaction, session class; the
+  writes need a five-minute step-up (decision 204b). Descriptor upload decodes with `pqcrypto.DecodeTargetDescriptor` and
   stores the canonical bytes.
 - `report_handlers.go`: GET `/api/reports/scorecard` (session) serves the dashboard and,
   with `format=json|csv`, an audited download from the same `reporting.Build` dataset and
