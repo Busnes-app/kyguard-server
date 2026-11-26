@@ -90,8 +90,9 @@ type VaultStore interface {
 	// ReserveEnrollment moves the account's lock to op as a reserved enrollment with a new
 	// version, keeping the holder it displaces (a stuck rotation) to restore later. It is
 	// allowed when no lock is held or the account is quarantined (§4.5 step 1); a retry by
-	// op returns the same version.
-	ReserveEnrollment(ctx context.Context, accountID, op string, reported uint64, now time.Time, ttl time.Duration) (uint64, error)
+	// op returns the same version. An op that already ended, or whose transaction (requestID)
+	// is already stored, is refused with ErrConflict.
+	ReserveEnrollment(ctx context.Context, accountID, op, requestID string, now time.Time, ttl time.Duration) (uint64, error)
 	// AcceptEnrollment moves op's reservation from reserved to accepted by compare-and-swap;
 	// ErrConflict if it expired or is not op's. Accepting twice is a no-op.
 	AcceptEnrollment(ctx context.Context, accountID, op string, now time.Time) error
@@ -107,7 +108,7 @@ type VaultStore interface {
 	GetLease(ctx context.Context, requestID string) (*Lease, error)
 	// TxMailbox holds what the broker sent back for a transaction: a challenge, a delivery
 	// wrap, a refusal. SetTxMailbox sets one field; an empty value leaves it, and a new
-	// challenge clears the result.
+	// delivery challenge clears the result.
 	TxMailbox(ctx context.Context, requestID string) (*TxMail, error)
 	SetTxMailbox(ctx context.Context, requestID string, m *TxMail) error
 	// TxAccount is the account a stored transaction names.
@@ -642,7 +643,7 @@ func (v vaultStore) reinstate(ctx context.Context, tx *sql.Tx, accountID string,
 	return err
 }
 
-func (v vaultStore) ReserveEnrollment(ctx context.Context, accountID, op string, reported uint64, now time.Time, ttl time.Duration) (uint64, error) {
+func (v vaultStore) ReserveEnrollment(ctx context.Context, accountID, op, requestID string, now time.Time, ttl time.Duration) (uint64, error) {
 	// Expiry commits on its own: a refusal below must not roll it back.
 	if err := v.s.inTx(ctx, func(tx *sql.Tx) error { return v.expire(ctx, tx, accountID, now) }); err != nil {
 		return 0, err
@@ -666,9 +667,18 @@ func (v vaultStore) ReserveEnrollment(ctx context.Context, accountID, op string,
 			return nil
 		}
 		// A completed enrollment's retry takes no new version or lock (PR Reviewer Guide
-		// "Retry Idempotency" on #15).
+		// "Retry Idempotency" on #15), and neither does one whose transaction was already
+		// submitted: the stored transaction is immutable and names the old version
+		// ("Unusable Retry").
 		if err := v.notEnded(ctx, tx, accountID, op); err != nil {
 			return err
+		}
+		var submitted int
+		if err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT COUNT(1) FROM access_transactions WHERE request_id = ?`), requestID).Scan(&submitted); err != nil {
+			return err
+		}
+		if submitted > 0 {
+			return ErrConflict
 		}
 		quarantined := health == "quarantined" || health == "auth_failed"
 		var kind string
@@ -680,7 +690,7 @@ func (v vaultStore) ReserveEnrollment(ctx context.Context, accountID, op string,
 		if holder != "" && (!quarantined || kind == "enrollment") {
 			return ErrLocked // an open rotation on a healthy account, or another enrollment
 		}
-		version = max(highest, reported) + 1
+		version = highest + 1
 		if _, err := tx.ExecContext(ctx, v.s.rebind(`UPDATE accounts SET highest_secret_version = ? WHERE id = ?`), int64(version), accountID); err != nil {
 			return err
 		}
@@ -940,7 +950,15 @@ func (v vaultStore) MirrorLease(ctx context.Context, l *Lease) error {
 		if err != nil {
 			return ErrConflict // the one-open-lease index, or a race on the same request
 		}
-		return nil
+		if l.State != "active" {
+			return nil
+		}
+		// A newly accepted proof supersedes a refusal before the wrap arrives. Clear
+		// it with the first lease mirror so retries preserve any later outcome.
+		_, err = tx.ExecContext(ctx, v.s.rebind(`UPDATE access_transactions SET result = ''
+ WHERE request_id = ? AND account_id = ? AND action_type = 'vault_checkout'
+ AND delivery = '' AND result NOT IN ('', 'ok')`), l.RequestID, l.AccountID)
+		return err
 	})
 }
 
@@ -966,15 +984,16 @@ func (v vaultStore) TxMailbox(ctx context.Context, requestID string) (*TxMail, e
 	return &m, err
 }
 
-// SetTxMailbox sets the non-empty fields of a request's mailbox. A new challenge clears the
-// earlier result: it supersedes that outcome (PR Reviewer Guide "Stale refusal" on #16).
+// SetTxMailbox sets the non-empty fields of a request's mailbox. A new delivery challenge
+// clears the earlier result, which it supersedes (PR Reviewer Guide "Stale refusal" on
+// #16); a check-in challenge keeps the delivery's (security review of #16).
 func (v vaultStore) SetTxMailbox(ctx context.Context, requestID string, m *TxMail) error {
 	_, err := v.s.db.ExecContext(ctx, v.s.rebind(`UPDATE access_transactions SET
  challenge = CASE WHEN ? <> '' THEN ? ELSE challenge END,
  purpose = CASE WHEN ? <> '' THEN ? ELSE purpose END,
  delivery = CASE WHEN ? <> '' THEN ? ELSE delivery END,
- result = CASE WHEN ? <> '' THEN ? WHEN ? <> '' THEN '' ELSE result END
- WHERE request_id = ?`), m.Challenge, m.Challenge, m.Purpose, m.Purpose, m.Delivery, m.Delivery, m.Result, m.Result, m.Challenge, requestID)
+ result = CASE WHEN ? <> '' THEN ? WHEN ? = 'deliver' THEN '' ELSE result END
+ WHERE request_id = ?`), m.Challenge, m.Challenge, m.Purpose, m.Purpose, m.Delivery, m.Delivery, m.Result, m.Result, m.Purpose, requestID)
 	return err
 }
 

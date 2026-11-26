@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -19,6 +20,10 @@ var (
 	ErrNoChallenge = errors.New("broker: no challenge is outstanding for this request")
 	ErrMinAge      = errors.New("broker: the target's minimum password age has not passed")
 )
+
+// ReasonLeaseExpired is the result of a checkout whose lease expired before its wrap was
+// delivered.
+const ReasonLeaseExpired = "lease_expired"
 
 // CleanupRetry is the pace of a refused lease cleanup (§4.4).
 const CleanupRetry = time.Hour
@@ -60,6 +65,12 @@ func accountOf(raw []byte) (pqcrypto.UUID, error) {
 func (m *Machine) Tx(ctx context.Context, raw []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	err := m.doTx(ctx, raw)
+	m.outcome(ctx, requestIDOf(raw), err)
+	return err
+}
+
+func (m *Machine) doTx(ctx context.Context, raw []byte) error {
 	id, err := accountOf(raw)
 	if err != nil {
 		return err
@@ -106,6 +117,14 @@ func (m *Machine) checkout(ctx context.Context, a *Account, tx *pqcrypto.AccessT
 	if err := blocked(a); err != nil {
 		return err
 	}
+	// A submission can be retried after its challenge has been read. Keep any
+	// in-flight proof valid by resending the journaled challenge.
+	if c := m.J.GetChallenge(tx.RequestID); c != nil && m.now().Before(c.ExpiresAt) {
+		if c.Purpose != pqcrypto.PurposeDeliver || !bytes.Equal(c.Tx, raw) {
+			return pqcrypto.ErrReplay
+		}
+		return m.CP.Challenge(ctx, brokerproto.ChallengeRequest{RequestID: tx.RequestID, Challenge: c.Challenge, Purpose: c.Purpose})
+	}
 	return m.challenge(ctx, a, tx.RequestID, pqcrypto.PurposeDeliver, raw, tx.ExpiresAt.Time)
 }
 
@@ -120,16 +139,27 @@ func (m *Machine) challenge(ctx context.Context, a *Account, id pqcrypto.UUID, p
 	return m.CP.Challenge(ctx, brokerproto.ChallengeRequest{RequestID: id, Challenge: c, Purpose: purpose})
 }
 
-// Checkin issues a check-in challenge to the lease holder.
+// Checkin issues a check-in challenge to the lease holder. Like Proof, it publishes no
+// refusal of its own: anyone with a session can send one, so it must not replace a
+// request's result (security review and PR Reviewer Guide "Overwritten outcome" on #16).
 func (m *Machine) Checkin(ctx context.Context, id pqcrypto.UUID) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.doCheckin(ctx, id)
+}
+
+func (m *Machine) doCheckin(ctx context.Context, id pqcrypto.UUID) error {
 	a, err := m.leaseAccount(id)
 	if err != nil {
 		return err
 	}
 	if a.Lease.State != LeaseActive {
 		return ErrNoChallenge
+	}
+	// An outstanding check-in challenge is sent again, not replaced: a request that proves
+	// nothing must not invalidate the holder's (security review of #16).
+	if c := m.J.GetChallenge(id); c != nil && c.Purpose == pqcrypto.PurposeCheckin && m.now().Before(c.ExpiresAt) {
+		return m.CP.Challenge(ctx, brokerproto.ChallengeRequest{RequestID: id, Challenge: c.Challenge, Purpose: c.Purpose})
 	}
 	return m.challenge(ctx, a, id, pqcrypto.PurposeCheckin, a.Lease.Tx, m.now().Add(pqcrypto.MaxTxLifetime))
 }
@@ -168,6 +198,10 @@ func (m *Machine) leaseAccount(id pqcrypto.UUID) (*Account, error) {
 func (m *Machine) Proof(ctx context.Context, id pqcrypto.UUID, raw []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.doProof(ctx, id, raw)
+}
+
+func (m *Machine) doProof(ctx context.Context, id pqcrypto.UUID, raw []byte) error {
 	c := m.J.GetChallenge(id)
 	if c == nil || !m.now().Before(c.ExpiresAt) {
 		return ErrNoChallenge
@@ -185,24 +219,44 @@ func (m *Machine) Proof(ctx context.Context, id pqcrypto.UUID, raw []byte) error
 	return ErrNoChallenge
 }
 
-// deliver opens the lease, then verifies the credential once at the pinned target and wraps
-// the DEK to the requester's enc_key_id (§3.6 steps 3–4).
-func (m *Machine) deliver(ctx context.Context, a *Account, c *Challenge, raw []byte) error {
-	// Re-check expiry, the current policy and envelope, then the proof.
-	tx, d, chain, err := m.verifyTx(a, c.Tx)
-	if err != nil {
-		return err
-	}
-	if _, err := pqcrypto.VerifyPoP(raw, tx, d, c.Challenge, pqcrypto.PurposeDeliver); err != nil {
-		return err
-	}
+// deliverable checks that a proven checkout may open its lease now.
+func (m *Machine) deliverable(ctx context.Context, a *Account, chain *pqcrypto.Chain) error {
 	if err := m.unflushed(ctx, a); err != nil {
 		return err
 	}
 	if err := blocked(a); err != nil {
 		return err
 	}
-	if err := m.sealedForTarget(ctx, a, chain); err != nil {
+	return m.sealedForTarget(ctx, a, chain)
+}
+
+// deliver opens the lease, then verifies the credential once at the pinned target and wraps
+// the DEK to the requester's enc_key_id (§3.6 steps 3–4).
+func (m *Machine) deliver(ctx context.Context, a *Account, c *Challenge, raw []byte) error {
+	// Re-check expiry, the current policy and envelope, then the proof.
+	tx, d, chain, err := m.verifyTx(a, c.Tx)
+	if err != nil {
+		// A requester who proves possession learns its transaction went stale; any other
+		// proof publishes nothing (PR Reviewer Guide "Missing outcome" on #16).
+		var old pqcrypto.AccessTransaction
+		if _, derr := canonical.Decode(c.Tx, &old); derr == nil {
+			if od, derr := pqcrypto.ObjDigest(&old); derr == nil {
+				if _, perr := pqcrypto.VerifyPoP(raw, &old, od, c.Challenge, pqcrypto.PurposeDeliver); perr == nil {
+					m.outcome(ctx, old.RequestID, err)
+				}
+			}
+		}
+		return err
+	}
+	if _, err := pqcrypto.VerifyPoP(raw, tx, d, c.Challenge, pqcrypto.PurposeDeliver); err != nil {
+		return err // unauthenticated: published nowhere, the request's result stands
+	}
+	// The requester proved possession: its outcome from here on is published, and an
+	// accepted proof drops a refusal still queued from an earlier try (PR Reviewer Guide
+	// "Stale refusal" on #16).
+	err = m.deliverable(ctx, a, chain)
+	m.outcome(ctx, tx.RequestID, err)
+	if err != nil {
 		return err
 	}
 	now := m.now()
@@ -270,6 +324,35 @@ func (m *Machine) deliver(ctx context.Context, a *Account, c *Challenge, raw []b
 func (m *Machine) Refused(ctx context.Context, id pqcrypto.UUID, code string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.refuse(ctx, id, code)
+}
+
+// outcome records how a relayed message for id ended, with m.mu still held from its
+// processing, so outcomes reach the mailbox in the order they happened: an older refusal
+// never overwrites a newer success (PR Reviewer Guide "Stale refusal" on #16).
+func (m *Machine) outcome(ctx context.Context, id pqcrypto.UUID, err error) {
+	if !id.Valid() {
+		return
+	}
+	code := ""
+	if errors.Is(err, pqcrypto.ErrReplay) {
+		// A duplicate of a request already taken: its earlier outcome stands (PR Reviewer
+		// Guide "Overwritten success" on #16).
+		log.Printf("[BROKER] request %s replayed: %v", id, err)
+		return
+	}
+	if err != nil {
+		log.Printf("[BROKER] request %s refused: %v", id, err)
+		code = err.Error()
+		var perr pqcrypto.Error
+		if errors.As(err, &perr) {
+			code = string(perr)
+		}
+	}
+	m.refuse(ctx, id, code) // an accepted message supersedes an earlier refusal
+}
+
+func (m *Machine) refuse(ctx context.Context, id pqcrypto.UUID, code string) {
 	if code == "" {
 		if err := m.J.DeleteRefusal(id); err != nil {
 			log.Printf("[BROKER] refusal of %s not dropped: %v", id, err)
@@ -283,6 +366,15 @@ func (m *Machine) Refused(ctx context.Context, id pqcrypto.UUID, code string) {
 		}
 	}
 	m.refusals(ctx)
+}
+
+// requestIDOf is a relayed transaction's request_id, or "" when it has none.
+func requestIDOf(raw []byte) pqcrypto.UUID {
+	var tx struct {
+		RequestID pqcrypto.UUID `json:"request_id"`
+	}
+	json.Unmarshal(raw, &tx)
+	return tx.RequestID
 }
 
 // refusals sends the journaled refusals. One the Control Plane rejects is dropped: it would
@@ -315,15 +407,36 @@ func (m *Machine) deliverWrap(ctx context.Context, a *Account) error {
 	if l == nil || l.Delivery == nil {
 		return nil
 	}
-	if l.State != LeaseActive {
-		l.Delivery = nil // checked in or expired: the wrap is of no use any more
-		return m.J.Save(a)
+	// The broker's clock decides, before every delivery: an expired lease never releases its
+	// wrap (security review of #16).
+	if l.State != LeaseActive || !m.now().Before(l.ExpiresAt) {
+		return m.expireLease(ctx, a)
 	}
 	if err := m.CP.Delivery(ctx, brokerproto.DeliveryRequest{RequestID: l.RequestID, Wrap: *l.Delivery}); err != nil {
 		return err
 	}
 	l.Delivery = nil
 	return m.J.Save(a)
+}
+
+// expireLease moves an expired active lease to rotation_pending; then its cleanup is the only
+// rotation path (§3.6 step 5). A wrap still undelivered is dropped and lease_expired queued in
+// the same save, before any later lease can replace this one (security review of #16).
+func (m *Machine) expireLease(ctx context.Context, a *Account) error {
+	l := a.Lease
+	if l.State == LeaseActive {
+		l.State, l.NextAttemptAt, l.Mirrored = LeaseRotationPending, m.now(), false
+	}
+	if l.Delivery != nil {
+		l.Delivery = nil
+		a.Results = append(a.Results, TxResult{RequestID: l.RequestID, Result: ReasonLeaseExpired})
+	}
+	if err := m.J.Save(a); err != nil {
+		return err
+	}
+	_ = m.mirror(ctx, a)
+	m.results(ctx, a)
+	return nil
 }
 
 // flush re-sends what the Control Plane has not acknowledged for the account's lease: its
@@ -400,10 +513,16 @@ func (m *Machine) checkinProof(ctx context.Context, a *Account, c *Challenge, ra
 		return err
 	}
 	a.Lease.State, a.Lease.NextAttemptAt, a.Lease.Mirrored, a.Lease.Delivery = LeaseRotationPending, m.now(), false, nil
+	// "ok" replaces an earlier refusal the mailbox may hold, and one still queued is dropped
+	// (PR Reviewer Guide "Stale refusal" on #16); "ok" is journaled with the state and
+	// re-sent until acknowledged.
+	m.outcome(ctx, a.Lease.RequestID, nil)
+	a.Results = append(a.Results, TxResult{RequestID: a.Lease.RequestID, Result: "ok"})
 	if err := m.J.SaveConsume(a, a.Lease.RequestID, time.Time{}); err != nil {
 		return err
 	}
 	_ = m.mirror(ctx, a)
+	m.results(ctx, a)
 	return nil
 }
 

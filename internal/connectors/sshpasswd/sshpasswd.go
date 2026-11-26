@@ -46,6 +46,17 @@ func (c *Connector) timeout() time.Duration {
 	return 30 * time.Second
 }
 
+// keyExchanges is the explicit key exchange list: the hybrid ML-KEM first, then classical
+// ECDH. The library default also offers diffie-hellman-group14-sha1, which is refused here.
+var keyExchanges = []string{
+	ssh.KeyExchangeMLKEM768X25519,
+	ssh.KeyExchangeCurve25519,
+	"curve25519-sha256@libssh.org", // x/crypto keeps this alias's constant unexported
+	ssh.KeyExchangeECDHP256,
+	ssh.KeyExchangeECDHP384,
+	ssh.KeyExchangeECDHP521,
+}
+
 // hostKey pins the SHA-256 of the wire-format host key.
 func hostKey(pinned string) ssh.HostKeyCallback {
 	return func(_ string, _ net.Addr, key ssh.PublicKey) error {
@@ -76,6 +87,7 @@ func (c *Connector) dial(ctx context.Context, d *pqcrypto.TargetDescriptor, pass
 		return nil
 	}
 	cfg := &ssh.ClientConfig{
+		Config:          ssh.Config{KeyExchanges: keyExchanges},
 		User:            d.AuthenticatedTargetIdentity,
 		HostKeyCallback: hostKey(d.Endpoint.SSHHostKeySHA256),
 		Auth: []ssh.AuthMethod{

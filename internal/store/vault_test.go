@@ -120,17 +120,17 @@ func TestEnrollmentReservation(t *testing.T) {
 	if _, err := v.Reserve(ctx, acct, "rot", 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := v.ReserveEnrollment(ctx, acct, "enr", 0, now, 15*time.Minute); !errors.Is(err, ErrLocked) {
+	if _, err := v.ReserveEnrollment(ctx, acct, "enr", "", now, 15*time.Minute); !errors.Is(err, ErrLocked) {
 		t.Fatalf("healthy account with an open rotation: %v", err)
 	}
 	if err := v.SetHealth(ctx, acct, "quarantined", ""); err != nil {
 		t.Fatal(err)
 	}
-	ver, err := v.ReserveEnrollment(ctx, acct, "enr", 0, now.Add(-16*time.Minute), 15*time.Minute)
+	ver, err := v.ReserveEnrollment(ctx, acct, "enr", "", now.Add(-16*time.Minute), 15*time.Minute)
 	if err != nil || ver != 2 {
 		t.Fatalf("quarantined: %v %v", ver, err)
 	}
-	if _, err := v.ReserveEnrollment(ctx, acct, "enr2", 0, now.Add(-16*time.Minute), 15*time.Minute); !errors.Is(err, ErrLocked) {
+	if _, err := v.ReserveEnrollment(ctx, acct, "enr2", "", now.Add(-16*time.Minute), 15*time.Minute); !errors.Is(err, ErrLocked) {
 		t.Fatalf("a second enrollment: %v", err)
 	}
 	if err := v.AcceptEnrollment(ctx, acct, "enr", now); !errors.Is(err, ErrConflict) {
@@ -140,7 +140,7 @@ func TestEnrollmentReservation(t *testing.T) {
 		t.Fatalf("lock after expiry %q, want the stuck rotation", op)
 	}
 	// Accepted reservations never expire.
-	if _, err := v.ReserveEnrollment(ctx, acct, "enr3", 0, now, time.Minute); err != nil {
+	if _, err := v.ReserveEnrollment(ctx, acct, "enr3", "", now, time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	if err := v.AcceptEnrollment(ctx, acct, "enr3", now); err != nil {
@@ -230,7 +230,7 @@ func enrollingAccount(t *testing.T, v VaultStore, acct string) time.Time {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	if _, err := v.ReserveEnrollment(ctx, acct, "enr", 0, now, time.Minute); err != nil {
+	if _, err := v.ReserveEnrollment(ctx, acct, "enr", "", now, time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	return now.Add(time.Minute)
@@ -608,6 +608,13 @@ func TestANewChallengeClearsTheEarlierResult(t *testing.T) {
 	if mb, _ := v.TxMailbox(ctx, "req"); mb.Result != "ok" || mb.Challenge != "c2" {
 		t.Fatalf("after delivery %+v", mb)
 	}
+	// A check-in challenge keeps the delivery's result (security review of #16).
+	if err := v.SetTxMailbox(ctx, "req", &TxMail{Challenge: "c3", Purpose: "checkin"}); err != nil {
+		t.Fatal(err)
+	}
+	if mb, _ := v.TxMailbox(ctx, "req"); mb.Result != "ok" || mb.Challenge != "c3" {
+		t.Fatalf("after a check-in challenge %+v", mb)
+	}
 }
 
 // A retry of a completed enrollment's reservation takes no new version and no lock (PR
@@ -616,7 +623,7 @@ func TestACompletedEnrollmentIsNotReservedAgain(t *testing.T) {
 	v, acct := vaultAccount(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
-	ver, err := v.ReserveEnrollment(ctx, acct, "enr", 0, now, 15*time.Minute)
+	ver, err := v.ReserveEnrollment(ctx, acct, "enr", "", now, 15*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -630,7 +637,7 @@ func TestACompletedEnrollmentIsNotReservedAgain(t *testing.T) {
 	if err := v.Complete(ctx, "enr", acct, rs, "e1", "", LockDelete); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := v.ReserveEnrollment(ctx, acct, "enr", 0, now, 15*time.Minute); !errors.Is(err, ErrConflict) {
+	if _, err := v.ReserveEnrollment(ctx, acct, "enr", "", now, 15*time.Minute); !errors.Is(err, ErrConflict) {
 		t.Fatalf("retry of a completed enrollment: %v", err)
 	}
 	if op, _, _ := v.Lock(ctx, acct); op != "" {
@@ -638,5 +645,29 @@ func TestACompletedEnrollmentIsNotReservedAgain(t *testing.T) {
 	}
 	if a, _ := v.GetAccount(ctx, acct); a.HighestSecretVersion != ver {
 		t.Fatalf("highest version %d, want %d", a.HighestSecretVersion, ver)
+	}
+}
+
+// A reservation whose transaction was submitted and which then expired is not reserved
+// again under the same request: the stored transaction names the old version (PR Reviewer
+// Guide "Unusable Retry" on #15).
+func TestASubmittedEnrollmentIsNotReservedAgainAfterExpiry(t *testing.T) {
+	v, acct := vaultAccount(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if _, err := v.ReserveEnrollment(ctx, acct, "enr", "req", now.Add(-16*time.Minute), 15*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.PutTx(ctx, "req", acct, "enroll", "d-req", []byte("tx")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.ReserveEnrollment(ctx, acct, "enr", "req", now, 15*time.Minute); !errors.Is(err, ErrConflict) {
+		t.Fatalf("retry after expiry: %v", err)
+	}
+	if op, _, _ := v.Lock(ctx, acct); op != "" {
+		t.Fatalf("lock %q after the refused retry", op)
+	}
+	if _, err := v.ReserveEnrollment(ctx, acct, "enr2", "req2", now, 15*time.Minute); err != nil {
+		t.Fatalf("a new enrollment: %v", err)
 	}
 }

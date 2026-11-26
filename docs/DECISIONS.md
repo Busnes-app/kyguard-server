@@ -1,6 +1,8 @@
 # Build decisions
 
-Readings of `docs/SPEC.md` taken during the Phase 0/1A build where the spec is silent or
+[Overview](../README.md) · [Design specification](SPEC.md)
+
+Readings of [docs/SPEC.md](SPEC.md) taken during the Phase 0/1A build where the spec is silent or
 contradicts itself. Each names its section. The most secure reading wins.
 
 1. §13 Phase 0, §7.4 (bootstrap removal order). `ensureBootstrapAdmin` and `init-admin` are
@@ -137,6 +139,10 @@ contradicts itself. Each names its section. The most secure reading wins.
    Redemption deletes the code and inserts the session in one transaction, so the code row
    orders the two: a code redeemed first loses its session to the reset, and a code the reset
    reached first redeems nothing.
+19h. §7.3 rule 6 (web re-step-up). `secureFetch` turns a 403 `stepup_stale` into a code prompt
+   (the shell's `ReStepUp` dialog posts it to `/api/auth/stepup/totp`). On success it sends the
+   original request once more; on cancel the caller gets the 403 as before. Every other 403 goes
+   straight to the caller.
 
 ## Crypto wire format and contracts (§3)
 
@@ -450,7 +456,34 @@ Numbered separately: these came from the parallel crypto stack.
     The bucket holds at most 1,024 refusals, so a Control Plane that pushes junk while
     withholding acknowledgements cannot grow the journal; past that a refusal is sent once.
     A checkout wrap whose delivery fails is pending, not refused: the lease stays active
-    and the journaled wrap is re-sent.
+    and the journaled wrap is re-sent. Only an outcome the requester authenticated reaches
+    the mailbox: a transaction's own refusal (a replay keeps the earlier result) or one after
+    its possession proof verified. A check-in request or a proof that does not verify
+    publishes nothing, because any session can send one. A repeated check-in request re-sends
+    the outstanding challenge. An identical checkout submission re-sends its unexpired
+    delivery challenge. A delivery challenge supersedes an earlier result. When a verified
+    proof opens a lease, the first active mirror clears an earlier refusal
+    atomically so the mailbox shows a pending checkout until delivery. Repeated mirrors
+    preserve later outcomes. Every delivery checks the lease's expiry on the broker's
+    clock first. An expired lease never releases its wrap and queues `lease_expired` in the same
+    save. Expired challenges are pruned on every tick.
+
+## Post-quantum key exchange (PQC plan W0, owner-approved 2026-11-25)
+
+80. §4.4, §11 (SSH key exchange). The `ssh_passwd` connector sets `KeyExchanges` explicitly to
+    `mlkem768x25519-sha256`, `curve25519-sha256`, `curve25519-sha256@libssh.org` and
+    `ecdh-sha2-nistp256/384/521`, in that order. The x/crypto default also offers
+    `diffie-hellman-group14-sha1` and `diffie-hellman-group14-sha256`; a target offering only
+    those is refused before any credential is sent. Under `fips140=on` x/crypto registers no
+    curve25519 exchange, so the list narrows to the hybrid and NIST ECDH.
+81. §4.1, §11 (broker TLS groups). Both ends of the broker channel are KyGuard on Go 1.27, so
+    the listener and the broker client offer and accept only `X25519MLKEM768` (PQC plan Q9).
+    A peer offering only classical X25519 fails the handshake. The pinned-CA check is unchanged.
+    This departs from the literal `CurvePreferences` in §4.1 by the owner's approval; SPEC.md is
+    left as signed.
+
+## Reporting and inventory (§8, §10)
+
 200. §8.2 (who writes attributes). An attribute definition has one source. The store refuses
     an admin write to a `scim` definition and a SCIM write to an `admin` one, so SCIM-synced
     values are read-only in the UI and API. The user keys `department`, `manager` and

@@ -151,6 +151,42 @@ func TestCheckoutDeliversAWrapOnlyTheRequesterOpens(t *testing.T) {
 	}
 }
 
+func TestCheckoutRetryResendsTheOutstandingChallenge(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	co := c.checkoutTx(600)
+	if err := c.m.Tx(ctx, co.Tx); err != nil {
+		t.Fatal(err)
+	}
+	challenge := c.challenge(co.RequestID)
+	proof, err := co.Proof(challenge, pqcrypto.PurposeDeliver)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The mailbox has a published refusal from a previous try. Resending the
+	// challenge clears it and leaves the proof already in flight valid.
+	c.m.Refused(ctx, co.RequestID, broker.ErrLeaseOpen.Error())
+	if _, result := c.delivery(co.RequestID); result != broker.ErrLeaseOpen.Error() {
+		t.Fatalf("expected an earlier refusal, got %q", result)
+	}
+	if err := c.m.Tx(ctx, co.Tx); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(c.challenge(co.RequestID), challenge) {
+		t.Fatal("checkout retry replaced the original challenge")
+	}
+	if _, result := c.delivery(co.RequestID); result != "" {
+		t.Fatalf("challenge was not resent, mailbox result %q", result)
+	}
+	if err := c.m.Proof(ctx, co.RequestID, proof); err != nil {
+		t.Fatalf("original proof after checkout retry: %v", err)
+	}
+	if wrap, result := c.delivery(co.RequestID); wrap == nil || result != "ok" {
+		t.Fatalf("delivered=%v result=%q", wrap != nil, result)
+	}
+}
+
 // §13 1A acceptance test 10: a possession proof over another transaction's digest opens no
 // lease and burns nothing.
 func TestProofOverAnotherTransactionOpensNothing(t *testing.T) {
@@ -208,8 +244,9 @@ func TestLeaseBlocksSecondCheckoutAndDefersTheSchedule(t *testing.T) {
 	}
 }
 
-// §13 1A acceptance test 10: check-in with a different key is refused; with the same key it
-// triggers the cleanup rotation, which closes the lease.
+// §13 1A acceptance test 10: check-in with a different key is refused, publishing nothing;
+// with the same key it publishes "ok" and triggers the cleanup rotation, which closes the
+// lease.
 func TestCheckinTriggersTheCleanupRotation(t *testing.T) {
 	c := newCheckoutRig(t)
 	ctx := context.Background()
@@ -224,9 +261,24 @@ func TestCheckinTriggersTheCleanupRotation(t *testing.T) {
 	if err := c.m.Proof(ctx, co.RequestID, bad); err == nil {
 		t.Fatal("check-in with another key accepted")
 	}
+	// A proof that does not verify publishes nothing, and a repeated check-in request keeps
+	// the outstanding challenge and the delivery's result (security review of #16).
+	if err := c.m.Checkin(ctx, co.RequestID); err != nil {
+		t.Fatal(err)
+	}
+	if again := c.challenge(co.RequestID); string(again) != string(ch) {
+		t.Fatal("a repeated check-in request replaced the outstanding challenge")
+	}
+	if _, res := c.delivery(co.RequestID); res != "ok" {
+		t.Fatalf("result after the refused check-in %q", res)
+	}
 	good, _ := co.Proof(ch, pqcrypto.PurposeCheckin)
 	if err := c.m.Proof(ctx, co.RequestID, good); err != nil {
 		t.Fatal(err)
+	}
+	// The accepted check-in replaces the earlier refusal (PR Reviewer Guide "Stale refusal").
+	if _, res := c.delivery(co.RequestID); res != "ok" {
+		t.Fatalf("result after the accepted check-in %q", res)
 	}
 	if l := c.account(c.m).Lease; l.State != broker.LeaseRotationPending {
 		t.Fatalf("lease %s", l.State)
@@ -365,14 +417,29 @@ func TestCheckoutAcrossADescriptorChangeIsRefused(t *testing.T) {
 	if err := c.m.Tx(ctx, early.Tx); err != nil {
 		t.Fatal(err)
 	}
-	pop, _ := early.Proof(c.challenge(early.RequestID), pqcrypto.PurposeDeliver)
+	ch := c.challenge(early.RequestID)
+	pop, _ := early.Proof(ch, pqcrypto.PurposeDeliver)
 	moveTarget(t, c.rig)
 	if err := c.m.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// A transaction signed under the old policy is stale now.
+	// A transaction signed under the old policy is stale now. A proof by anyone else
+	// publishes nothing; the requester's own proof publishes the refusal (PR Reviewer Guide
+	// "Missing outcome" on #16).
+	stranger := *early
+	stranger.Cnf, _ = pqcrypto.GenerateSigningKey()
+	forged, _ := stranger.Proof(ch, pqcrypto.PurposeDeliver)
+	if err := c.m.Proof(ctx, early.RequestID, forged); err == nil {
+		t.Fatal("a forged proof accepted")
+	}
+	if _, res := c.delivery(early.RequestID); res != "" {
+		t.Fatalf("result after a forged proof %q", res)
+	}
 	if err := c.m.Proof(ctx, early.RequestID, pop); !errors.Is(err, pqcrypto.ErrStale) {
 		t.Fatalf("proof after the change: %v", err)
+	}
+	if _, res := c.delivery(early.RequestID); res != string(pqcrypto.ErrStale) {
+		t.Fatalf("result after the stale proof %q", res)
 	}
 	late := c.tx(c.alice, pqcrypto.Action{ActionType: pqcrypto.ActionVaultCheckout, SecretVersion: c.account(c.m).HighestCopied(),
 		EncKeyID: pqcrypto.HexID(c.alice.Enc.Public().ID()), CheckoutTTLSeconds: 600})
@@ -498,8 +565,8 @@ func TestLeaseUnderAReplacedPolicyDeliversNothing(t *testing.T) {
 }
 
 // Guide on #16 (lost delivery): a delivery the Control Plane did not acknowledge is
-// journaled and re-sent by the next tick, without a second login. Until then it is pending,
-// not refused: the proof succeeds and no result is published ("Premature refusal").
+// journaled and re-sent by the next tick, without a second login. The mailbox shows the
+// accepted checkout as pending even if a previous proof left a refusal there.
 func TestLostDeliveryIsResent(t *testing.T) {
 	c := newCheckoutRig(t)
 	ctx := context.Background()
@@ -508,6 +575,10 @@ func TestLostDeliveryIsResent(t *testing.T) {
 	co := c.checkoutTx(600)
 	if err := c.m.Tx(ctx, co.Tx); err != nil {
 		t.Fatal(err)
+	}
+	c.m.Refused(ctx, co.RequestID, broker.ErrLeaseOpen.Error())
+	if _, result := c.delivery(co.RequestID); result != broker.ErrLeaseOpen.Error() {
+		t.Fatalf("expected an earlier published refusal, got %q", result)
 	}
 	pop, _ := co.Proof(c.challenge(co.RequestID), pqcrypto.PurposeDeliver)
 	if err := c.m.Proof(ctx, co.RequestID, pop); err != nil {
@@ -521,8 +592,19 @@ func TestLostDeliveryIsResent(t *testing.T) {
 	if err := c.m.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if d, _ := c.delivery(co.RequestID); d == nil || c.account(c.m).Lease.Delivery != nil || len(c.target.hosts) != logins {
-		t.Fatalf("delivered=%v hosts=%v", d != nil, c.target.hosts)
+	if d, result := c.delivery(co.RequestID); d == nil || result != "ok" || c.account(c.m).Lease.Delivery != nil || len(c.target.hosts) != logins {
+		t.Fatalf("delivered=%v result=%q hosts=%v", d != nil, result, c.target.hosts)
+	}
+	vault := c.cp.Store.Vault()
+	lease, err := vault.GetLease(ctx, string(co.RequestID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := vault.MirrorLease(ctx, lease); err != nil {
+		t.Fatal(err)
+	}
+	if d, result := c.delivery(co.RequestID); d == nil || result != "ok" {
+		t.Fatalf("mirror retry replaced delivery: delivered=%v result=%q", d != nil, result)
 	}
 }
 
@@ -760,5 +842,158 @@ func TestRecoveredManualRotationKeepsItsResult(t *testing.T) {
 	}
 	if _, res := c.delivery(mr.RequestID); res != broker.StateAborted {
 		t.Fatalf("manual_rotation result %q", res)
+	}
+}
+
+// A duplicate of a completed manual_rotation is refused as a replay without replacing the
+// "ok" its requester already has (PR Reviewer Guide "Overwritten success" on #16).
+func TestAReplayKeepsTheEarlierOutcome(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	mr := c.tx(c.alice, pqcrypto.Action{ActionType: pqcrypto.ActionManualRotation})
+	if err := c.m.Tx(ctx, mr.Tx); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.m.Tx(ctx, mr.Tx); !errors.Is(err, pqcrypto.ErrReplay) {
+		t.Fatalf("duplicate: %v", err)
+	}
+	if _, res := c.delivery(mr.RequestID); res != "ok" {
+		t.Fatalf("result after the replay %q", res)
+	}
+}
+
+// A lease that expires with its wrap still undelivered never releases it, whether a tick or
+// recovery finds it first, and tells the requester so in the same save that ends the lease;
+// a later checkout cannot lose that outcome (PR Reviewer Guide "Missing outcome" and
+// security review of #16).
+func TestAnUndeliveredWrapThatExpiresIsReported(t *testing.T) {
+	for _, path := range []string{"tick", "recover"} {
+		t.Run(path, func(t *testing.T) {
+			c := newCheckoutRig(t)
+			ctx := context.Background()
+			w := c.wrapCP()
+			w.DeliveryErr = errors.New("connection lost")
+			co := c.checkoutTx(60)
+			if err := c.m.Tx(ctx, co.Tx); err != nil {
+				t.Fatal(err)
+			}
+			pop, _ := co.Proof(c.challenge(co.RequestID), pqcrypto.PurposeDeliver)
+			if err := c.m.Proof(ctx, co.RequestID, pop); err != nil {
+				t.Fatal(err)
+			}
+			w.DeliveryErr = nil // the Control Plane is back, but the lease has expired
+			c.now = c.now.Add(time.Hour)
+			if path == "tick" {
+				c.m.Tick(ctx)
+			} else {
+				c.m.Recover(ctx)
+			}
+			if d, res := c.delivery(co.RequestID); d != nil || res != broker.ReasonLeaseExpired || c.account(c.m).Lease.Delivery != nil {
+				t.Fatalf("delivered=%v result=%q", d != nil, res)
+			}
+			c.m.Tick(ctx) // the cleanup rotation closes the expired lease
+			c.open(60)    // another checkout replaces it
+			c.m.Tick(ctx)
+			if _, res := c.delivery(co.RequestID); res != broker.ReasonLeaseExpired {
+				t.Fatalf("result after the next checkout %q", res)
+			}
+		})
+	}
+}
+
+// Continuations that do not prove possession publish nothing: a duplicate proof after the
+// delivery, a check-in or proof for another request's ID, keep the results they find (PR
+// Reviewer Guide "Overwritten outcome" and security review of #16).
+func TestRejectedContinuationsKeepTheResult(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	mr := c.tx(c.alice, pqcrypto.Action{ActionType: pqcrypto.ActionManualRotation})
+	if err := c.m.Tx(ctx, mr.Tx); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.m.Proof(ctx, mr.RequestID, []byte("{}")); err == nil {
+		t.Fatal("a proof for a manual_rotation accepted")
+	}
+	if err := c.m.Checkin(ctx, mr.RequestID); err == nil {
+		t.Fatal("a check-in for a manual_rotation accepted")
+	}
+	if _, res := c.delivery(mr.RequestID); res != "ok" {
+		t.Fatalf("manual_rotation result %q", res)
+	}
+	co := c.checkoutTx(600)
+	if err := c.m.Tx(ctx, co.Tx); err != nil {
+		t.Fatal(err)
+	}
+	pop, _ := co.Proof(c.challenge(co.RequestID), pqcrypto.PurposeDeliver)
+	if err := c.m.Proof(ctx, co.RequestID, pop); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.m.Proof(ctx, co.RequestID, pop); err == nil { // a retry after a lost response
+		t.Fatal("a duplicate proof accepted")
+	}
+	if d, res := c.delivery(co.RequestID); d == nil || res != "ok" {
+		t.Fatalf("checkout after the duplicate proof: delivered=%v result=%q", d != nil, res)
+	}
+}
+
+// An abandoned request's challenge is pruned once it expires (PR Reviewer Guide "Unpruned
+// challenges" on #16).
+func TestExpiredChallengesArePruned(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	co := c.checkoutTx(600)
+	if err := c.m.Tx(ctx, co.Tx); err != nil {
+		t.Fatal(err)
+	}
+	if c.m.J.GetChallenge(co.RequestID) == nil {
+		t.Fatal("no challenge journaled")
+	}
+	c.m.Tick(ctx)
+	if c.m.J.GetChallenge(co.RequestID) == nil {
+		t.Fatal("a live challenge was pruned")
+	}
+	c.now = c.now.Add(pqcrypto.MaxTxLifetime + time.Minute)
+	c.m.Tick(ctx)
+	if c.m.J.GetChallenge(co.RequestID) != nil {
+		t.Fatal("the expired challenge is still journaled")
+	}
+}
+
+// A proof refused while another lease's closure is unmirrored, whose refusal could not be
+// sent, then accepted on retry once the Control Plane is back: the queued refusal is
+// dropped and never overwrites the "ok" (PR Reviewer Guide "Stale refusal" on #16).
+func TestAnAcceptedProofDropsAQueuedRefusal(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	b, a := c.checkoutTx(600), c.checkoutTx(600)
+	for _, co := range []*cli.Checkout{b, a} {
+		if err := c.m.Tx(ctx, co.Tx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bpop, _ := b.Proof(c.challenge(b.RequestID), pqcrypto.PurposeDeliver)
+	apop, _ := a.Proof(c.challenge(a.RequestID), pqcrypto.PurposeDeliver)
+	w := c.wrapCP()
+	w.LeaseErr = errors.New("connection lost")
+	f := &failResults{ControlPlane: w, n: 1 << 20}
+	c.m.CP = f
+	c.m.Proof(ctx, a.RequestID, apop) // closed not_mirrored, and the closure stays unmirrored
+	if l := c.account(c.m).Lease; l.State != broker.LeaseClosed || l.Mirrored {
+		t.Fatalf("first lease %+v", l)
+	}
+	if err := c.m.Proof(ctx, b.RequestID, bpop); !errors.Is(err, broker.ErrLeaseOpen) {
+		t.Fatalf("proof over the unmirrored closure: %v", err)
+	}
+	if rs, _ := c.m.J.Refusals(); len(rs) != 1 {
+		t.Fatalf("%d refusals queued", len(rs))
+	}
+	w.LeaseErr = nil
+	if err := c.m.Proof(ctx, b.RequestID, bpop); err != nil {
+		t.Fatal(err)
+	}
+	f.n = 0
+	c.m.Tick(ctx)
+	if d, res := c.delivery(b.RequestID); d == nil || res != "ok" {
+		t.Fatalf("after the retry: delivered=%v result=%q", d != nil, res)
 	}
 }

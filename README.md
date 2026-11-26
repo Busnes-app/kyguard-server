@@ -12,23 +12,39 @@ SCIM provisioning, and disaster recovery through the suite's KyRecovery.
 The design is [docs/SPEC.md](docs/SPEC.md) (v2.4). Only its Phase 0 and Phase 1A sections are
 being built; until they land, much of what the spec describes does not exist yet.
 
-Published image (Docker Compose 2.24.0 or later):
+## Quick start
+
+### Published image (Docker Compose 2.24.0 or later)
 
 ```bash
-make ci        # gofmt, vet, race tests, smoke test
-make run       # build and start on :8080 (no account exists; see First sign-in)
 docker compose up -d
 ```
 
-Source install (never paste this into a published-image install: the build overlay wins over a
-`KY_IMAGE` digest pin, and a source install must set this line before its first `up -d` on a
-new checkout; an install from before the published image existed has no such line yet, so run
-this block once and confirm with `docker compose config --images`, which must print
-`kyguard-server:local` rather than the `ghcr.io` name):
+Update a published-image install on the rolling tag:
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+A digest-pinned install (`KY_IMAGE` in `.env`) gets nothing from `pull`: re-run the pin recipe in
+`docker-compose.yml` with the commit sha you want first, or delete that line to follow `:latest` again.
+
+### Local development
 
 ```bash
 make ci        # gofmt, vet, race tests, smoke test
 make run       # build and start on :8080 (no account exists; see First sign-in)
+```
+
+### Source install
+
+Never paste this into a published-image install: the build overlay wins over a `KY_IMAGE` digest
+pin, and a source install must set this line before its first `up -d` on a new checkout. An install
+from before the published image existed has no such line yet, so run this block once and confirm
+with `docker compose config --images`, which must print `kyguard-server:local` rather than the
+`ghcr.io` name:
+
+```bash
 (umask 077; t=$(mktemp ./.env.XXXXXX) && touch .env \
   && cf=$({ grep '^COMPOSE_FILE=' .env || [ $? -eq 1 ]; } | tail -n1 | cut -d= -f2-) && cf=${cf:-docker-compose.yml} \
   && case ":$cf:" in *:docker-compose.build.yml:*) ;; *) cf="$cf:docker-compose.build.yml";; esac \
@@ -39,15 +55,6 @@ docker compose up -d
 
 Read the [release notes](CHANGELOG.md) for the selected source revision and every
 intervening release before upgrading; they describe migrations and upgrade impact.
-
-Update a published-image install on the rolling tag:
-
-```bash
-docker compose pull && docker compose up -d
-```
-
-A digest-pinned install (`KY_IMAGE` in `.env`) gets nothing from `pull`: re-run the pin recipe in
-`docker-compose.yml` with the commit sha you want first, or delete that line to follow `:latest` again.
 
 `AGENTS.md` is the contract for working in this repository. [CONTRIBUTING.md](CONTRIBUTING.md) has
 the process, test policy and coding standard, and [docs/ASSURANCE-CASE.md](docs/ASSURANCE-CASE.md)
@@ -93,12 +100,17 @@ KyGuard is released under the [MIT License](LICENSE.txt).
 
 ## Documentation
 
+- [Design specification](docs/SPEC.md) — normative Phase 0/1A architecture, crypto, and security design.
+- [Build decisions](docs/DECISIONS.md) — normative spec readings recorded during Phase 0/1A implementation.
 - [Container networking](docs/CONTAINER-IP.md) — give the app a static IP on the Docker network. <a id="container-ip-address"></a>
 - [Backups and disaster recovery](docs/DISASTER-RECOVERY.md) — sealed backup capsules, KyRecovery pairing, every `KY_BACKUP_*` variable and the LAN DNS override. <a id="disaster-recovery"></a><a id="two-ways-to-get-a-key"></a><a id="why-tls-matters-here"></a><a id="one-run-every-destination"></a><a id="environment"></a><a id="upgrading-from-plaintext-local-backups"></a><a id="restoring"></a>
 - [Interfaces](docs/INTERFACES.md) — the HTTP, command-line and environment reference.
+- [Replication and migration](docs/REPLICAS.md) — PostgreSQL migration, multi-replica topology and failover.
 - [Restore](docs/RESTORE.md) — bring a server back from a recovery capsule.
 - [Strong keys](docs/STRONG-CRYPTO.md) — the supported strong-key configuration.
 - [Assurance case](docs/ASSURANCE-CASE.md) — threat model, trust boundaries, and why the security requirements are met.
+- [Frontend dependency audit](docs/NPM-AUDIT.md) — audit scope and active temporary advisory exception.
 - [Contributing](CONTRIBUTING.md) — how to propose a change and what it must pass.
+- [Code of conduct](CODE_OF_CONDUCT.md) — community expectations and adversarial review boundaries.
 - [Security policy](SECURITY.md) — how to report a vulnerability privately.
 - [Release notes](CHANGELOG.md) — what changed in each release, and its upgrade impact.

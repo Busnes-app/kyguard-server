@@ -11,8 +11,21 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 
 ## Current source
 
+### Security
+
+- The SSH connector offers only `mlkem768x25519-sha256`, curve25519 and NIST ECDH key exchanges
+  and refuses a target that offers only SHA-1 (`diffie-hellman-group14-sha1`) or other finite-field
+  Diffie-Hellman exchanges (DECISIONS 80). Targets need OpenSSH 5.7 or later.
+- The broker listener and broker client use only the hybrid `X25519MLKEM768` TLS group; a peer
+  offering classical X25519 alone is refused (DECISIONS 81).
+
 ### Changes
 
+- Documentation cleanup: clarified `README.md` quick-start and documentation index, added breadcrumbs to retained guides, and removed leftover base-scaffold UI verification logs, captures, and interop spike notes.
+- The web shell asks for a fresh authenticator code when a privileged action is refused because
+  its step-up window passed (`stepup_stale`), then sends the action again.
+  If the shell goes away while the refusal is being read, the action gets the refusal back.
+  Tab and Shift+Tab wrap inside the code prompt, so keyboard focus cannot leave it.
 - `kyguard-cli login`, server side (spec §7.6): an SSO login started with `cli_port` and an S256
   `cli_challenge` ends with a 60-second one-time code sent to `http://127.0.0.1:<port>/cb`;
   `POST /api/auth/cli/exchange` trades code and verifier for a pending bearer session, and
@@ -137,7 +150,9 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   which is the only way out of quarantine.
 - Checkout and leases (spec §3.4, §3.6): `vault_checkout` with a single-use challenge and a
   possession proof opens a lease, verifies the credential once and wraps it to the
-  requester's key only; check-in or expiry starts the lease's cleanup rotation, the only
+  requester's key only. Identical submissions reuse the outstanding challenge. An
+  accepted retry stays pending until its wrap arrives.
+  Check-in or expiry starts the lease's cleanup rotation, the only
   rotation path until it releases; scheduled rotations wait; `manual_rotation` runs a
   rotation or re-arms a pending cleanup. `cli.NewTransaction`, `Proof` and `OpenDelivery`
   are the CLI's half.

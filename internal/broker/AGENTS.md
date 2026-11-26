@@ -63,9 +63,10 @@ the wire and TLS are `internal/brokerproto`'s.
   Lease reset evidence (§4.5 step 3) arrives with checkout leases.
 - Checkout and leases (`lease.go`, §3.6): `Tx` verifies a relayed `vault_checkout` or
   `manual_rotation` against the journal state. Checkout journals only a single-use
-  challenge; `Proof` re-verifies the transaction and the possession proof, then in one
-  journal write burns `request_id`, consumes the challenge and opens the lease, and only
-  then unwraps, verifies the credential once and wraps the DEK to `enc_key_id`. A denied
+  challenge. An identical submission re-sends an outstanding unexpired challenge.
+  `Proof` re-verifies the transaction and the possession proof. In one journal write it
+  burns `request_id`, consumes the challenge and opens the lease. It then unwraps, verifies
+  the credential once and wraps the DEK to `enc_key_id`. A denied
   verification delivers nothing, closes the lease and quarantines. Check-in (proof from
   the same `cnf_pub`) or expiry moves the lease to `rotation_pending`; its cleanup
   rotation (`opid(request_id, attempt)`) is then the only rotation path, refusals retry at

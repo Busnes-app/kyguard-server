@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { AppHeader } from './components/AppHeader';
 import { BreakGlassBanner } from './components/BreakGlassBanner';
+import { ReStepUp } from './components/ReStepUp';
 import type { BreakGlassState } from './components/BreakGlassBanner';
 import { Dashboard } from './pages/Dashboard';
 import { Login } from './pages/Login';
@@ -151,6 +152,7 @@ export const App: React.FC = () => {
         onChangePassword={user.account_type === 'break_glass' ? () => setChangingPassword(true) : undefined}
       />
 
+      <ReStepUp />
       <main className="app-main">
         {breakGlass && <BreakGlassBanner state={breakGlass} onReason={(reason) => setBreakGlass({ ...breakGlass, reason })} />}
         {activeTab === 'dashboard' && <Dashboard settings={settings} user={user} onNavigate={(tab) => setActiveTab(tab)} />}
