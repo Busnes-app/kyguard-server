@@ -167,6 +167,24 @@ jobs:
       - run: go test -fuzz=FuzzAESGCM -fuzztime=1000000x ./internal/crypto
       - run: go test -fuzz=FuzzParse -fuzztime=300000x ./internal/pqcrypto/canonical
 
+  connectors:
+    # Spec §13 Phase 1A: the connectors run against real targets in Docker (Samba AD over
+    # LDAPS; OpenSSH with linux-pam passwd). The tests build and remove their containers.
+    name: Connector tests (Samba AD, OpenSSH)
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Connector tests against Docker targets
+        env:
+          KY_TEST_DOCKER: "1"
+        run: go test -race -count=1 -v ./internal/connectors/...
+
   web:
     name: Frontend typecheck & build
     if: github.event.pull_request.draft != true
@@ -383,7 +401,7 @@ jobs:
   # the pushed bytes are the tested bytes. A pull request from a fork must
   # never reach this job or write a package.
   publish:
-    needs: [go, postgres, web, browser, security, smoke, docker, replicas, reuse]
+    needs: [go, postgres, connectors, web, browser, security, smoke, docker, replicas, reuse]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10

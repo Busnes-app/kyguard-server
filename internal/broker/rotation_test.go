@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Busnes-app/kyguard-server/internal/broker"
+	"github.com/Busnes-app/kyguard-server/internal/broker/brokerrig"
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto/pqtest"
@@ -161,8 +162,8 @@ func TestRecordedProbeIsNotResent(t *testing.T) {
 func TestWithheldAckAborts(t *testing.T) {
 	r := newRig(t)
 	late := make(chan error, 1)
-	inner := r.cpw
-	r.cpw = &wrapCP{ControlPlane: inner, intent: func(ctx context.Context, raw []byte) error {
+	inner := r.CPW
+	r.CPW = &brokerrig.WrapCP{ControlPlane: inner, OnIntent: func(ctx context.Context, raw []byte) error {
 		<-ctx.Done()
 		late <- inner.Intent(context.Background(), raw) // the Control Plane records it after all
 		return ctx.Err()
@@ -245,7 +246,7 @@ func TestAuthFailureStopsAfterOneAttempt(t *testing.T) {
 // refused before anything is sealed.
 func TestReservedVersionMustBeAboveTheHighestSeen(t *testing.T) {
 	r := newRig(t)
-	r.cpw = &wrapCP{ControlPlane: r.cpw, reserve: func(_ context.Context, _, _ pqcrypto.UUID, reported pqcrypto.Counter) (pqcrypto.Counter, error) {
+	r.CPW = &brokerrig.WrapCP{ControlPlane: r.CPW, OnReserve: func(_ context.Context, _, _ pqcrypto.UUID, reported pqcrypto.Counter) (pqcrypto.Counter, error) {
 		return reported, nil
 	}}
 	m := r.machine()
@@ -267,15 +268,15 @@ func TestReservedVersionMustBeAboveTheHighestSeen(t *testing.T) {
 // resumes (security review of #11).
 func TestACommittedReservationWithoutAPreparedRunIsSettled(t *testing.T) {
 	r := newRig(t)
-	real := r.cpw
-	w := &wrapCP{ControlPlane: real}
-	w.reserve = func(ctx context.Context, account, op pqcrypto.UUID, reported pqcrypto.Counter) (pqcrypto.Counter, error) {
+	real := r.CPW
+	w := &brokerrig.WrapCP{ControlPlane: real}
+	w.OnReserve = func(ctx context.Context, account, op pqcrypto.UUID, reported pqcrypto.Counter) (pqcrypto.Counter, error) {
 		if _, err := real.Reserve(ctx, account, op, reported); err != nil {
 			return 0, err
 		}
 		return 0, errors.New("connection lost") // the reply never reaches the journal
 	}
-	r.cpw = w
+	r.CPW = w
 	m := r.machine()
 	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); err == nil {
 		t.Fatal("rotate succeeded without a reservation reply")
@@ -285,7 +286,7 @@ func TestACommittedReservationWithoutAPreparedRunIsSettled(t *testing.T) {
 		t.Fatalf("lock %q, want the reserving run %s", r.cpLock(), op)
 	}
 	m.J.Close()
-	w.reserve = nil
+	w.OnReserve = nil
 	m2 := r.machine()
 	defer m2.J.Close()
 	if err := m2.Sync(context.Background()); err != nil {
@@ -356,7 +357,7 @@ func TestSyncRefusesRollbackForksAndStaleChains(t *testing.T) {
 
 	real := &brokerproto.SyncReply{}
 	for req := (brokerproto.SyncRequest{}); ; {
-		page, err := r.cpw.Sync(ctx, req)
+		page, err := r.CPW.Sync(ctx, req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -367,7 +368,7 @@ func TestSyncRefusesRollbackForksAndStaleChains(t *testing.T) {
 		}
 		req.ManifestsAfter += len(page.Manifests)
 	}
-	realAcct, err := r.cpw.SyncAccount(ctx, r.pol.AccountID, 0, 0)
+	realAcct, err := r.CPW.SyncAccount(ctx, r.pol.AccountID, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,23 +383,23 @@ func TestSyncRefusesRollbackForksAndStaleChains(t *testing.T) {
 	last := st.Chains[len(st.Chains)-1]
 	last.Receipts = last.Receipts[:1] // the latest release is missing
 	st.Chains[len(st.Chains)-1] = last
-	m.CP = &wrapCP{ControlPlane: r.cpw,
-		sync: func(context.Context, brokerproto.SyncRequest) (*brokerproto.SyncReply, error) { return &stale, nil },
-		account: func(context.Context, pqcrypto.UUID, pqcrypto.Counter, pqcrypto.Counter) (*brokerproto.AccountState, error) {
+	m.CP = &brokerrig.WrapCP{ControlPlane: r.CPW,
+		OnSync: func(context.Context, brokerproto.SyncRequest) (*brokerproto.SyncReply, error) { return &stale, nil },
+		OnAccount: func(context.Context, pqcrypto.UUID, pqcrypto.Counter, pqcrypto.Counter) (*brokerproto.AccountState, error) {
 			return &st, nil
 		}}
-	r.alerts = nil
+	r.Alerts = nil
 	if err := m.Sync(ctx); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{string(pqcrypto.ErrRollback), string(pqcrypto.ErrEquivocation), string(pqcrypto.ErrChain)}
 	for _, w := range want {
 		found := false
-		for _, a := range r.alerts {
+		for _, a := range r.Alerts {
 			found = found || strings.Contains(a, w)
 		}
 		if !found {
-			t.Fatalf("no alert for %s in %q", w, r.alerts)
+			t.Fatalf("no alert for %s in %q", w, r.Alerts)
 		}
 	}
 	if p, _ := m.Trust.Policy(r.pol.AccountID); p.MaxCheckoutTTLSeconds != 600 {
@@ -415,14 +416,14 @@ func TestSyncRefusesRollbackForksAndStaleChains(t *testing.T) {
 func TestAuthFailureQuarantineSurvivesAFailedDelivery(t *testing.T) {
 	r := newRig(t)
 	r.target.password = "changed-out-of-band"
-	w := &wrapCP{ControlPlane: r.cpw, receiptsErr: errors.New("control plane unreachable")}
-	r.cpw = w
+	w := &brokerrig.WrapCP{ControlPlane: r.CPW, ReceiptsErr: errors.New("control plane unreachable")}
+	r.CPW = w
 	m := r.machine()
 	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); err == nil {
 		t.Fatal("delivery did not fail")
 	}
 	m.J.Close()
-	w.receiptsErr = nil
+	w.ReceiptsErr = nil
 	m2 := r.machine()
 	defer m2.J.Close()
 	if err := m2.Recover(context.Background()); err != nil {
@@ -471,7 +472,7 @@ func TestAccountSyncContinuesFromTheLastVersion(t *testing.T) {
 		return brokerproto.ChainState{Envelope: raw, Receipts: []pqcrypto.B64{}}
 	}
 	var asked [][2]pqcrypto.Counter
-	m.CP = &wrapCP{ControlPlane: r.cpw, account: func(_ context.Context, id pqcrypto.UUID, after, from pqcrypto.Counter) (*brokerproto.AccountState, error) {
+	m.CP = &brokerrig.WrapCP{ControlPlane: r.CPW, OnAccount: func(_ context.Context, id pqcrypto.UUID, after, from pqcrypto.Counter) (*brokerproto.AccountState, error) {
 		asked = append(asked, [2]pqcrypto.Counter{after, from})
 		st := &brokerproto.AccountState{AccountID: id, Chains: []brokerproto.ChainState{env(from + 1), env(from + 2)}, More: from < 4}
 		return st, nil
@@ -549,8 +550,8 @@ func TestRecoveryProbesTheOriginalTarget(t *testing.T) {
 func TestUndeliveredAbortIsSentBeforeTheNextRun(t *testing.T) {
 	r := newRig(t)
 	r.target.refuseBeforeCommit = true
-	w := &wrapCP{ControlPlane: r.cpw, receiptsErr: errors.New("control plane unreachable")}
-	r.cpw = w
+	w := &brokerrig.WrapCP{ControlPlane: r.CPW, ReceiptsErr: errors.New("control plane unreachable")}
+	r.CPW = w
 	m := r.machine()
 	defer m.J.Close()
 	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); err == nil {
@@ -567,7 +568,7 @@ func TestUndeliveredAbortIsSentBeforeTheNextRun(t *testing.T) {
 	if a := r.account(m); a.Run.OperationID != first.OperationID || a.Run.Sent || r.cpLock() != string(first.OperationID) {
 		t.Fatalf("pending abort lost: run %+v lock %s", a.Run, r.cpLock())
 	}
-	w.receiptsErr = nil
+	w.ReceiptsErr = nil
 	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); err != nil {
 		t.Fatal(err)
 	}
@@ -585,8 +586,8 @@ func TestUndeliveredAbortIsSentBeforeTheNextRun(t *testing.T) {
 func TestUndeliveredHealthIsResentOnRecover(t *testing.T) {
 	r := newRig(t)
 	r.target.ambiguous = errors.New("connection reset") // not applied: the probe fails
-	w := &wrapCP{ControlPlane: r.cpw, statusErr: errors.New("control plane unreachable")}
-	r.cpw = w
+	w := &brokerrig.WrapCP{ControlPlane: r.CPW, StatusErr: errors.New("control plane unreachable")}
+	r.CPW = w
 	m := r.machine()
 	if err := m.Rotate(context.Background(), r.pol.AccountID, 0, due); err != nil {
 		t.Fatal(err)
@@ -595,7 +596,7 @@ func TestUndeliveredHealthIsResentOnRecover(t *testing.T) {
 		t.Fatalf("quarantined=%v unreported=%v cp health=%s", a.Quarantined, a.Unreported, r.cpAccount().Health)
 	}
 	m.J.Close()
-	w.statusErr = nil
+	w.StatusErr = nil
 	m2 := r.machine()
 	defer m2.J.Close()
 	if err := m2.Recover(context.Background()); err != nil {
@@ -614,8 +615,8 @@ func TestUndeliveredHealthIsResentOnRecover(t *testing.T) {
 func TestRecoverFailsWhileHealthIsUndelivered(t *testing.T) {
 	r := newRig(t)
 	r.target.ambiguous = errors.New("connection reset") // not applied: the probe fails
-	w := &wrapCP{ControlPlane: r.cpw, statusErr: errors.New("control plane unreachable")}
-	r.cpw = w
+	w := &brokerrig.WrapCP{ControlPlane: r.CPW, StatusErr: errors.New("control plane unreachable")}
+	r.CPW = w
 	m := r.machine()
 	defer m.J.Close()
 	ctx := context.Background()
@@ -625,7 +626,7 @@ func TestRecoverFailsWhileHealthIsUndelivered(t *testing.T) {
 	if err := m.Recover(ctx); err == nil {
 		t.Fatal("Recover succeeded with the health undelivered")
 	}
-	w.statusErr = nil // same machine and channel: no reconnect
+	w.StatusErr = nil // same machine and channel: no reconnect
 	if err := m.Recover(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -685,7 +686,7 @@ func TestSyncFollowsTheAccountCursor(t *testing.T) {
 	ctx := context.Background()
 	var asked []pqcrypto.UUID
 	stuck := false
-	m.CP = &wrapCP{ControlPlane: r.cpw, sync: func(_ context.Context, req brokerproto.SyncRequest) (*brokerproto.SyncReply, error) {
+	m.CP = &brokerrig.WrapCP{ControlPlane: r.CPW, OnSync: func(_ context.Context, req brokerproto.SyncRequest) (*brokerproto.SyncReply, error) {
 		asked = append(asked, req.AccountsAfter)
 		switch {
 		case stuck:

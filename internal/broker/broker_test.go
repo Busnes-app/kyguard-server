@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Busnes-app/kyguard-server/internal/broker"
+	"github.com/Busnes-app/kyguard-server/internal/broker/brokerrig"
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto/brokertest"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
@@ -164,13 +165,14 @@ func TestReconnectWaitsForTheRotationInFlight(t *testing.T) {
 	}
 	b := &brokertest.Broker{ID: id.BrokerID, TLS: k.TLS, Sig: k.Sig, Enc: k.Enc, Paired: &brokerproto.Paired{BrokerID: id.BrokerID, Cert: id.Cert, CACert: id.CACert}}
 	cp.AdmitPool(1, b.Member(pqcrypto.StatusActive))
-	r := &rig{t: t, cp: cp, b: b, dir: a.Dir, target: newTarget(initialPassword)}
-	r.pol = cp.Account(func(p *pqcrypto.PolicyManifest) {
+	tg := newTarget(initialPassword)
+	r := &brokerrig.Rig{T: t, CP: cp, B: b, Dir: a.Dir, Password: initialPassword, Conn: tg, ConnType: pqcrypto.ConnectorSSHPasswd}
+	r.Pol = cp.Account(func(p *pqcrypto.PolicyManifest) {
 		p.RotationSchedule = &pqcrypto.Schedule{AnchorUTC: pqcrypto.NewTime(time.Now().Add(-time.Hour)), IntervalSeconds: 1}
 	})
-	r.seed()
-	r.target.hold, r.target.held = make(chan struct{}), make(chan struct{}, 1)
-	a.Connectors = map[string]broker.Connector{pqcrypto.ConnectorSSHPasswd: r.target}
+	r.Seed()
+	tg.hold, tg.held = make(chan struct{}), make(chan struct{}, 1)
+	a.Connectors = map[string]broker.Connector{pqcrypto.ConnectorSSHPasswd: tg}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error)
@@ -178,7 +180,7 @@ func TestReconnectWaitsForTheRotationInFlight(t *testing.T) {
 	deadline := time.Now().Add(15 * time.Second)
 	for waiting := true; waiting; {
 		select {
-		case <-r.target.held:
+		case <-tg.held:
 			waiting = false
 		case <-time.After(100 * time.Millisecond):
 			if time.Now().After(deadline) {
@@ -199,7 +201,7 @@ func TestReconnectWaitsForTheRotationInFlight(t *testing.T) {
 	if err := b.Conn.Call(cctx, brokerproto.MsgSync, brokerproto.SyncRequest{}, &s); err != nil {
 		t.Fatalf("the daemon reconnected while its rotation was still running: %v", err)
 	}
-	close(r.target.hold)
+	close(tg.hold)
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)

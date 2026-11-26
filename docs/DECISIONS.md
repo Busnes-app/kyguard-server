@@ -311,6 +311,14 @@ Numbered separately: these came from the parallel crypto stack.
 47. §4.4 (three refusals). The refusal counter is per account across occurrences and resets
     on `release` and on a new policy epoch; `next_attempt_at` and the minimum-age deadline
     carry across epochs.
+48. §4.4 (LDAP client). The `ad_ldaps` connector uses `github.com/go-ldap/ldap/v3` over a
+    TLS connection it dials itself. The library also contains NTLM and GSSAPI binds; the
+    connector never calls them (simple bind only), so §4.4's "no NTLM, no Kerberos" holds.
+    TLS 1.2 is the floor because supported Windows Server releases do not all offer 1.3.
+49. §4.4 (AD outcomes). LDAP result 49 (invalid credentials, including `52e`) is the
+    deterministic authentication failure; 19 (constraint violation: policy, history,
+    minimum age) and 53 (unwilling to perform) on the `unicodePwd` modify are deterministic
+    refusals. Any other error after the commit point is ambiguous.
 61. §4.1 (sync frame bound). `cptrust.Submit` refuses a manifest over 512 KiB
     (`MaxManifest`), so any stored manifest fits a 4 MiB channel frame base64url-encoded. A
     `sync` page carries at most 64 manifests whose encoded size stays within `SyncBudget`
@@ -331,6 +339,20 @@ Numbered separately: these came from the parallel crypto stack.
 64. §8.1, §4.3 rule 6 (health delivery). A health report that fails is journaled as
     unreported and sent again by every `Recover` (startup and reconnect) until one is
     acknowledged, so a quarantine is never left unknown to the Control Plane.
+65. §4.4 (AD effective minimum age). `PasswordAge` reports the minimum age of the policy
+    that actually governs the account: when the account's `msDS-ResultantPSO` names a
+    fine-grained password settings object, its `msDS-MinimumPasswordAge`; otherwise the
+    domain's `minPwdAge`. If the account can see its resultant PSO but cannot read the
+    PSO's minimum age (AD's default ACL hides PSOs from ordinary accounts), the minimum age
+    is unknown and `PasswordAge` fails: the domain value could be shorter than the enforced
+    one and schedule retries into refusals that spend the three-refusal limit, so the
+    broker keeps its previously known deadline instead. Deployments that use PSOs grant the
+    account read access to its PSO. A directory that hides `msDS-ResultantPSO` itself is
+    indistinguishable from no PSO, and the domain value is reported.
+66. §4.4 (connector cancellation). Every target operation observes its context: the
+    `ad_ldaps` connector closes the connection when the context ends during a bind, search
+    or modify (go-ldap requests otherwise wait for the fixed timeout), and `Change` sends
+    no modify once the context has ended, checked again after the intent commits.
 70. §4.1 (pushes). A Control Plane push that finds the broker's 16-slot queue full is
     dropped and logged, never waited for, so results for pending calls keep flowing. A
     dropped push is a lost relay: nothing was persisted, and the CLI retries or the

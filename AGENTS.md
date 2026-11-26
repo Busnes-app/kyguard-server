@@ -141,6 +141,7 @@ overlay merges with synthetic inputs and starts no containers.
 - [internal/pqcrypto/AGENTS.md](internal/pqcrypto/AGENTS.md): KyGuard wire format and crypto core (spec §3): JCS, D(obj), hybrid signatures, key IDs, AADs, DEK wrap, golden vectors.
 - [internal/brokerproto/AGENTS.md](internal/brokerproto/AGENTS.md): Broker listener (spec §4.1): internal CA, TLS on both ends, pairing, control channel.
 - [internal/broker/AGENTS.md](internal/broker/AGENTS.md): `kyguard-broker`: key file, journal, pairing, daemon (spec §4).
+- [internal/connectors/AGENTS.md](internal/connectors/AGENTS.md): Target connectors (`ad_ldaps`, `ssh_passwd`, spec §4.4) and their Docker test targets.
 - [internal/cptrust/AGENTS.md](internal/cptrust/AGENTS.md): Control Plane manifest admission against the imported bundle (spec §3.2, §3.7).
 - [internal/cli/AGENTS.md](internal/cli/AGENTS.md): `kyguard-cli` commands, key files and the persisted trust pin (spec §3.2).
 - [internal/auth/AGENTS.md](internal/auth/AGENTS.md): Authentication, sessions, local TOTP step-up, client addresses and CAPTCHA.

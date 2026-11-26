@@ -125,6 +125,10 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   occurrence after the schedule floor; refused attempts wait for `next_attempt_at` and
   stop after three until a new policy epoch; a minimum password age above the interval
   runs nothing.
+- Active Directory connector (spec §4.4): self-change over LDAPS against the descriptor's
+  pinned CA and host name, baseline `pwdLastSet`/`msDS-KeyVersionNumber`, verification by
+  a fresh bind, and minimum password age from the domain; tested in CI against Samba AD at
+  `min-pwd-age=0` and at the default of one day.
 
 ### Upgrade impact
 
@@ -139,6 +143,8 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   is a new dependency.
 - Migration 101 adds `assets`, `accounts`, `target_descriptors`, `secret_envelopes`,
   `envelope_receipts`, `rotation_locks` and `rotation_runs`; no data migrates.
+- `github.com/go-ldap/ldap/v3` is a new dependency (the AD connector); CI gains a
+  `connectors` job that runs Docker targets.
 - New binary `kyguard-broker` (`GOOS=linux go build ./cmd/broker`); `go.etcd.io/bbolt` is a
   new dependency (the broker journal).
 - The module declares `go 1.27.0` (for `crypto/mldsa`); builds need Go 1.27, as the pinned
