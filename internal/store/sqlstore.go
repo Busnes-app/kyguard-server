@@ -167,6 +167,9 @@ INSERT INTO users (
 	); err != nil {
 		return uniqueErr(err)
 	}
+	if err := u.store.applySCIMAttributes(ctx, tx, user.ID, user.SCIMAttributes); err != nil {
+		return err
+	}
 	if err := u.store.appendCtxAudit(ctx, tx); err != nil {
 		return err
 	}
@@ -385,6 +388,9 @@ func (u *userStore) updateProfile(ctx context.Context, user *User, prevRole, pre
 		if _, err := tx.ExecContext(ctx, u.store.rebind(`DELETE FROM sessions WHERE user_id = ?`), user.ID); err != nil {
 			return err
 		}
+	}
+	if err := u.store.applySCIMAttributes(ctx, tx, user.ID, user.SCIMAttributes); err != nil {
+		return err
 	}
 	if err := u.store.appendCtxAudit(ctx, tx); err != nil {
 		return err

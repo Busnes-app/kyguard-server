@@ -229,3 +229,58 @@ func TestReportFactsNewestRelease(t *testing.T) {
 		t.Fatalf("facts %+v %v, want %v", f["ac"], err, last)
 	}
 }
+
+// Spec §8.2, §9.3: a SCIM write, its synced attributes and the SCIM definitions it creates
+// commit together. The last attribute write fails here (an admin owns title), so the status
+// change, the session revocation, the first attribute and the new manager definition must
+// all roll back.
+func TestSCIMProfileAndAttributesAreAtomic(t *testing.T) {
+	s, inv := inventoryFor(t)
+	ctx := context.Background()
+	dept, err := inv.EnsureDefinition(ctx, &AttributeDefinition{ID: "dd", Entity: EntityUser, Key: "department", Label: "D", Type: AttrString, Source: SourceSCIM}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := inv.SetValue(ctx, dept.ID, "usr_a", "Ops", SourceSCIM, nil); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := s.Sessions().CreateSession(ctx, &Session{TokenHash: "tok", UserID: "usr_a", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}, ""); err != nil {
+		t.Fatal(err)
+	}
+	u, err := s.Users().GetUserByID(ctx, "usr_a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.Status = "inactive"
+	if _, err := inv.EnsureDefinition(ctx, &AttributeDefinition{ID: "dt", Entity: EntityUser, Key: "title", Label: "T", Type: AttrString, Source: SourceAdmin}, nil); err != nil {
+		t.Fatal(err)
+	}
+	u.SCIMAttributes = map[string]string{"department": "Sales", "manager": "m1", "title": "CTO"}
+	if err := s.Users().UpdateSCIMProfile(ctx, u, "user", "active", u.SSOSubject); err == nil {
+		t.Fatal("update with a failing attribute write succeeded")
+	}
+	after, _ := s.Users().GetUserByID(ctx, "usr_a")
+	if after.Status != "active" {
+		t.Fatalf("status changed: %s", after.Status)
+	}
+	if _, err := s.Sessions().GetSession(ctx, "tok"); err != nil {
+		t.Fatalf("session revoked: %v", err)
+	}
+	if vals, _ := inv.Values(ctx, EntityUser); vals["usr_a"]["department"] != "Ops" {
+		t.Fatalf("first attribute kept: %v", vals["usr_a"])
+	}
+	if defs, _ := inv.Definitions(ctx, EntityUser); len(defs) != 2 {
+		t.Fatalf("a rolled-back write left a definition: %d", len(defs))
+	}
+	// Without the admin title, the same write creates the missing definitions itself.
+	if err := inv.DeleteDefinition(ctx, "dt", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Users().UpdateSCIMProfile(ctx, u, "user", "active", u.SSOSubject); err != nil {
+		t.Fatal(err)
+	}
+	if vals, _ := inv.Values(ctx, EntityUser); vals["usr_a"]["title"] != "CTO" || vals["usr_a"]["manager"] != "m1" {
+		t.Fatalf("values %v", vals["usr_a"])
+	}
+}

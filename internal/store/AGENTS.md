@@ -89,6 +89,10 @@ Owns data models, store interfaces (`UserStore`, `SessionStore`, `GroupStore`, `
   an unknown entity; `UpdateDefinition` refuses removing an enum value in use
   (`ErrConflict`). Both tables are in `migrationTables`; the migration seeds nothing.
   `ReportFacts`, `RecentRuns` and `RecentLeases` are the reporting reads.
+- `User.SCIMAttributes` (never stored on the row): `CreateUser` and every `updateProfile`
+  writer apply those synced user attributes through `applySCIMAttributes` inside their own
+  transaction, creating a missing `scim` definition there too; a key an admin defined rolls
+  the whole write back (`ErrInvalid`), definitions included.
 
 ## Verification
 - `go test -v ./internal/store/...`

@@ -37,7 +37,8 @@ func NewServer(st store.Store, cfg config.SCIMConfig, appURL string) *Server {
 			AuthenticationSchemes: []protocol.AuthenticationScheme{{Type: protocol.AuthenticationTypeOauthBearerToken, Name: "OAuth Bearer Token", Description: "RFC 6750 bearer token", SpecURI: optional.NewString("https://www.rfc-editor.org/rfc/rfc6750"), Primary: true}},
 		},
 		ResourceTypes: []protocol.ResourceType{
-			{ID: optional.NewString("User"), Name: "User", Endpoint: "/Users", Description: optional.NewString("User Account"), Schema: schema.CoreUserSchema(), Handler: userHandler},
+			{ID: optional.NewString("User"), Name: "User", Endpoint: "/Users", Description: optional.NewString("User Account"), Schema: schema.CoreUserSchema(), Handler: userHandler,
+				SchemaExtensions: []protocol.SchemaExtension{{Schema: schema.ExtensionEnterpriseUser()}}},
 			{ID: optional.NewString("Group"), Name: "Group", Endpoint: "/Groups", Description: optional.NewString("Group Resource"), Schema: schema.CoreGroupSchema(), Handler: groupHandler},
 		},
 	}, protocol.WithBaseURL(strings.TrimRight(appURL, "/")+"/scim/v2"))
@@ -137,6 +138,9 @@ func (h *userResourceHandler) Create(r *http.Request, attrs protocol.ResourceAtt
 	if user.SSOSubject != "" && h.issuer == "" {
 		return protocol.Resource{}, errNoIssuer
 	}
+	if err := prepare(r.Context(), h.store, fromResource(attrs)); err != nil {
+		return protocol.Resource{}, err
+	}
 	if existing, err := h.kyIdentityAccount(r, user.SSOSubject, username); err != nil {
 		return protocol.Resource{}, err
 	} else if existing != nil {
@@ -145,6 +149,7 @@ func (h *userResourceHandler) Create(r *http.Request, attrs protocol.ResourceAtt
 	if err := h.checkRole("", user.Role); err != nil {
 		return protocol.Resource{}, err
 	}
+	user.SCIMAttributes = fromResource(attrs).values() // written in the user's own transaction
 	if err := h.store.Users().CreateUser(store.WithAudit(r.Context(), &store.AuditRecord{UserID: user.ID, Action: "scim.user.create", Resource: user.Username}), user); err != nil {
 		return protocol.Resource{}, scimStoreError(err, user.ID)
 	}
@@ -193,6 +198,7 @@ func (h *userResourceHandler) takeOver(r *http.Request, user *store.User, attrs 
 	defer h.mu.Unlock()
 	oldRole, oldStatus, subject := user.Role, user.Status, user.SSOSubject
 	replaceUser(user, attrs)
+	user.SCIMAttributes = fromResource(attrs).values()
 	user.SSOSubject = subject
 	if err := h.checkRole(oldRole, user.Role); err != nil {
 		return protocol.Resource{}, err
@@ -287,8 +293,12 @@ func userPage(users []*store.User, total int) protocol.Page {
 }
 
 func (h *userResourceHandler) Replace(r *http.Request, id string, attrs protocol.ResourceAttributes) (protocol.Resource, error) {
+	if err := prepare(r.Context(), h.store, fromResource(attrs)); err != nil {
+		return protocol.Resource{}, err
+	}
 	return h.update(r, id, func(user *store.User) error {
 		replaceUser(user, attrs)
+		user.SCIMAttributes = fromResource(attrs).values()
 		return nil
 	})
 }
@@ -309,11 +319,17 @@ func (h *userResourceHandler) Delete(r *http.Request, id string) error {
 	if _, err := h.managedUser(r, id); err != nil {
 		return err
 	}
-	return scimStoreError(h.store.Users().DeleteUser(r.Context(), id), id)
+	// One transaction: accounts it owned become unowned, its attributes go, the user goes
+	// (spec §8.2). A failure changes nothing.
+	return scimStoreError(h.store.Inventory().ForgetUser(r.Context(), id, &store.AuditRecord{UserID: id, Action: "scim.user.delete", Resource: "user:" + id}), id)
 }
 
 func (h *userResourceHandler) Patch(r *http.Request, id string, operations []protocol.PatchOperation) (protocol.Resource, error) {
+	if err := prepare(r.Context(), h.store, fromPatch(operations)); err != nil {
+		return protocol.Resource{}, err
+	}
 	return h.update(r, id, func(user *store.User) error {
+		user.SCIMAttributes = fromPatch(operations).values()
 		return applyUserPatch(user, operations)
 	})
 }

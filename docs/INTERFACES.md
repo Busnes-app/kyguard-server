@@ -346,6 +346,13 @@ Disabled SCIM returns 403. Missing/invalid bearer returns 401 with
 schema, `status` (string), `detail` and optional `scimType`. Missing resources return
 404; duplicate resources 409 `uniqueness`; invalid protocol input 400.
 
+
+KyGuard registers the Enterprise User extension
+(`urn:ietf:params:scim:schemas:extension:enterprise:2.0:User`). Core `title` and the
+extension's `department` and `manager.value` become read-only user attributes
+(`source: "scim"`, spec §8.2) that the scorecard filters on as `owner.<key>`. Deleting a
+user leaves the accounts it owned unowned.
+
 ## Recovery and backups
 
 All routes below require an unrestricted administrator session. Cookie CSRF applies

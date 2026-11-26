@@ -520,4 +520,11 @@ Numbered separately: these came from the parallel crypto stack.
 208. §8.3 (what is audited). The dashboard view is not an export and is not audited; every
     `format=json` or `format=csv` download is, before its body is sent. CSV cells that a
     spreadsheet would run as a formula are prefixed with `'`.
+209. §8.2 (SCIM sync semantics). A SCIM create or PUT carries the whole user, so a
+    `title`, `department` or `manager` it omits is cleared; a PATCH changes only the
+    attributes its operations name. Deleting a SCIM user clears it as the owner of every
+    account first (the account turns unowned, its class unchanged) and deletes its
+    attribute values. GET responses do not echo the synced attributes back.
+    A SCIM write and its synced attributes are one transaction: the profile, session
+    revocation, attribute values and their audit rows commit or roll back together.
 

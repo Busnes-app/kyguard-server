@@ -21,6 +21,18 @@ Owns local persistence adapters and bearer authentication; the library owns `/sc
 - User PATCH: filtered `emails`/`roles` paths apply only when `selects` matches the value `userResource` emits; only an unmatched emails/roles replace is `noTarget`. Paths into unstored attributes are ignored, never refused.
 - Group PATCH applies `add`/`remove`/`replace` to the current membership. Member sub-attribute paths and member filters other than remove `members[value eq "id"]` are `invalidPath` before any write. Member ids are checked before any write, and only the membership difference is written. Group PATCH and PUT hold `groupResourceHandler.mu`, so a PATCH computing membership from its read cannot drop a concurrent one's change (one server process per database). `UpdateGroup` maps a taken name to `ErrAlreadyExists` (409 `uniqueness`).
 - User writes go through `UpdateUserProfile`, never `UpdateUser`, so SCIM cannot rewrite credential columns from a stale read.
+- The User resource registers the Enterprise User extension (`SchemaEnterpriseUser`).
+  `enterprise.go` syncs core `title` and extension `department` and `manager.value` into
+  user attributes with `source = 'scim'` (spec §8.2): create and PUT set all three (an
+  omitted one is cleared), PATCH changes only what its operations touch (paths with or
+  without the extension URI, `manager.value`, and path-less value maps). Values are trimmed,
+  stripped of control characters and cut to 256 characters. `prepare` refuses, before any write, a
+  request touching a key an admin defined; it writes nothing itself, so a refused request
+  changes nothing (create, adoption, PUT, PATCH), not even a definition. The handler sets `User.SCIMAttributes`, and the store writes
+  them (with their audit rows) in the same transaction as the create, adoption or update,
+  so a failure at any point leaves the user, its sessions and its attributes unchanged. Manager sub-attributes other than `value` are ignored. Delete is `Inventory().ForgetUser`: in one transaction
+  the accounts it owned become unowned, its values go and the user row goes
+  (`accounts.owner_user_id` references the user).
 - SCIM protocol models and parsing must come from `github.com/elimity-com/scim`; do not add parallel local request/response implementations.
 
 ## Verification

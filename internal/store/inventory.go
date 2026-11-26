@@ -7,6 +7,8 @@ import (
 	"errors"
 	"slices"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ErrInvalid means a write names something that does not exist or breaks a definition's
@@ -57,6 +59,11 @@ type InventoryStore interface {
 	Values(ctx context.Context, entity string) (map[string]map[string]string, error)
 	// EntityValues maps attribute key to value for one entity.
 	EntityValues(ctx context.Context, entity, entityID string) (map[string]string, error)
+
+	// ForgetUser clears the user as account owner, deletes their attribute values and
+	// deletes the user, in one transaction (ErrNotFound for an unknown user, nothing changed).
+	// the user row can be deleted.
+	ForgetUser(ctx context.Context, userID string, audit *AuditRecord) error
 
 	// ReportFacts returns, per account, the newest release receipt and the open leases.
 	ReportFacts(ctx context.Context) (map[string]*ReportFacts, error)
@@ -428,46 +435,95 @@ func (v inventoryStore) DeleteDefinition(ctx context.Context, id string, audit *
 }
 
 func (v inventoryStore) SetValue(ctx context.Context, definitionID, entityID, value, source string, audit *AuditRecord) error {
-	return v.s.inTx(ctx, func(tx *sql.Tx) error {
-		d, err := v.definition(ctx, tx, definitionID)
-		if errors.Is(err, ErrNotFound) {
-			return ErrInvalid
-		}
-		if err != nil {
-			return err
-		}
-		if d.Source != source || (value != "" && d.Type == AttrEnum && !slices.Contains(d.EnumValues, value)) {
-			return ErrInvalid
-		}
-		table := "accounts"
-		if d.Entity == EntityUser {
-			table = "users"
-		}
-		if ok, err := v.exists(ctx, tx, table, entityID); err != nil || !ok {
-			return errors.Join(err, ErrInvalid)
-		}
-		var prev string
-		err = tx.QueryRowContext(ctx, v.s.rebind(`SELECT value FROM attribute_values WHERE definition_id = ? AND entity_id = ?`), definitionID, entityID).Scan(&prev)
-		switch {
-		case errors.Is(err, sql.ErrNoRows):
-			if value == "" {
-				return nil
-			}
-			_, err = tx.ExecContext(ctx, v.s.rebind(`INSERT INTO attribute_values (definition_id, entity_id, value, updated_at) VALUES (?, ?, ?, ?)`), definitionID, entityID, value, time.Now().UTC())
-		case err != nil:
-			return err
-		case prev == value:
+	return v.s.inTx(ctx, func(tx *sql.Tx) error { return v.setValue(ctx, tx, definitionID, entityID, value, source, audit) })
+}
+
+// setValue is SetValue inside the caller's transaction.
+func (v inventoryStore) setValue(ctx context.Context, tx *sql.Tx, definitionID, entityID, value, source string, audit *AuditRecord) error {
+	d, err := v.definition(ctx, tx, definitionID)
+	if errors.Is(err, ErrNotFound) {
+		return ErrInvalid
+	}
+	if err != nil {
+		return err
+	}
+	if d.Source != source || (value != "" && d.Type == AttrEnum && !slices.Contains(d.EnumValues, value)) {
+		return ErrInvalid
+	}
+	table := "accounts"
+	if d.Entity == EntityUser {
+		table = "users"
+	}
+	if ok, err := v.exists(ctx, tx, table, entityID); err != nil || !ok {
+		return errors.Join(err, ErrInvalid)
+	}
+	var prev string
+	err = tx.QueryRowContext(ctx, v.s.rebind(`SELECT value FROM attribute_values WHERE definition_id = ? AND entity_id = ?`), definitionID, entityID).Scan(&prev)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		if value == "" {
 			return nil
-		case value == "":
-			_, err = tx.ExecContext(ctx, v.s.rebind(`DELETE FROM attribute_values WHERE definition_id = ? AND entity_id = ?`), definitionID, entityID)
-		default:
-			_, err = tx.ExecContext(ctx, v.s.rebind(`UPDATE attribute_values SET value = ?, updated_at = ? WHERE definition_id = ? AND entity_id = ?`), value, time.Now().UTC(), definitionID, entityID)
+		}
+		_, err = tx.ExecContext(ctx, v.s.rebind(`INSERT INTO attribute_values (definition_id, entity_id, value, updated_at) VALUES (?, ?, ?, ?)`), definitionID, entityID, value, time.Now().UTC())
+	case err != nil:
+		return err
+	case prev == value:
+		return nil
+	case value == "":
+		_, err = tx.ExecContext(ctx, v.s.rebind(`DELETE FROM attribute_values WHERE definition_id = ? AND entity_id = ?`), definitionID, entityID)
+	default:
+		_, err = tx.ExecContext(ctx, v.s.rebind(`UPDATE attribute_values SET value = ?, updated_at = ? WHERE definition_id = ? AND entity_id = ?`), value, time.Now().UTC(), definitionID, entityID)
+	}
+	if err != nil {
+		return err
+	}
+	return v.s.auditTx(ctx, tx, audit)
+}
+
+// SCIMUserKeys are the user attributes SCIM owns, with their labels (spec §8.2).
+var SCIMUserKeys = map[string]string{"department": "Department", "manager": "Manager", "title": "Title"}
+
+// applySCIMAttributes writes a SCIM user's synced attributes ("" clears one) inside the
+// transaction that writes the user, so the profile, its attributes and any SCIM definition
+// it needs commit together. A key an admin defined is ErrInvalid.
+func (s *SQLStore) applySCIMAttributes(ctx context.Context, tx *sql.Tx, userID string, attrs map[string]string) error {
+	v := inventoryStore{s}
+	keys := make([]string, 0, len(attrs))
+	for k := range attrs {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	for _, k := range keys {
+		label, ok := SCIMUserKeys[k]
+		if !ok {
+			return ErrInvalid
+		}
+		res, err := tx.ExecContext(ctx, s.rebind(`INSERT INTO attribute_definitions (`+definitionCols+`) VALUES (?, 'user', ?, ?, 'string', '[]', 'scim', ?) ON CONFLICT (entity, key) DO NOTHING`),
+			uuid.Must(uuid.NewV7()).String(), k, label, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return err
+		} else if n == 1 {
+			if err := s.auditTx(ctx, tx, &AuditRecord{Action: "attribute.definition_created", Resource: "attribute:user." + k, Details: "source=scim"}); err != nil {
+				return err
+			}
+		}
+		var id string
+		err = tx.QueryRowContext(ctx, s.rebind(`SELECT id FROM attribute_definitions WHERE entity = 'user' AND key = ? AND source = 'scim'`), k).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrInvalid
 		}
 		if err != nil {
 			return err
 		}
-		return v.s.auditTx(ctx, tx, audit)
-	})
+		if err := v.setValue(ctx, tx, id, userID, attrs[k], SourceSCIM,
+			&AuditRecord{UserID: userID, Action: "scim.user.attribute", Resource: "user:" + userID, Details: "key=" + k}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (v inventoryStore) Values(ctx context.Context, entity string) (map[string]map[string]string, error) {
@@ -500,4 +556,23 @@ func (v inventoryStore) values(ctx context.Context, where string, args ...any) (
 		out[id][key] = val
 	}
 	return out, rows.Err()
+}
+
+func (v inventoryStore) ForgetUser(ctx context.Context, userID string, audit *AuditRecord) error {
+	return v.s.inTx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, v.s.rebind(`UPDATE accounts SET owner_user_id = NULL WHERE owner_user_id = ?`), userID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, v.s.rebind(`DELETE FROM attribute_values WHERE entity_id = ? AND definition_id IN (SELECT id FROM attribute_definitions WHERE entity = 'user')`), userID); err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, v.s.rebind(`DELETE FROM users WHERE id = ?`), userID)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil || n == 0 {
+			return errors.Join(err, ErrNotFound)
+		}
+		return v.s.auditTx(ctx, tx, audit)
+	})
 }
