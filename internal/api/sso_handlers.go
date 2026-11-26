@@ -34,6 +34,14 @@ func (s *Server) handleSSOLogin(name string) http.HandlerFunc {
 		nonce := crypto.RandomHex(16)
 		verifier := oauth2.GenerateVerifier()
 
+		// kyguard-cli login (spec §7.6): the CLI's loopback port and PKCE challenge ride with
+		// this state, so the callback hands the login to that CLI instead of this browser.
+		cli, ok := cliLoginParams(r)
+		if !ok {
+			s.writeError(w, http.StatusBadRequest, "cli_port must be 1024-65535 and cli_challenge a base64url S256 challenge")
+			return
+		}
+
 		redirectURI := fmt.Sprintf("%s/api/sso/%s/callback", s.config.Server.AppURL, name)
 		authURL, err := s.ssoClient(name).BuildAuthURL(r.Context(), redirectURI, state, verifier, nonce)
 		if err != nil {
@@ -43,6 +51,9 @@ func (s *Server) handleSSOLogin(name string) http.HandlerFunc {
 
 		// Store verifier and nonce in short-lived cookies (__Host- on https, so Path=/).
 		host, secure := s.config.Security.HostCookies, s.config.Security.CookieSecure
+		if cli != "" {
+			http.SetCookie(w, &http.Cookie{Name: auth.CookieName("ky_cli_"+state, host), Value: cli, Path: "/", MaxAge: 300, HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode})
+		}
 		http.SetCookie(w, &http.Cookie{
 			Name:     auth.CookieName("ky_pkce_"+state, host),
 			Value:    verifier,
@@ -99,6 +110,11 @@ func (s *Server) handleSSOCallback(name string) http.HandlerFunc {
 		user, status, msg := s.ssoAccount(r, name, claims)
 		if user == nil {
 			s.writeError(w, status, msg)
+			return
+		}
+
+		if c, err := r.Cookie(auth.CookieName("ky_cli_"+state, s.config.Security.HostCookies)); err == nil && c.Value != "" {
+			s.handOffToCLI(w, r, user, claims, c.Value)
 			return
 		}
 

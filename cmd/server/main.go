@@ -485,47 +485,69 @@ func restore(capsulePath, targetDir, expectService string, shares []string, stdo
 	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	sessions, err := prepareRestoredDatabase(dbPath)
+	cleared, err := prepareRestoredDatabase(dbPath)
 	if err != nil {
 		return fmt.Errorf("files restored, but %s could not be made safe to start (do not start it until it is): %w", dbPath, err)
 	}
 	fmt.Fprintln(stdout, "Scheduled deposits are OFF in the restored copy. Turn them back on in Backup & recovery once this server is the one in service.")
-	fmt.Fprintf(stdout, "Sessions deleted from the restored copy: %d. Everyone signs in again.\n", sessions)
+	fmt.Fprintf(stdout, "Sessions deleted from the restored copy: %d. Everyone signs in again.\n", cleared.sessions)
+	fmt.Fprintf(stdout, "CLI login codes and outstanding broker pairing tokens deleted: %d and %d.\n", cleared.cliCodes, cleared.pairingTokens)
 	fmt.Fprintln(stdout, "Replica configuration record removed from the restored copy; its first PostgreSQL start records a new one.")
 	return nil
 }
 
+// restoreCleared counts what a restore deleted.
+type restoreCleared struct{ sessions, cliCodes, pairingTokens int64 }
+
 // prepareRestoredDatabase, in one transaction, writes the "off" schedule (recoveryclient's
 // backup_interval_sec = 0) the admin screen writes, so the database setting wins over
-// KY_BACKUP_DEPOSIT_INTERVAL; deletes every session; and deletes the replica fingerprint.
-// A product adds its own session-like tables here.
-func prepareRestoredDatabase(dbPath string) (int64, error) {
+// KY_BACKUP_DEPOSIT_INTERVAL; deletes the replica fingerprint; and deletes every bearer
+// credential minted before the capsule (spec §9.4): sessions, CLI login codes and the broker
+// pairing tokens not yet spent. The last two tables exist only once their features have
+// shipped, so a capsule without them restores too.
+func prepareRestoredDatabase(dbPath string) (restoreCleared, error) {
+	var cleared restoreCleared
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		return 0, err
+		return cleared, err
 	}
 	defer db.Close()
 	tx, err := db.Begin()
 	if err != nil {
-		return 0, err
+		return cleared, err
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(`INSERT INTO server_settings (key, value, updated_at) VALUES ('backup_interval_sec', '0', ?)
 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, time.Now().UTC()); err != nil {
-		return 0, err
-	}
-	res, err := tx.Exec(`DELETE FROM sessions`)
-	if err != nil {
-		return 0, err
-	}
-	sessions, err := res.RowsAffected()
-	if err != nil {
-		return 0, err
+		return cleared, err
 	}
 	if _, err := tx.Exec(`DELETE FROM server_settings WHERE key = ?`, config.ReplicaConfigSetting); err != nil {
-		return 0, err
+		return cleared, err
 	}
-	return sessions, tx.Commit()
+	for _, d := range []struct {
+		table, query string
+		n            *int64
+	}{
+		{"sessions", `DELETE FROM sessions`, &cleared.sessions},
+		{"cli_login_codes", `DELETE FROM cli_login_codes`, &cleared.cliCodes},
+		{"pairing_tokens", `DELETE FROM pairing_tokens WHERE consumed_at IS NULL`, &cleared.pairingTokens},
+	} {
+		var present int
+		if err := tx.QueryRow(`SELECT COUNT(1) FROM sqlite_master WHERE type = 'table' AND name = ?`, d.table).Scan(&present); err != nil {
+			return cleared, err
+		}
+		if present == 0 {
+			continue
+		}
+		res, err := tx.Exec(d.query)
+		if err != nil {
+			return cleared, err
+		}
+		if *d.n, err = res.RowsAffected(); err != nil {
+			return cleared, err
+		}
+	}
+	return cleared, tx.Commit()
 }
 
 // stdinIsTerminal reports whether a human is typing, so a pipeline gets no stray prompt.
