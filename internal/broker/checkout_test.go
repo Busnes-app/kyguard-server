@@ -208,8 +208,9 @@ func TestLeaseBlocksSecondCheckoutAndDefersTheSchedule(t *testing.T) {
 	}
 }
 
-// §13 1A acceptance test 10: check-in with a different key is refused; with the same key it
-// replaces that refusal with "ok" and triggers the cleanup rotation, which closes the lease.
+// §13 1A acceptance test 10: check-in with a different key is refused, publishing nothing;
+// with the same key it publishes "ok" and triggers the cleanup rotation, which closes the
+// lease.
 func TestCheckinTriggersTheCleanupRotation(t *testing.T) {
 	c := newCheckoutRig(t)
 	ctx := context.Background()
@@ -224,9 +225,8 @@ func TestCheckinTriggersTheCleanupRotation(t *testing.T) {
 	if err := c.m.Proof(ctx, co.RequestID, bad); err == nil {
 		t.Fatal("check-in with another key accepted")
 	}
-	// The refusal is published before Proof returns, under the same mutex hold, so a later
-	// accepted proof always supersedes it (PR Reviewer Guide "Stale refusal" on #16).
-	if _, res := c.delivery(co.RequestID); res == "" || res == "ok" {
+	// A proof that does not verify publishes nothing (security review of #16).
+	if _, res := c.delivery(co.RequestID); res != "" {
 		t.Fatalf("result after the refused check-in %q", res)
 	}
 	good, _ := co.Proof(ch, pqcrypto.PurposeCheckin)
@@ -789,8 +789,9 @@ func TestAReplayKeepsTheEarlierOutcome(t *testing.T) {
 	}
 }
 
-// A lease that expires with its wrap still undelivered tells the requester so, instead of
-// leaving the mailbox at the challenge (PR Reviewer Guide "Missing outcome" on #16).
+// A lease that expires with its wrap still undelivered tells the requester so in the same
+// save that ends it, and a later checkout cannot lose that outcome (PR Reviewer Guide
+// "Missing outcome" and security review of #16).
 func TestAnUndeliveredWrapThatExpiresIsReported(t *testing.T) {
 	c := newCheckoutRig(t)
 	ctx := context.Background()
@@ -805,12 +806,72 @@ func TestAnUndeliveredWrapThatExpiresIsReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.now = c.now.Add(time.Hour)
-	c.m.Tick(ctx) // expires the lease
-	c.m.Tick(ctx) // drops the wrap
-	if d, res := c.delivery(co.RequestID); d != nil || res != broker.ReasonLeaseExpired {
+	c.m.Tick(ctx) // expires the lease; its cleanup closes it
+	if d, res := c.delivery(co.RequestID); d != nil || res != broker.ReasonLeaseExpired || c.account(c.m).Lease.Delivery != nil {
 		t.Fatalf("delivered=%v result=%q", d != nil, res)
 	}
-	if c.account(c.m).Lease.Delivery != nil {
-		t.Fatal("the wrap is still journaled")
+	w.DeliveryErr = nil
+	c.open(60) // another checkout replaces the lease
+	c.m.Tick(ctx)
+	if _, res := c.delivery(co.RequestID); res != broker.ReasonLeaseExpired {
+		t.Fatalf("result after the next checkout %q", res)
+	}
+}
+
+// Continuations that do not prove possession publish nothing: a duplicate proof after the
+// delivery, a check-in or proof for another request's ID, keep the results they find (PR
+// Reviewer Guide "Overwritten outcome" and security review of #16).
+func TestRejectedContinuationsKeepTheResult(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	mr := c.tx(c.alice, pqcrypto.Action{ActionType: pqcrypto.ActionManualRotation})
+	if err := c.m.Tx(ctx, mr.Tx); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.m.Proof(ctx, mr.RequestID, []byte("{}")); err == nil {
+		t.Fatal("a proof for a manual_rotation accepted")
+	}
+	if err := c.m.Checkin(ctx, mr.RequestID); err == nil {
+		t.Fatal("a check-in for a manual_rotation accepted")
+	}
+	if _, res := c.delivery(mr.RequestID); res != "ok" {
+		t.Fatalf("manual_rotation result %q", res)
+	}
+	co := c.checkoutTx(600)
+	if err := c.m.Tx(ctx, co.Tx); err != nil {
+		t.Fatal(err)
+	}
+	pop, _ := co.Proof(c.challenge(co.RequestID), pqcrypto.PurposeDeliver)
+	if err := c.m.Proof(ctx, co.RequestID, pop); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.m.Proof(ctx, co.RequestID, pop); err == nil { // a retry after a lost response
+		t.Fatal("a duplicate proof accepted")
+	}
+	if d, res := c.delivery(co.RequestID); d == nil || res != "ok" {
+		t.Fatalf("checkout after the duplicate proof: delivered=%v result=%q", d != nil, res)
+	}
+}
+
+// An abandoned request's challenge is pruned once it expires (PR Reviewer Guide "Unpruned
+// challenges" on #16).
+func TestExpiredChallengesArePruned(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	co := c.checkoutTx(600)
+	if err := c.m.Tx(ctx, co.Tx); err != nil {
+		t.Fatal(err)
+	}
+	if c.m.J.GetChallenge(co.RequestID) == nil {
+		t.Fatal("no challenge journaled")
+	}
+	c.m.Tick(ctx)
+	if c.m.J.GetChallenge(co.RequestID) == nil {
+		t.Fatal("a live challenge was pruned")
+	}
+	c.now = c.now.Add(pqcrypto.MaxTxLifetime + time.Minute)
+	c.m.Tick(ctx)
+	if c.m.J.GetChallenge(co.RequestID) != nil {
+		t.Fatal("the expired challenge is still journaled")
 	}
 }

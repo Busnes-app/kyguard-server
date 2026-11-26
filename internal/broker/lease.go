@@ -130,13 +130,13 @@ func (m *Machine) challenge(ctx context.Context, a *Account, id pqcrypto.UUID, p
 	return m.CP.Challenge(ctx, brokerproto.ChallengeRequest{RequestID: id, Challenge: c, Purpose: purpose})
 }
 
-// Checkin issues a check-in challenge to the lease holder.
+// Checkin issues a check-in challenge to the lease holder. Like Proof, it publishes no
+// refusal of its own: anyone with a session can send one, so it must not replace a
+// request's result (security review and PR Reviewer Guide "Overwritten outcome" on #16).
 func (m *Machine) Checkin(ctx context.Context, id pqcrypto.UUID) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	err := m.doCheckin(ctx, id)
-	m.outcome(ctx, id, err)
-	return err
+	return m.doCheckin(ctx, id)
 }
 
 func (m *Machine) doCheckin(ctx context.Context, id pqcrypto.UUID) error {
@@ -184,9 +184,7 @@ func (m *Machine) leaseAccount(id pqcrypto.UUID) (*Account, error) {
 func (m *Machine) Proof(ctx context.Context, id pqcrypto.UUID, raw []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	err := m.doProof(ctx, id, raw)
-	m.outcome(ctx, id, err)
-	return err
+	return m.doProof(ctx, id, raw)
 }
 
 func (m *Machine) doProof(ctx context.Context, id pqcrypto.UUID, raw []byte) error {
@@ -207,6 +205,17 @@ func (m *Machine) doProof(ctx context.Context, id pqcrypto.UUID, raw []byte) err
 	return ErrNoChallenge
 }
 
+// deliverable checks that a proven checkout may open its lease now.
+func (m *Machine) deliverable(ctx context.Context, a *Account, chain *pqcrypto.Chain) error {
+	if err := m.unflushed(ctx, a); err != nil {
+		return err
+	}
+	if err := blocked(a); err != nil {
+		return err
+	}
+	return m.sealedForTarget(ctx, a, chain)
+}
+
 // deliver opens the lease, then verifies the credential once at the pinned target and wraps
 // the DEK to the requester's enc_key_id (§3.6 steps 3–4).
 func (m *Machine) deliver(ctx context.Context, a *Account, c *Challenge, raw []byte) error {
@@ -216,15 +225,11 @@ func (m *Machine) deliver(ctx context.Context, a *Account, c *Challenge, raw []b
 		return err
 	}
 	if _, err := pqcrypto.VerifyPoP(raw, tx, d, c.Challenge, pqcrypto.PurposeDeliver); err != nil {
-		return err
+		return err // unauthenticated: published nowhere, the request's result stands
 	}
-	if err := m.unflushed(ctx, a); err != nil {
-		return err
-	}
-	if err := blocked(a); err != nil {
-		return err
-	}
-	if err := m.sealedForTarget(ctx, a, chain); err != nil {
+	// The requester proved possession: its refusals from here on are its outcome.
+	if err := m.deliverable(ctx, a, chain); err != nil {
+		m.outcome(ctx, tx.RequestID, err)
 		return err
 	}
 	now := m.now()

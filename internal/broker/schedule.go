@@ -45,6 +45,9 @@ func Outstanding(s *pqcrypto.Schedule, a *Account, now time.Time) (k pqcrypto.Co
 func (m *Machine) Tick(ctx context.Context) error {
 	m.mu.Lock()
 	m.refusals(ctx)
+	if err := m.J.PruneChallenges(m.now()); err != nil {
+		log.Printf("[BROKER] expired challenges not pruned: %v", err)
+	}
 	accts, err := m.J.Accounts()
 	m.mu.Unlock()
 	if err != nil {
@@ -100,6 +103,12 @@ func (m *Machine) tick(ctx context.Context, id pqcrypto.UUID) error {
 		// rotation path and scheduled occurrences wait (§3.6 step 5).
 		if l.State == LeaseActive && !now.Before(l.ExpiresAt) {
 			l.State, l.NextAttemptAt, l.Mirrored = LeaseRotationPending, now, false
+			// A wrap still undelivered is dropped and its expiry queued in the same save,
+			// before any later lease can replace this one (security review of #16).
+			if l.Delivery != nil {
+				l.Delivery = nil
+				a.Results = append(a.Results, TxResult{RequestID: l.RequestID, Result: ReasonLeaseExpired})
+			}
 			if err := m.J.Save(a); err != nil {
 				return err
 			}

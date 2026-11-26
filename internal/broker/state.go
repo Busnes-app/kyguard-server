@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -361,6 +362,30 @@ func (j *Journal) GetChallenge(id pqcrypto.UUID) *Challenge {
 		return nil
 	})
 	return c
+}
+
+// PruneChallenges deletes every challenge expired at now, so abandoned requests do not grow
+// the journal (PR Reviewer Guide "Unpruned challenges" on #16).
+func (j *Journal) PruneChallenges(now time.Time) error {
+	return j.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketChallenges)
+		var dead [][]byte
+		if err := b.ForEach(func(k, v []byte) error {
+			var c Challenge
+			if json.Unmarshal(v, &c) != nil || !now.Before(c.ExpiresAt) {
+				dead = append(dead, bytes.Clone(k))
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, k := range dead {
+			if err := b.Delete(k); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // SaveConsume writes an account record, deletes the request's challenge (single use) and,

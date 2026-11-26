@@ -454,7 +454,12 @@ Numbered separately: these came from the parallel crypto stack.
     The bucket holds at most 1,024 refusals, so a Control Plane that pushes junk while
     withholding acknowledgements cannot grow the journal; past that a refusal is sent once.
     A checkout wrap whose delivery fails is pending, not refused: the lease stays active
-    and the journaled wrap is re-sent.
+    and the journaled wrap is re-sent. Only an outcome the requester authenticated reaches
+    the mailbox: a transaction's own refusal (a replay keeps the earlier result) or one after
+    its possession proof verified. A check-in request or a proof that does not verify
+    publishes nothing, because any session can send one. A lease that expires with its wrap
+    undelivered queues `lease_expired` in the same save. Expired challenges are pruned on
+    every tick.
 
 ## Post-quantum key exchange (PQC plan W0, owner-approved 2026-11-25)
 
