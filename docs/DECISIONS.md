@@ -509,3 +509,7 @@ Numbered separately: these came from the parallel crypto stack.
     gets 409) and the draft is removed only after admission, so a failed admission keeps the
     signatures (status `ready`). Deleting a draft does not veto a policy already at quorum:
     it is a valid Custodian-signed manifest that anyone may submit at `POST /api/manifests`.
+212. §7.3 rule 6, §7.5 (policy draft route classes). Every draft route is `session` class.
+    Saving and deleting a draft need a step-up within five minutes. Fetching a draft, posting
+    signatures, and `GET /api/principals` and `GET /api/trust` need none: the signatures are
+    what authorize a policy, as for `POST /api/manifests` (16a).
