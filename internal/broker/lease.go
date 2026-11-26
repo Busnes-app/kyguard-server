@@ -60,6 +60,12 @@ func accountOf(raw []byte) (pqcrypto.UUID, error) {
 func (m *Machine) Tx(ctx context.Context, raw []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	err := m.doTx(ctx, raw)
+	m.outcome(ctx, requestIDOf(raw), err)
+	return err
+}
+
+func (m *Machine) doTx(ctx context.Context, raw []byte) error {
 	id, err := accountOf(raw)
 	if err != nil {
 		return err
@@ -124,6 +130,12 @@ func (m *Machine) challenge(ctx context.Context, a *Account, id pqcrypto.UUID, p
 func (m *Machine) Checkin(ctx context.Context, id pqcrypto.UUID) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	err := m.doCheckin(ctx, id)
+	m.outcome(ctx, id, err)
+	return err
+}
+
+func (m *Machine) doCheckin(ctx context.Context, id pqcrypto.UUID) error {
 	a, err := m.leaseAccount(id)
 	if err != nil {
 		return err
@@ -168,6 +180,12 @@ func (m *Machine) leaseAccount(id pqcrypto.UUID) (*Account, error) {
 func (m *Machine) Proof(ctx context.Context, id pqcrypto.UUID, raw []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	err := m.doProof(ctx, id, raw)
+	m.outcome(ctx, id, err)
+	return err
+}
+
+func (m *Machine) doProof(ctx context.Context, id pqcrypto.UUID, raw []byte) error {
 	c := m.J.GetChallenge(id)
 	if c == nil || !m.now().Before(c.ExpiresAt) {
 		return ErrNoChallenge
@@ -270,6 +288,29 @@ func (m *Machine) deliver(ctx context.Context, a *Account, c *Challenge, raw []b
 func (m *Machine) Refused(ctx context.Context, id pqcrypto.UUID, code string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.refuse(ctx, id, code)
+}
+
+// outcome records how a relayed message for id ended, with m.mu still held from its
+// processing, so outcomes reach the mailbox in the order they happened: an older refusal
+// never overwrites a newer success (PR Reviewer Guide "Stale refusal" on #16).
+func (m *Machine) outcome(ctx context.Context, id pqcrypto.UUID, err error) {
+	if !id.Valid() {
+		return
+	}
+	code := ""
+	if err != nil {
+		log.Printf("[BROKER] request %s refused: %v", id, err)
+		code = err.Error()
+		var perr pqcrypto.Error
+		if errors.As(err, &perr) {
+			code = string(perr)
+		}
+	}
+	m.refuse(ctx, id, code) // an accepted message supersedes an earlier refusal
+}
+
+func (m *Machine) refuse(ctx context.Context, id pqcrypto.UUID, code string) {
 	if code == "" {
 		if err := m.J.DeleteRefusal(id); err != nil {
 			log.Printf("[BROKER] refusal of %s not dropped: %v", id, err)
@@ -283,6 +324,15 @@ func (m *Machine) Refused(ctx context.Context, id pqcrypto.UUID, code string) {
 		}
 	}
 	m.refusals(ctx)
+}
+
+// requestIDOf is a relayed transaction's request_id, or "" when it has none.
+func requestIDOf(raw []byte) pqcrypto.UUID {
+	var tx struct {
+		RequestID pqcrypto.UUID `json:"request_id"`
+	}
+	json.Unmarshal(raw, &tx)
+	return tx.RequestID
 }
 
 // refusals sends the journaled refusals. One the Control Plane rejects is dropped: it would

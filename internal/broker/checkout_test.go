@@ -224,7 +224,11 @@ func TestCheckinTriggersTheCleanupRotation(t *testing.T) {
 	if err := c.m.Proof(ctx, co.RequestID, bad); err == nil {
 		t.Fatal("check-in with another key accepted")
 	}
-	c.m.Refused(ctx, co.RequestID, "bad_proof") // as App.transaction publishes it
+	// The refusal is published before Proof returns, under the same mutex hold, so a later
+	// accepted proof always supersedes it (PR Reviewer Guide "Stale refusal" on #16).
+	if _, res := c.delivery(co.RequestID); res == "" || res == "ok" {
+		t.Fatalf("result after the refused check-in %q", res)
+	}
 	good, _ := co.Proof(ch, pqcrypto.PurposeCheckin)
 	if err := c.m.Proof(ctx, co.RequestID, good); err != nil {
 		t.Fatal(err)
