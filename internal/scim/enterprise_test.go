@@ -26,7 +26,7 @@ func TestEnterpriseUserAttributes(t *testing.T) {
 	const token = "scim-secret-bearer-token"
 	srv := scim.NewServer(st, config.SCIMConfig{Enabled: true, BearerToken: token}, "http://localhost:8080")
 	mux := http.NewServeMux()
-	srv.RegisterRoutes(mux)
+	srv.RegisterRoutes(mux.Handle)
 	h := srv.AuthMiddleware(mux)
 	do := func(method, path string, body any) *httptest.ResponseRecorder {
 		t.Helper()
