@@ -607,6 +607,8 @@ func TestANewChallengeClearsTheEarlierResult(t *testing.T) {
 	}
 	if mb, _ := v.TxMailbox(ctx, "req"); mb.Result != "ok" || mb.Challenge != "c2" {
 		t.Fatalf("after delivery %+v", mb)
+	}
+}
 
 // A retry of a completed enrollment's reservation takes no new version and no lock (PR
 // Reviewer Guide "Retry Idempotency" on #15).
