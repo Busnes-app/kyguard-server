@@ -24,7 +24,7 @@ CREATE TABLE attribute_values (
     UNIQUE (definition_id, entity_id)
 );
 CREATE INDEX idx_attribute_values_entity ON attribute_values(entity_id);`),
-		dialects(201, "kyguard_policy_drafts", `
+		dialects(301, "kyguard_policy_drafts", `
 CREATE TABLE policy_drafts (
     id TEXT PRIMARY KEY,
     account_id TEXT NOT NULL UNIQUE REFERENCES accounts(id),
