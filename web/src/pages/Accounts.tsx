@@ -198,8 +198,8 @@ interface Detail {
 // AccountDetail edits inventory metadata. Credentials are never shown or entered here: they
 // live only in kyguard-cli (spec §10).
 const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onClose }) => {
-  const detail = useJSON<Detail>(`/api/accounts/${id}`, { keepOnTemporaryError: true });
   const statusWrite = useReportingWrite('account-status');
+  const detail = useJSON<Detail>(`/api/accounts/${id}`, { keepOnTemporaryError: true, writeRevision: statusWrite.revision });
   const { pending: definitionsPending } = useReportingWrite('attribute-definitions');
   const defs = useJSON<Record<string, AttributeDefinition[]>>(definitionsPending ? null : '/api/attributes');
   const [err, setErr] = useState('');
@@ -207,12 +207,12 @@ const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onCl
   const ref = useRef<HTMLDialogElement>(null);
   // Writes still in flight: closing waits for them, so the page reloads after they land.
   const pending = useRef(new Set<Promise<string>>());
-  const act = async (fail: Promise<string>) => {
+  const act = async (fail: Promise<string>, { reload = true } = {}) => {
     pending.current.add(fail);
     try {
       const f = await fail;
       setErr(f);
-      if (!f) detail.reload();
+      if (!f && reload) detail.reload();
       return f;
     } finally {
       pending.current.delete(fail);
@@ -220,7 +220,7 @@ const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onCl
   };
   const changeStatus = (status: 'active' | 'decommissioned') => statusWrite.run(async () => {
     if (status === 'decommissioned' && !window.confirm('Decommission this account? It leaves the traffic light.')) return false;
-    const fail = await act(send('PATCH', `/api/accounts/${id}`, { status }));
+    const fail = await act(send('PATCH', `/api/accounts/${id}`, { status }), { reload: false });
     return !fail;
   });
   const close = async () => {

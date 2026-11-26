@@ -22,7 +22,8 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 ### Changes
 
 - Reporting screens prevent overlapping draft saves and deletes, attribute definition
-  changes, and duplicate inventory writes. Account details preserve unsaved text through
+  changes, and duplicate inventory writes. Reopened account details refresh after a pending
+  status change commits. Account details preserve unsaved text through
   temporary refresh errors and save each enum or owner change before accepting another.
 - Documentation cleanup: clarified `README.md` quick-start and documentation index, added breadcrumbs to retained guides, and removed leftover base-scaffold UI verification logs, captures, and interop spike notes.
 - The web shell asks for a fresh authenticator code when a privileged action is refused because

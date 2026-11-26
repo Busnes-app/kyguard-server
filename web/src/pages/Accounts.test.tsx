@@ -291,7 +291,7 @@ it('blocks a newer owner selection until the current change finishes', async () 
   expect(writes).toEqual(['', 'u2']);
 });
 
-it('blocks a duplicate decommission while the status PATCH is pending', async () => {
+it('guards decommission and refreshes a reopened dialog when its PATCH settles', async () => {
   let release: () => void = () => {};
   const held = new Promise<void>((resolve) => { release = resolve; });
   const patches = vi.fn();
@@ -311,13 +311,20 @@ it('blocks a duplicate decommission while the status PATCH is pending', async ()
     throw new Error('unexpected fetch ' + url);
   }));
   try {
-    render(<Accounts isAdmin />);
+    const view = render(<Accounts isAdmin />);
     fireEvent.click(await screen.findByText('dc1 / svc-a'));
     screen.getByLabelText('Account details').setAttribute('open', '');
     const button = await screen.findByRole('button', { name: 'Decommission' });
     fireEvent.click(button);
     fireEvent.click(button);
     const disabled = button.hasAttribute('disabled');
+
+    view.rerender(<div />);
+    view.rerender(<Accounts isAdmin />);
+    fireEvent.click(await screen.findByText('dc1 / svc-a'));
+    screen.getByLabelText('Account details').setAttribute('open', '');
+    const reopened = await screen.findByRole('button', { name: 'Decommission' });
+    expect(reopened.hasAttribute('disabled')).toBe(true);
     release();
     await screen.findByRole('button', { name: 'Reactivate' });
     expect(patches.mock.calls).toEqual([[JSON.stringify({ status: 'decommissioned' })]]);
