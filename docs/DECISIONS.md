@@ -327,6 +327,22 @@ Numbered separately: these came from the parallel crypto stack.
     unrecognized prompt is detected by the absence of a known one within the timeout.
 51. §4.4 (SSH baseline). SSH verification is the fresh login alone; the baseline is the
     `chage -l` last-change date when the account may read it and empty otherwise.
+52. §4.5 (quarantine on the Control Plane). The Control Plane allows a reservation over a held
+    lock only when the broker last reported the account `quarantined` or `auth_failed`; the
+    broker checks again and refuses an enrollment while a rotation is open on a healthy
+    account.
+53. §4.5 (which operation signs the aborts). The `abort` (`superseded_by_reenrollment`)
+    receipts carry the enrollment's `operation_id`; the stuck run they end is found by the
+    envelope's `secret_version` and marked `aborted`.
+54. §4.5 (CLI wiring). `cli.SealEnrollment` is the CLI's half (seal, sign the candidate and
+    the `enroll` transaction from its own verified state); the `kyguard-cli vault enroll`
+    command lands with the session-backed `cli.Client` (§7.6).
+55. §4.5 step 1 (who may reserve). The reservation request is signed by an active key of a
+    principal in the current policy's `enroller_principal_ids` (domain type
+    `enroll_reservation`, at most 5 minutes old); otherwise 403 and no lock is taken. It
+    stops anyone who is not an enroller from holding the account's lock for 15 minutes; it
+    authorizes nothing at the broker.
+
 61. §4.1 (sync frame bound). `cptrust.Submit` refuses a manifest over 512 KiB
     (`MaxManifest`), so any stored manifest fits a 4 MiB channel frame base64url-encoded. A
     `sync` page carries at most 64 manifests whose encoded size stays within `SyncBudget`
@@ -361,6 +377,11 @@ Numbered separately: these came from the parallel crypto stack.
     `ad_ldaps` connector closes the connection when the context ends during a bind, search
     or modify (go-ldap requests otherwise wait for the fixed timeout), and `Change` sends
     no modify once the context has ended, checked again after the intent commits.
+68. §4.5 step 3 (receipt delivery). Enrollment receipts journaled but not acknowledged by
+    the Control Plane are re-sent by every scheduler tick as well as by recovery, so a
+    transient delivery failure on an open channel does not leave the enrollment open (and
+    rotation blocked) until the next reconnect. The re-send never binds again; resubmitting
+    the enrollment is a replay and is refused.
 70. §4.1 (pushes). A Control Plane push that finds the broker's 16-slot queue full is
     dropped and logged, never waited for, so results for pending calls keep flowing. A
     dropped push is a lost relay: nothing was persisted, and the CLI retries or the
@@ -383,9 +404,22 @@ Numbered separately: these came from the parallel crypto stack.
     change and the target's minimum password age at every pre-rotation login, through the
     connector's `AgeReporter`, so the schedule stop and refusal retries use the target's
     real values; a connector that cannot read them leaves the journaled values unchanged.
+75. §4.1 (relay across replicas). A Control Plane push to a broker (an enrollment now, the
+    checkout relays later) goes straight down the channel when the receiving replica holds
+    it, and otherwise into the shared `broker_outbox` table (migration 102, unmerged),
+    which the replica holding the broker's channel drains every second with one
+    `DELETE ... RETURNING`, so each queued push is taken once. A queued push expires with
+    its transaction. The submission answers 202 either way; the CLI follows the
+    enrollment's state.
 77. §3.5, §3.6 (chain room for completion). The spec bounds neither a chain's size nor
     `standing_recipient_principal_ids`. A policy may name at most 32 standing recipients
     (`pqcrypto.MaxStandingRecipients`; refused as `invalid_body`), and the Control Plane
     stores an envelope only if it leaves 96 KiB of the 256 KiB chain (`store.MaxEnvelope`).
     That room holds `commit_target` plus a `release` with all 32 wraps, so an admitted
     rotation can always finish and give back its lock.
+78. §4.5, §7.3 rule 6, §7.5 (broker route classes). Every enrollment and transaction route
+    is `session` class in the #18 registry. Reserving and submitting an enrollment need a
+    step-up within five minutes (§4.5 "fresh step-up"); so does submitting a transaction,
+    as a broker action. The status reads, the possession proof and the check-in are
+    `session` with no window: they continue a transaction already submitted under step-up,
+    the proof is bound to it, and a check-in may come hours later when the lease ends.

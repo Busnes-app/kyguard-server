@@ -125,6 +125,11 @@ func settleLoop(ctx context.Context, st store.Store, tick, grace time.Duration) 
 			if err := settlePairingIntents(ctx, st, grace); err != nil && ctx.Err() == nil {
 				log.Printf("[BROKER] settling pairing intents: %v", err)
 			}
+			if n, err := st.Vault().ExpireEnrollments(ctx, time.Now().UTC()); err != nil && ctx.Err() == nil {
+				log.Printf("[VAULT] expiring enrollment reservations: %v", err)
+			} else if n > 0 {
+				log.Printf("[VAULT] %d enrollment reservations expired; their locks went back to the holders they displaced", n)
+			}
 		}
 	}
 }

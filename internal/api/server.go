@@ -20,6 +20,7 @@ import (
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
 	"github.com/Busnes-app/kyguard-server/internal/config"
 	"github.com/Busnes-app/kyguard-server/internal/cptrust"
+	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
 	"github.com/Busnes-app/kyguard-server/internal/scim"
 	"github.com/Busnes-app/kyguard-server/internal/sso"
 	"github.com/Busnes-app/kyguard-server/internal/store"
@@ -367,6 +368,7 @@ func (s *Server) routes() {
 
 	// SAML is removed (spec §7.2); keep its old paths out of the SPA fallback.
 	s.brokerRoutes()
+	s.enrollRoutes()
 
 	s.route(ClassPublic, "/saml/", http.NotFoundHandler())
 
@@ -528,6 +530,15 @@ func (s *Server) writeJSON(w http.ResponseWriter, status int, data any) {
 
 func (s *Server) writeError(w http.ResponseWriter, status int, message string) {
 	s.writeJSON(w, status, map[string]string{"error": message})
+}
+
+// relay hands a push to the broker through this replica's listener, or queues it for the
+// replica that holds the broker's channel when this one runs none.
+func (s *Server) relay(ctx context.Context, broker pqcrypto.UUID, m brokerproto.Message, expires time.Time) error {
+	if l := s.BrokerListener(); l != nil {
+		return l.Relay(ctx, broker, m, expires)
+	}
+	return s.store.Vault().QueuePush(ctx, &store.Push{BrokerID: string(broker), Type: m.Type, Body: m.Body, ExpiresAt: expires})
 }
 
 // BrokerListener returns the handler for the separate broker listener (§4.1), or nil when

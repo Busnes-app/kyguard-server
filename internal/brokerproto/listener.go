@@ -40,6 +40,8 @@ type Listener struct {
 	CA         *CA
 	MinVersion string
 	Now        func() time.Time
+	// RelayPoll is how often a channel drains its broker's queued pushes (default 1 s).
+	RelayPoll time.Duration
 
 	mu      sync.Mutex
 	conns   map[pqcrypto.UUID]*websocket.Conn
@@ -224,6 +226,9 @@ func (l *Listener) handleChannel(w http.ResponseWriter, r *http.Request) {
 		l.mu.Unlock()
 		c.CloseNow()
 	}()
+	dctx, stop := context.WithCancel(r.Context())
+	defer stop()
+	go l.drain(dctx, l.Store.Vault(), id, c)
 	for {
 		_, data, err := c.Read(r.Context())
 		if err != nil {
@@ -245,6 +250,46 @@ func (l *Listener) handleChannel(w http.ResponseWriter, r *http.Request) {
 		reply, _ := json.Marshal(res)
 		if err := c.Write(r.Context(), websocket.MessageText, reply); err != nil {
 			return
+		}
+	}
+}
+
+// Relay delivers a push to the broker: straight down its channel when this replica holds
+// it, otherwise through the shared queue, which the replica holding the channel drains.
+// A queued push that is not taken by expires is dropped.
+func (l *Listener) Relay(ctx context.Context, broker pqcrypto.UUID, m Message, expires time.Time) error {
+	if l.Send(ctx, broker, m) == nil {
+		return nil
+	}
+	return l.Store.Vault().QueuePush(ctx, &store.Push{BrokerID: string(broker), Type: m.Type, Body: m.Body, ExpiresAt: expires})
+}
+
+// drain sends the broker's queued pushes down c until ctx ends.
+func (l *Listener) drain(ctx context.Context, vs store.VaultStore, broker pqcrypto.UUID, c *websocket.Conn) {
+	every := l.RelayPoll
+	if every <= 0 {
+		every = time.Second
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		ps, err := vs.TakePushes(ctx, string(broker), 16, time.Now())
+		if err != nil && ctx.Err() == nil {
+			log.Printf("[BROKER] queued pushes for %s: %v", broker, err)
+		}
+		for _, p := range ps {
+			b, _ := json.Marshal(Message{V: 1, Type: p.Type, Body: p.Body})
+			if err := c.Write(ctx, websocket.MessageText, b); err != nil {
+				return // the channel closed; a taken push is a lost relay (decision 70)
+			}
+		}
+		if len(ps) == 16 {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
 		}
 	}
 }

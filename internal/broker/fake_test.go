@@ -135,8 +135,13 @@ type rig struct {
 
 func newRig(t *testing.T, edit ...func(*pqcrypto.PolicyManifest)) *rig {
 	t.Helper()
+	return newRigWith(t, false, edit...)
+}
+
+func newRigWith(t *testing.T, noSeed bool, edit ...func(*pqcrypto.PolicyManifest)) *rig {
+	t.Helper()
 	tg := newTarget(initialPassword)
-	r := brokerrig.New(t, brokerrig.Options{Connector: tg, Password: initialPassword, Edit: edit})
+	r := brokerrig.New(t, brokerrig.Options{Connector: tg, Password: initialPassword, NoSeed: noSeed, Edit: edit})
 	return &rig{Rig: r, target: tg, pol: r.Pol, cp: r.CP}
 }
 

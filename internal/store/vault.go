@@ -1,12 +1,15 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // ErrLocked means another operation holds the account's rotation lock.
@@ -24,6 +27,16 @@ const (
 	MaxChain      = 256 << 10
 	MaxDescriptor = 64 << 10
 	MaxEnvelope   = MaxChain - 96<<10
+)
+
+// LockAction is what Complete does with the lock op holds.
+type LockAction int
+
+// Lock actions.
+const (
+	LockKeep    LockAction = iota
+	LockDelete             // delete op's lock; never another's
+	LockRestore            // delete op's enrollment lock and reinstate the holder it displaced
 )
 
 // VaultStore holds accounts, envelopes, receipts and rotation state (spec §3.5, §4.3, §9.2).
@@ -61,11 +74,34 @@ type VaultStore interface {
 	// Chain returns one envelope of the account with its receipts, or ErrNotFound.
 	Chain(ctx context.Context, accountID, envelopeID string) (*StoredChain, error)
 	// Complete appends receipts by compare-and-swap (a byte-identical re-append is a no-op),
-	// sets current_envelope_id when current is non-empty and above the current version,
-	// moves op's run to runState when non-empty and, when release is true, deletes the lock
-	// held by op. One transaction (§4.3 rule 7). Receipts that are all already stored change
-	// nothing else: a delayed duplicate never rewinds derived state.
-	Complete(ctx context.Context, op, accountID string, rs []*StoredReceipt, current, runState string, release bool) error
+	// marks the run of every envelope a new abort receipt names aborted, sets
+	// current_envelope_id when current is non-empty and above the current version, moves
+	// op's run to runState when non-empty, and applies lock to the lock held by op. One
+	// transaction (§4.3 rule 7, §4.5). Receipts that are all already stored change nothing
+	// else: a delayed duplicate never rewinds derived state.
+	Complete(ctx context.Context, op, accountID string, rs []*StoredReceipt, current, runState string, lock LockAction) error
+	// ReserveEnrollment moves the account's lock to op as a reserved enrollment with a new
+	// version, keeping the holder it displaces (a stuck rotation) to restore later. It is
+	// allowed when no lock is held or the account is quarantined (§4.5 step 1); a retry by
+	// op returns the same version. An op that already ended, or whose transaction (requestID)
+	// is already stored, is refused with ErrConflict.
+	ReserveEnrollment(ctx context.Context, accountID, op, requestID string, now time.Time, ttl time.Duration) (uint64, error)
+	// AcceptEnrollment moves op's reservation from reserved to accepted by compare-and-swap;
+	// ErrConflict if it expired or is not op's. Accepting twice is a no-op.
+	AcceptEnrollment(ctx context.Context, accountID, op string, now time.Time) error
+	// ExpireEnrollments releases every reservation still reserved past its expiry and
+	// restores the holder it displaced. An accepted reservation never expires.
+	ExpireEnrollments(ctx context.Context, now time.Time) (int, error)
+	// EnrollmentState is reserved or accepted while op holds the lock, then committed or
+	// failed by its receipts, else expired.
+	EnrollmentState(ctx context.Context, accountID, op string) (string, error)
+	// PutTx stores a relayed transaction once.
+	PutTx(ctx context.Context, requestID, accountID, actionType, digest string, raw []byte) error
+	// QueuePush stores a Control Plane push for a broker until expires, for whichever
+	// replica holds the broker's channel; TakePushes removes and returns, oldest first, at
+	// most limit unexpired pushes for the broker. A push is taken once.
+	QueuePush(ctx context.Context, p *Push) error
+	TakePushes(ctx context.Context, brokerID string, limit int, now time.Time) ([]*Push, error)
 	SetHealth(ctx context.Context, accountID, health, reason string) error
 	// Lock returns the operation holding the account's lock, or "".
 	Lock(ctx context.Context, accountID string) (op string, version uint64, err error)
@@ -234,6 +270,19 @@ func (v vaultStore) heldBy(ctx context.Context, tx *sql.Tx, accountID string) (s
 	return op, uint64(ver), err
 }
 
+// notEnded refuses, with ErrConflict, an operation that already has receipts on the account.
+func (v vaultStore) notEnded(ctx context.Context, tx *sql.Tx, accountID, op string) error {
+	var ended int
+	if err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT COUNT(1) FROM envelope_receipts r JOIN secret_envelopes e ON e.envelope_id = r.envelope_id
+ WHERE r.operation_id = ? AND e.account_id = ?`), op, accountID).Scan(&ended); err != nil {
+		return err
+	}
+	if ended > 0 {
+		return ErrConflict
+	}
+	return nil
+}
+
 func (v vaultStore) Reserve(ctx context.Context, accountID, op string, reported uint64) (uint64, error) {
 	var version uint64
 	err := v.s.inTx(ctx, func(tx *sql.Tx) error {
@@ -254,13 +303,8 @@ func (v vaultStore) Reserve(ctx context.Context, accountID, op string, reported 
 		}
 		// An operation that already ended never reserves again: a late retry would take a new
 		// version and a lock nothing releases (PR Reviewer Guide on #10).
-		var ended int
-		if err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT COUNT(1) FROM envelope_receipts r JOIN secret_envelopes e ON e.envelope_id = r.envelope_id
- WHERE r.operation_id = ? AND e.account_id = ?`), op, accountID).Scan(&ended); err != nil {
+		if err := v.notEnded(ctx, tx, accountID, op); err != nil {
 			return err
-		}
-		if ended > 0 {
-			return ErrConflict
 		}
 		version = max(highest, reported) + 1
 		if version > 1<<63-1 {
@@ -473,7 +517,7 @@ func (v vaultStore) appendReceipt(ctx context.Context, tx *sql.Tx, r *StoredRece
 
 const zeroHash = "0000000000000000000000000000000000000000000000000000000000000000"
 
-func (v vaultStore) Complete(ctx context.Context, op, accountID string, rs []*StoredReceipt, current, runState string, release bool) error {
+func (v vaultStore) Complete(ctx context.Context, op, accountID string, rs []*StoredReceipt, current, runState string, lock LockAction) error {
 	return v.s.inTx(ctx, func(tx *sql.Tx) error {
 		if _, err := v.lockAccount(ctx, tx, accountID); err != nil {
 			return err
@@ -490,6 +534,13 @@ func (v vaultStore) Complete(ctx context.Context, op, accountID string, rs []*St
 			added, err := v.appendReceipt(ctx, tx, r)
 			if err != nil {
 				return err
+			}
+			if added && r.ReceiptType == "abort" {
+				if _, err := tx.ExecContext(ctx, v.s.rebind(`UPDATE rotation_runs SET state = 'aborted', updated_at = ?
+WHERE account_id = ? AND state <> 'release_authorized' AND secret_version = (SELECT secret_version FROM secret_envelopes WHERE envelope_id = ?)`),
+					time.Now().UTC(), accountID, r.EnvelopeID); err != nil {
+					return err
+				}
 			}
 			fresh = fresh || added
 		}
@@ -510,14 +561,248 @@ func (v vaultStore) Complete(ctx context.Context, op, accountID string, rs []*St
 				return err
 			}
 		}
-		if release {
+		switch lock {
+		case LockDelete:
 			// A delete by operation_id: it never removes another operation's lock (§4.3 rule 7).
 			if _, err := tx.ExecContext(ctx, v.s.rebind(`DELETE FROM rotation_locks WHERE account_id = ? AND operation_id = ?`), accountID, op); err != nil {
 				return err
 			}
+		case LockRestore:
+			return v.restore(ctx, tx, accountID, op)
 		}
 		return nil
 	})
+}
+
+// restore deletes op's enrollment lock and reinstates the holder it displaced, if any.
+func (v vaultStore) restore(ctx context.Context, tx *sql.Tx, accountID, op string) error {
+	var prev sql.NullString
+	var prevVer sql.NullInt64
+	err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT previous_operation_id, previous_secret_version FROM rotation_locks WHERE account_id = ? AND operation_id = ? AND kind = 'enrollment'`),
+		accountID, op).Scan(&prev, &prevVer)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // already released
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, v.s.rebind(`DELETE FROM rotation_locks WHERE account_id = ? AND operation_id = ?`), accountID, op); err != nil {
+		return err
+	}
+	return v.reinstate(ctx, tx, accountID, prev, prevVer)
+}
+
+// reinstate gives the lock back to the holder an enrollment displaced, if there was one.
+func (v vaultStore) reinstate(ctx context.Context, tx *sql.Tx, accountID string, prev sql.NullString, prevVer sql.NullInt64) error {
+	if !prev.Valid {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, v.s.rebind(`INSERT INTO rotation_locks (account_id, operation_id, secret_version, created_at) VALUES (?, ?, ?, ?)`),
+		accountID, prev.String, prevVer.Int64, time.Now().UTC())
+	return err
+}
+
+func (v vaultStore) ReserveEnrollment(ctx context.Context, accountID, op, requestID string, now time.Time, ttl time.Duration) (uint64, error) {
+	// Expiry commits on its own: a refusal below must not roll it back.
+	if err := v.s.inTx(ctx, func(tx *sql.Tx) error { return v.expire(ctx, tx, accountID, now) }); err != nil {
+		return 0, err
+	}
+	var version uint64
+	err := v.s.inTx(ctx, func(tx *sql.Tx) error {
+		highest, err := v.lockAccount(ctx, tx, accountID)
+		if err != nil {
+			return err
+		}
+		var health string
+		if err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT health FROM accounts WHERE id = ?`), accountID).Scan(&health); err != nil {
+			return err
+		}
+		holder, held, err := v.heldBy(ctx, tx, accountID)
+		if err != nil {
+			return err
+		}
+		if holder == op {
+			version = held
+			return nil
+		}
+		// A completed enrollment's retry takes no new version or lock (PR Reviewer Guide
+		// "Retry Idempotency" on #15), and neither does one whose transaction was already
+		// submitted: the stored transaction is immutable and names the old version
+		// ("Unusable Retry").
+		if err := v.notEnded(ctx, tx, accountID, op); err != nil {
+			return err
+		}
+		var submitted int
+		if err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT COUNT(1) FROM access_transactions WHERE request_id = ?`), requestID).Scan(&submitted); err != nil {
+			return err
+		}
+		if submitted > 0 {
+			return ErrConflict
+		}
+		quarantined := health == "quarantined" || health == "auth_failed"
+		var kind string
+		if holder != "" {
+			if err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT kind FROM rotation_locks WHERE account_id = ?`), accountID).Scan(&kind); err != nil {
+				return err
+			}
+		}
+		if holder != "" && (!quarantined || kind == "enrollment") {
+			return ErrLocked // an open rotation on a healthy account, or another enrollment
+		}
+		version = highest + 1
+		if _, err := tx.ExecContext(ctx, v.s.rebind(`UPDATE accounts SET highest_secret_version = ? WHERE id = ?`), int64(version), accountID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, v.s.rebind(`DELETE FROM rotation_locks WHERE account_id = ?`), accountID); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, v.s.rebind(`INSERT INTO rotation_locks (account_id, operation_id, secret_version, created_at, kind, state, previous_operation_id, previous_secret_version, expires_at)
+VALUES (?, ?, ?, ?, 'enrollment', 'reserved', ?, ?, ?)`), accountID, op, int64(version), now, nullable(holder), nullVersion(holder, held), now.Add(ttl))
+		return err
+	})
+	return version, err
+}
+
+func nullVersion(holder string, v uint64) any {
+	if holder == "" {
+		return nil
+	}
+	return int64(v)
+}
+
+// expire restores the displaced holder of an account's expired reservation. The state and
+// deadline check is the delete itself, so an acceptance that commits first keeps its lock
+// (PostgreSQL rechecks the WHERE after waiting on the accepting row).
+func (v vaultStore) expire(ctx context.Context, tx *sql.Tx, accountID string, now time.Time) error {
+	var prev sql.NullString
+	var prevVer sql.NullInt64
+	err := tx.QueryRowContext(ctx, v.s.rebind(`DELETE FROM rotation_locks WHERE account_id = ? AND kind = 'enrollment' AND state = 'reserved' AND expires_at <= ?
+RETURNING previous_operation_id, previous_secret_version`), accountID, now).Scan(&prev, &prevVer)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return v.reinstate(ctx, tx, accountID, prev, prevVer)
+}
+
+func (v vaultStore) AcceptEnrollment(ctx context.Context, accountID, op string, now time.Time) error {
+	// Expiry commits on its own: the refused CAS below must not roll it back.
+	if err := v.s.inTx(ctx, func(tx *sql.Tx) error { return v.expire(ctx, tx, accountID, now) }); err != nil {
+		return err
+	}
+	return v.s.inTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, v.s.rebind(`UPDATE rotation_locks SET state = 'accepted' WHERE account_id = ? AND operation_id = ? AND kind = 'enrollment' AND state IN ('reserved', 'accepted')`), accountID, op)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil || n != 1 {
+			if err == nil {
+				err = ErrConflict
+			}
+			return err
+		}
+		return nil
+	})
+}
+
+func (v vaultStore) ExpireEnrollments(ctx context.Context, now time.Time) (int, error) {
+	rows, err := v.s.db.QueryContext(ctx, v.s.rebind(`SELECT account_id FROM rotation_locks WHERE kind = 'enrollment' AND state = 'reserved' AND expires_at <= ?`), now)
+	if err != nil {
+		return 0, err
+	}
+	var accts []string
+	for rows.Next() {
+		var a string
+		if err := rows.Scan(&a); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		accts = append(accts, a)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for _, a := range accts {
+		if err := v.s.inTx(ctx, func(tx *sql.Tx) error { return v.expire(ctx, tx, a, now) }); err != nil {
+			return 0, err
+		}
+	}
+	return len(accts), nil
+}
+
+// Push is one queued Control Plane push.
+type Push struct {
+	BrokerID  string
+	Type      string
+	Body      []byte
+	ExpiresAt time.Time
+}
+
+func (v vaultStore) QueuePush(ctx context.Context, p *Push) error {
+	id, err := uuid.NewV7() // time-ordered, so pushes go out oldest first
+	if err != nil {
+		return err
+	}
+	_, err = v.s.db.ExecContext(ctx, v.s.rebind(`INSERT INTO broker_outbox (id, broker_id, type, body, expires_at) VALUES (?, ?, ?, ?, ?)`),
+		id.String(), p.BrokerID, p.Type, string(p.Body), p.ExpiresAt.UTC())
+	return err
+}
+
+func (v vaultStore) TakePushes(ctx context.Context, brokerID string, limit int, now time.Time) ([]*Push, error) {
+	var out []*Push
+	err := v.s.inTx(ctx, func(tx *sql.Tx) error {
+		out = nil
+		if _, err := tx.ExecContext(ctx, v.s.rebind(`DELETE FROM broker_outbox WHERE expires_at <= ?`), now.UTC()); err != nil {
+			return err
+		}
+		// One DELETE ... RETURNING: concurrent takers never both get a row.
+		rows, err := tx.QueryContext(ctx, v.s.rebind(`DELETE FROM broker_outbox WHERE id IN (SELECT id FROM broker_outbox WHERE broker_id = ? ORDER BY id LIMIT ?)
+ RETURNING id, type, body, expires_at`), brokerID, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		ids := map[*Push]string{}
+		for rows.Next() {
+			var p Push
+			var id, body string
+			if err := rows.Scan(&id, &p.Type, &body, &p.ExpiresAt); err != nil {
+				return err
+			}
+			p.BrokerID, p.Body = brokerID, []byte(body)
+			ids[&p] = id
+			out = append(out, &p)
+		}
+		slices.SortFunc(out, func(a, b *Push) int { return cmp.Compare(ids[a], ids[b]) })
+		return rows.Err()
+	})
+	return out, err
+}
+
+func (v vaultStore) PutTx(ctx context.Context, requestID, accountID, actionType, digest string, raw []byte) error {
+	// Insert-or-keep, then compare: two identical submissions racing on PostgreSQL both
+	// succeed, and a different transaction under the same request ID is a conflict (Guide
+	// on #15, "Concurrent retries").
+	if _, err := v.s.db.ExecContext(ctx, v.s.rebind(`INSERT INTO access_transactions (request_id, account_id, action_type, digest, tx, created_at) VALUES (?, ?, ?, ?, ?, ?)
+ ON CONFLICT DO NOTHING`), requestID, accountID, actionType, digest, string(raw), time.Now().UTC()); err != nil {
+		return err
+	}
+	// No conflict target: request_id and digest are both unique, and PostgreSQL raises a
+	// concurrent clash on a unique index the target does not name.
+	var have string
+	err := v.s.db.QueryRowContext(ctx, v.s.rebind(`SELECT tx FROM access_transactions WHERE request_id = ?`), requestID).Scan(&have)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrConflict // the digest belongs to another request
+	} else if err != nil {
+		return err
+	}
+	if have != string(raw) {
+		return ErrConflict
+	}
+	return nil
 }
 
 func (v vaultStore) SetHealth(ctx context.Context, accountID, health, reason string) error {
@@ -555,4 +840,29 @@ func (v vaultStore) EnvelopeByDigest(ctx context.Context, digest string) ([]byte
 		return nil, ErrNotFound
 	}
 	return []byte(raw), err
+}
+
+func (v vaultStore) EnrollmentState(ctx context.Context, accountID, op string) (string, error) {
+	var state string
+	err := v.s.db.QueryRowContext(ctx, v.s.rebind(`SELECT state FROM rotation_locks WHERE account_id = ? AND operation_id = ? AND kind = 'enrollment'`), accountID, op).Scan(&state)
+	if err == nil {
+		return state, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", err
+	}
+	var commits, aborts int
+	if err := v.s.db.QueryRowContext(ctx, v.s.rebind(`SELECT
+ (SELECT COUNT(1) FROM envelope_receipts r JOIN secret_envelopes e ON e.envelope_id = r.envelope_id WHERE e.account_id = ? AND r.operation_id = ? AND r.receipt_type = 'vault_commit'),
+ (SELECT COUNT(1) FROM envelope_receipts r JOIN secret_envelopes e ON e.envelope_id = r.envelope_id WHERE e.account_id = ? AND r.operation_id = ? AND r.receipt_type = 'abort' AND r.receipt_seq = 1)`),
+		accountID, op, accountID, op).Scan(&commits, &aborts); err != nil {
+		return "", err
+	}
+	switch {
+	case commits > 0:
+		return "committed", nil
+	case aborts > 0:
+		return "failed", nil
+	}
+	return "expired", nil
 }

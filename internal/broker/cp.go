@@ -17,6 +17,7 @@ type ControlPlane interface {
 	Intent(ctx context.Context, intent []byte) error
 	Receipts(ctx context.Context, op, account pqcrypto.UUID, receipts []pqcrypto.B64) error
 	Status(ctx context.Context, s brokerproto.StatusRequest) error
+	Accept(ctx context.Context, account, op pqcrypto.UUID) error
 }
 
 // channelCP is the ControlPlane over the control channel.
@@ -55,4 +56,8 @@ func (c channelCP) Receipts(ctx context.Context, op, account pqcrypto.UUID, rece
 
 func (c channelCP) Status(ctx context.Context, s brokerproto.StatusRequest) error {
 	return c.c.Call(ctx, brokerproto.MsgStatus, s, nil)
+}
+
+func (c channelCP) Accept(ctx context.Context, account, op pqcrypto.UUID) error {
+	return c.c.Call(ctx, brokerproto.MsgAccept, brokerproto.AcceptRequest{AccountID: account, OperationID: op}, nil)
 }

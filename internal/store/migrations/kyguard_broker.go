@@ -122,7 +122,29 @@ CREATE TABLE rotation_runs (
     created_at {{ts}} NOT NULL,
     updated_at {{ts}} NOT NULL,
     PRIMARY KEY (account_id, operation_id)
-);`))
+);`),
+		dialects(102, "kyguard_enrollment", `
+ALTER TABLE rotation_locks ADD COLUMN kind TEXT NOT NULL DEFAULT 'rotation' CHECK (kind IN ('rotation', 'enrollment'));
+ALTER TABLE rotation_locks ADD COLUMN state TEXT NOT NULL DEFAULT 'held' CHECK (state IN ('held', 'reserved', 'accepted'));
+ALTER TABLE rotation_locks ADD COLUMN previous_operation_id TEXT;
+ALTER TABLE rotation_locks ADD COLUMN previous_secret_version BIGINT;
+ALTER TABLE rotation_locks ADD COLUMN expires_at {{ts}};
+CREATE TABLE access_transactions (
+    request_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    action_type TEXT NOT NULL,
+    digest TEXT NOT NULL UNIQUE,
+    tx TEXT NOT NULL,
+    created_at {{ts}} NOT NULL
+);
+CREATE TABLE broker_outbox (
+    id TEXT PRIMARY KEY,
+    broker_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    body TEXT NOT NULL,
+    expires_at {{ts}} NOT NULL
+);
+CREATE INDEX broker_outbox_broker ON broker_outbox (broker_id, id);`))
 }
 
 // dialects builds one migration from shared DDL; {{ts}} is the timestamp type.

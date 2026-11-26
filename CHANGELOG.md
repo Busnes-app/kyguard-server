@@ -133,6 +133,12 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   authentication; `passwd` runs in a PTY and the new password is sent only after the
   broker's commit; unrecognized prompts and rejected passwords are refusals; tested in CI
   against OpenSSH with linux-pam `passwd`.
+- Enrollment and re-enrollment (spec §3.4, §4.5): the Control Plane reserves a version and
+  the account's lock for an `enroll` transaction (restoring a displaced stuck rotation
+  after 15 minutes or on failure), checks and relays the CLI's signed candidate; the broker
+  checks it again, binds exactly once only after the Control Plane accepted, and commits
+  `vault_commit` with `abort` (`superseded_by_reenrollment`) on every unterminated envelope,
+  which is the only way out of quarantine.
 
 ### Upgrade impact
 
@@ -147,6 +153,8 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   is a new dependency.
 - Migration 101 adds `assets`, `accounts`, `target_descriptors`, `secret_envelopes`,
   `envelope_receipts`, `rotation_locks` and `rotation_runs`; no data migrates.
+- Migration 102 adds enrollment columns to `rotation_locks` and `access_transactions`; no
+  data migrates.
 - `github.com/go-ldap/ldap/v3` is a new dependency (the AD connector); CI gains a
   `connectors` job that runs Docker targets.
 - New binary `kyguard-broker` (`GOOS=linux go build ./cmd/broker`); `go.etcd.io/bbolt` is a
