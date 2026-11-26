@@ -13,6 +13,10 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 
 ### Changes
 
+- `kyguard-cli login`, server side (spec §7.6): an SSO login started with `cli_port` and an S256
+  `cli_challenge` ends with a 60-second one-time code sent to `http://127.0.0.1:<port>/cb`;
+  `POST /api/auth/cli/exchange` trades code and verifier for a pending bearer session, and
+  step-up over bearer returns the active token. Migration 17 (`cli_login_codes`).
 - Restore contract (spec §9.4): capsules carry the internal broker CA (`data/broker-ca.key`,
   `data/broker-ca.crt`) when present, and refuse to seal half of it; `restore` also deletes CLI
   login codes and unconsumed broker pairing tokens. The recovery-manifest seal gate is not in this
