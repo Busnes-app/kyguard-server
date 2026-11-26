@@ -267,3 +267,29 @@ func TestTickRechecksAPolicyAcceptedMeanwhile(t *testing.T) {
 		t.Fatalf("writes=%d logins=%d run=%v", w, len(r.target.logins), r.account(m).Run != nil)
 	}
 }
+
+// A scheduled run stopped by a failed Control Plane call on an open channel is finished by
+// the next tick, not left open until a reconnect, with one write (PR Reviewer Guide
+// "Stalled rotations" on #12).
+func TestTickFinishesAStoppedRun(t *testing.T) {
+	start := time.Now().UTC()
+	r := newRig(t, scheduled(start))
+	w := &brokerrig.WrapCP{ControlPlane: r.CPW, ReceiptsErr: errors.New("control plane unreachable")}
+	r.CPW = w
+	m := r.machine()
+	defer m.J.Close()
+	ctx := context.Background()
+	clock(m, start.Add(day+time.Hour))
+	m.Tick(ctx)
+	if a := r.account(m); !a.Run.Open() {
+		t.Fatalf("the run did not stop open: %s", a.Run.State)
+	}
+	w.ReceiptsErr = nil
+	if err := m.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	a := r.account(m)
+	if _, writes := r.target.state(); writes != 1 || a.Run.State != broker.StateReleaseAuthorized || r.cpLock() != "" {
+		t.Fatalf("writes=%d run %s lock %q", writes, a.Run.State, r.cpLock())
+	}
+}
