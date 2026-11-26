@@ -735,3 +735,30 @@ func TestRefusalsAreJournaledUntilAcknowledged(t *testing.T) {
 		t.Fatalf("%d refusals left", len(rs))
 	}
 }
+
+// A manual_rotation whose abort was not delivered is finished by a tick that then starts a
+// due scheduled occurrence; the manual request still gets its result (PR Reviewer Guide
+// "Lost result" on #16).
+func TestRecoveredManualRotationKeepsItsResult(t *testing.T) {
+	c := newCheckoutRig(t, scheduled(time.Now().UTC()))
+	ctx := context.Background()
+	down := errors.New("control plane unreachable")
+	w := &brokerrig.WrapCP{ControlPlane: c.m.CP, ReceiptsErr: down, OnIntent: func(context.Context, []byte) error { return down }}
+	c.m.CP = w
+	mr := c.tx(c.alice, pqcrypto.Action{ActionType: pqcrypto.ActionManualRotation})
+	c.m.Tx(ctx, mr.Tx)
+	if a := c.account(c.m); a.Run.Request != mr.RequestID || a.Run.Sent {
+		t.Fatalf("the manual run's results were delivered: %+v", a.Run)
+	}
+	w.ReceiptsErr, w.OnIntent = nil, nil
+	c.now = c.now.Add(day + time.Hour) // a scheduled occurrence is due
+	if err := c.m.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if a := c.account(c.m); a.Run.Request == mr.RequestID {
+		t.Fatal("no scheduled run replaced the manual one")
+	}
+	if _, res := c.delivery(mr.RequestID); res != broker.StateAborted {
+		t.Fatalf("manual_rotation result %q", res)
+	}
+}
