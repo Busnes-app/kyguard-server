@@ -21,6 +21,10 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 
 ### Changes
 
+- Reporting screens prevent overlapping draft saves and deletes, attribute definition
+  changes, and duplicate inventory writes. A status change refreshes account details and
+  inventory views when it commits. Account details preserve unsaved text through temporary
+  refresh errors and save each enum or owner change before accepting another.
 - Documentation cleanup: clarified `README.md` quick-start and documentation index, added breadcrumbs to retained guides, and removed leftover base-scaffold UI verification logs, captures, and interop spike notes.
 - The web shell asks for a fresh authenticator code when a privileged action is refused because
   its step-up window passed (`stepup_stale`), then sends the action again.
@@ -170,6 +174,12 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 - Policy drafts (spec §3.3, §10): admins draft an account's next policy; the Control
   Plane checks it as it would admit it, Custodians fetch it with its pinned target, sign
   it in `kyguard-cli` and post it back, and it is admitted only at quorum.
+- Web screens (spec §10): one Accounts page with class, health, pool and attribute
+  filters, the traffic light and one-click CSV/JSON export, plus Attributes, Policies and
+  Jobs, and a traffic-light Overview with a 1-of-1 Custodian warning. Closing account
+  details pauses edits and waits for saves, keeping the dialog open if a save fails.
+  Account attribute edits and focus survive a detail refresh after saving. Inventory
+  also works when no account or owner attribute values are present.
 
 ### Upgrade impact
 

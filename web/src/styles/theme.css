@@ -488,3 +488,39 @@ textarea { border-radius: var(--ky-control-radius); }
   padding: 10px 14px;
   margin-bottom: 16px;
 }
+
+/* KyGuard reporting (spec §8, §10): traffic light, tables, filters. */
+.kg-wide { max-width: 1400px; }
+.kg-scroll { overflow-x: auto; }
+.kg-top { margin-top: 20px; }
+.kg-sub { font-size: 16px; margin: 0 0 12px; }
+.kg-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.kg-table th { text-align: left; color: var(--ink); font-weight: 600; padding: 8px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.kg-table td { padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.kg-digest { font-size: 11px; color: var(--ink); overflow-wrap: anywhere; }
+.kg-link { background: none; border: 0; padding: 0; min-height: 0; color: var(--ink-strong); font-weight: 600; text-decoration: underline; text-underline-offset: 3px; text-align: left; }
+.kg-filters { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 20px; }
+.kg-filters .dr-field { flex: 0 1 11rem; }
+.kg-clear { align-self: flex-end; }
+.kg-detail { max-width: min(720px, calc(100vw - 32px)); max-height: calc(100vh - 64px); overflow-y: auto; }
+.kg-pick { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; margin: 0 0 12px; display: flex; flex-direction: column; gap: 6px; }
+.kg-pick legend { color: var(--ink); font-size: 13px; padding: 0 4px; }
+.kg-check { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; color: var(--ink-strong); }
+.kg-check input { width: auto; }
+.tl-green { --tl: var(--success); }
+.tl-yellow { --tl: var(--warning, var(--ky-warning)); }
+.tl-red { --tl: var(--danger); }
+.tl-badge { color: var(--ink-strong); background: color-mix(in srgb, var(--tl) 14%, var(--panel)); border: 1px solid var(--tl); }
+.tl-bar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: var(--panel-hover); border: 1px solid var(--line); }
+.tl-seg { background: var(--tl); }
+.tl-legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
+.tl-item { background: transparent; border: 1px solid var(--line); color: var(--ink-strong); font-weight: 400; gap: 8px; }
+.tl-item:disabled { opacity: 1; cursor: default; }
+.tl-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--tl); }
+.tl-count { font-weight: 700; font-size: 18px; }
+.tl-pct { color: var(--ink); }
+.kg-table .badge { white-space: nowrap; }
+a.btn { text-decoration: none; }
+.kg-plain { list-style: none; padding: 0; }
+.kg-inline { margin-left: 8px; padding: 2px 8px; min-height: 0; font-size: 12px; }
+.kg-results { margin: 4px 0 0; display: flex; flex-direction: column; gap: 4px; }

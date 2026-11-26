@@ -1,5 +1,7 @@
 import React from 'react';
 import { Key, Archive, Database, Users, CheckCircle2, ArrowRight } from 'lucide-react';
+import { TrafficLight } from '../components/TrafficLight';
+import { HEALTH_LABEL, useJSON, useScorecard } from '../reporting';
 
 interface DashboardProps {
   settings: any;
@@ -8,6 +10,10 @@ interface DashboardProps {
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({ settings, user, onNavigate }) => {
+  const card = useScorecard();
+  const trust = useJSON<{ imported: boolean; threshold?: number; custodians?: number }>('/api/trust');
+  const totals = card.data?.totals;
+  const health = Object.entries(totals?.health || {}).filter(([h]) => h !== 'healthy');
   const cards = [
     {
       title: 'Feature 0: KyBackup & Recovery',
@@ -52,6 +58,25 @@ export const Dashboard: React.FC<DashboardProps> = ({ settings, user, onNavigate
     <div className="dr-page">
       <div className="dr-header"><h1>Welcome, {user?.display_name || user?.username}!</h1></div>
       <p className="page-intro">{settings?.app_name || 'KyGuard'}: privileged access management.</p>
+
+      {trust.data?.imported && trust.data.threshold === 1 && trust.data.custodians === 1 && (
+        <p role="alert" className="dr-alert dr-alert-warn">One Custodian signs alone (1 of 1): a single lost or stolen key file controls every policy. Add Custodians and raise the threshold.</p>
+      )}
+      {card.error && <p role="alert" className="dr-alert dr-alert-error">{card.error}</p>}
+      {totals && (
+        <div className="panel dr-section">
+          <div className="panel-header">
+            <h3>Control level</h3>
+            <button type="button" className="btn-secondary" onClick={() => onNavigate('accounts')}><span>Open accounts</span><ArrowRight size={14} /></button>
+          </div>
+          <TrafficLight totals={totals} />
+          {health.length > 0 && (
+            <ul className="tl-legend kg-plain" aria-label="Health">
+              {health.map(([h, n]) => <li key={h} className={`badge ${h === 'quarantined' || h === 'auth_failed' ? 'badge-danger' : 'badge-accent'}`}>{HEALTH_LABEL[h] || h}: {n}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px' }}>
         {cards.map((c, i) => {

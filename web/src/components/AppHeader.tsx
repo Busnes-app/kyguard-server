@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { KeyRound, LogOut, Users, Settings as SettingsIcon, LayoutDashboard, Archive, Palette } from 'lucide-react';
+import { KeyRound, LogOut, Users, Settings as SettingsIcon, LayoutDashboard, Archive, Palette, ShieldCheck, Tags, FileSignature, Activity } from 'lucide-react';
 
 interface AppHeaderProps {
   appName: string;
@@ -19,6 +19,9 @@ export const AppHeader: React.FC<AppHeaderProps> = ({ appName, activeTab, onTabC
 
   const navItems = [
     { id: 'dashboard', label: 'Overview', icon: LayoutDashboard },
+    { id: 'accounts', label: 'Accounts', icon: ShieldCheck },
+    { id: 'attributes', label: 'Attributes', icon: Tags },
+    ...(user?.role === 'admin' ? [{ id: 'policies', label: 'Policies', icon: FileSignature }, { id: 'jobs', label: 'Jobs', icon: Activity }] : []),
     { id: 'scim', label: 'Directory & SCIM', icon: Users },
     { id: 'backup', label: 'KyBackup (Feature 0)', icon: Archive },
     { id: 'settings', label: 'Settings & DB', icon: SettingsIcon },

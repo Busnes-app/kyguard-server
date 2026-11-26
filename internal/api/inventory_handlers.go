@@ -32,6 +32,7 @@ func (s *Server) inventoryRoutes() {
 	s.route(ClassSession, "GET /api/assets", w(s.handleListAssets))
 	s.route(ClassSession, "POST /api/assets", w(s.handleCreateAsset), fresh(StepupWindow))
 	s.route(ClassSession, "POST /api/accounts", w(s.handleCreateAccount), fresh(StepupWindow))
+	s.route(ClassSession, "GET /api/accounts", w(s.handleListAccounts))
 	s.route(ClassSession, "GET /api/accounts/{id}", w(s.handleGetAccount))
 	s.route(ClassSession, "PATCH /api/accounts/{id}", w(s.handleUpdateAccount), fresh(StepupWindow))
 	s.route(ClassSession, "PUT /api/accounts/{id}/target-descriptor", w(s.handlePutDescriptor), fresh(StepupWindow))
@@ -450,4 +451,29 @@ func (s *Server) handleSetAttributeValue(w http.ResponseWriter, r *http.Request)
 func sha256Hex(b []byte) string {
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
+}
+
+// handleListAccounts lists inventory rows by status (default active) so admins can reach a
+// decommissioned account, which the scorecard counts but never lists (spec §8.1).
+func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	if status == "" {
+		status = "active"
+	}
+	if status != "active" && status != "decommissioned" {
+		s.writeError(w, http.StatusBadRequest, "status is active or decommissioned")
+		return
+	}
+	all, err := s.store.Inventory().ListAccounts(r.Context())
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "could not list accounts")
+		return
+	}
+	out := []*store.InventoryAccount{}
+	for _, a := range all {
+		if a.Status == status {
+			out = append(out, a)
+		}
+	}
+	s.writeJSON(w, http.StatusOK, out)
 }
