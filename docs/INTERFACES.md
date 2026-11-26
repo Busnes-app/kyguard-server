@@ -574,7 +574,7 @@ whose SHA-256 differs from the one any paired broker pinned.
 
 Source: [inventory handlers](../internal/api/inventory_handlers.go). Spec §8.2, §10. Writes
 are administrator only, audited in the same transaction, and use cookie CSRF. Every route
-carries `TODO(hawthorn §7.5)` until the route registry classifies it.
+is session class; the writes need a step-up within five minutes (decision 204b).
 
 | Route | Authentication and input | Success |
 |---|---|---|
