@@ -5,6 +5,8 @@ import type { BreakGlassState } from './components/BreakGlassBanner';
 import { Dashboard } from './pages/Dashboard';
 import { Login } from './pages/Login';
 import { ChangePassword } from './pages/ChangePassword';
+import { StepUp } from './pages/StepUp';
+import type { StepUpState } from './pages/StepUp';
 import { Backup } from './pages/Backup';
 import { SCIMAdmin } from './pages/SCIMAdmin';
 import { Settings } from './pages/Settings';
@@ -23,6 +25,7 @@ import { secureFetch } from './api';
 export const App: React.FC = () => {
   const [user, setUser] = useState<any>(null);
   const [breakGlass, setBreakGlass] = useState<BreakGlassState | null>(null);
+  const [stepUp, setStepUp] = useState<StepUpState | null>(null);
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState<boolean>(true);
   const [activeTab, setActiveTab] = useState<string>('dashboard');
@@ -49,6 +52,7 @@ export const App: React.FC = () => {
           if (a.authenticated) {
             setUser(a.user);
             setBreakGlass(a.break_glass ?? null);
+            setStepUp(a.stepup ?? null);
           }
         }
       } catch (err) {
@@ -74,6 +78,7 @@ export const App: React.FC = () => {
     await secureFetch('/api/auth/logout', { method: 'POST' });
     setUser(null);
     setBreakGlass(null);
+    setStepUp(null);
   };
 
   if (loading) {
@@ -110,6 +115,19 @@ export const App: React.FC = () => {
       />
       </>
     );
+  }
+
+  if (stepUp) {
+    return <StepUp state={stepUp} onLogout={handleLogout} onDone={async () => {
+      // The exchange replaced the session cookie; read the active session and its settings.
+      // A failed read rejects, and StepUp offers to retry it rather than another code.
+      const r = await fetch('/api/auth/me');
+      if (!r.ok) throw new Error('session check failed');
+      const me = await r.json();
+      if (!me?.authenticated) { setUser(null); setStepUp(null); return; }
+      setUser(me.user); setStepUp(me.stepup ?? null);
+      void loadSettings();
+    }} />;
   }
 
   if (user.must_change_password || changingPassword) {

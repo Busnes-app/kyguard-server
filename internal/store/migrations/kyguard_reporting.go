@@ -1,9 +1,10 @@
 package migrations
 
-// KyGuard reporting migrations take versions from 200 (spec §8.2, §9.2). Nothing is seeded:
+// KyGuard reporting migrations take versions from 300, after the auth stack's 200 (spec
+// §8.2, §9.2). Nothing is seeded:
 // migrate-postgres and the PostgreSQL snapshot refuse non-empty target tables.
 func init() {
-	registry = append(registry, dialects(200, "kyguard_attributes", `
+	registry = append(registry, dialects(300, "kyguard_attributes", `
 CREATE TABLE attribute_definitions (
     id TEXT PRIMARY KEY,
     entity TEXT NOT NULL CHECK (entity IN ('account', 'user')),
@@ -23,7 +24,7 @@ CREATE TABLE attribute_values (
     UNIQUE (definition_id, entity_id)
 );
 CREATE INDEX idx_attribute_values_entity ON attribute_values(entity_id);`),
-		dialects(201, "kyguard_policy_drafts", `
+		dialects(301, "kyguard_policy_drafts", `
 CREATE TABLE policy_drafts (
     id TEXT PRIMARY KEY,
     account_id TEXT NOT NULL UNIQUE REFERENCES accounts(id),

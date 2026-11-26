@@ -34,6 +34,10 @@ type MFAStore interface {
 	// user has no factor.
 	ReplaceFactor(ctx context.Context, userID, newFactorID, secretEnc string, audit *AuditRecord) error
 	GetFactor(ctx context.Context, userID, kind string) (*MFAFactor, error)
+	// DeleteFactor removes an SSO user's TOTP factor, ends the user's sessions and writes audit
+	// in one transaction (spec §7.3 rule 6; the next sign-in re-enrolls). ErrNotFound when the
+	// user is not an SSO account or has no factor.
+	DeleteFactor(ctx context.Context, userID string, audit *AuditRecord) error
 	// SpendCounter records counter as used: a compare-and-swap that succeeds only while
 	// counter is above the stored last_counter, so a code is accepted at most once.
 	// ErrConflict when it is not.
@@ -114,6 +118,44 @@ func (m *mfaStore) ReplaceFactor(ctx context.Context, userID, newFactorID, secre
 		return err
 	}
 	audit.UserID = userID
+	if err := s.insertAudit(ctx, tx, audit); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (m *mfaStore) DeleteFactor(ctx context.Context, userID string, audit *AuditRecord) error {
+	s := m.store
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// The user row lock is the one every session issuance holds (withPassword), so an exchange
+	// authorized by this factor either commits first, and its session is deleted below, or
+	// waits and then finds the factor gone. Break-glass factors are reset only on the host.
+	// Outstanding CLI login codes carry the old sign-in, so they go first; a redemption holding
+	// one finishes before this delete returns, and its session is deleted below.
+	if _, err := tx.ExecContext(ctx, s.rebind(`DELETE FROM cli_login_codes WHERE user_id = ?`), userID); err != nil {
+		return err
+	}
+	lock, err := tx.ExecContext(ctx, s.rebind(`UPDATE users SET id = id WHERE id = ? AND account_type = ?`), userID, AccountSSO)
+	if err != nil {
+		return err
+	}
+	if n, _ := lock.RowsAffected(); n != 1 {
+		return ErrNotFound
+	}
+	res, err := tx.ExecContext(ctx, s.rebind(`DELETE FROM mfa_factors WHERE kind = ? AND user_id = ?`), FactorTOTP, userID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx, s.rebind(`DELETE FROM sessions WHERE user_id = ?`), userID); err != nil {
+		return err
+	}
 	if err := s.insertAudit(ctx, tx, audit); err != nil {
 		return err
 	}

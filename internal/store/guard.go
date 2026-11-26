@@ -42,12 +42,8 @@ type GuardStore interface {
 	GetIntent(ctx context.Context, id string) (*OperationIntent, error)
 }
 
-// Intent states (§9.3).
-const (
-	IntentPending        = "pending"
-	IntentComplete       = "complete"
-	IntentOutcomeUnknown = "outcome_unknown"
-)
+// IntentOutcomeUnknown is the broker stack's name for IntentUnknown (store.go has the states).
+const IntentOutcomeUnknown = IntentUnknown
 
 // BootstrapBundle is the deployment trust root as imported by the operator.
 type BootstrapBundle struct {
@@ -138,17 +134,12 @@ func (s *SQLStore) inTx(ctx context.Context, fn func(*sql.Tx) error) error {
 }
 
 // auditTx writes an audit record inside the caller's transaction, so the change and its
-// record commit or roll back together (§9.3). The chained append replaces this insert.
+// record commit or roll back together (§9.3), chained like every other record.
 func (s *SQLStore) auditTx(ctx context.Context, tx *sql.Tx, r *AuditRecord) error {
 	if r == nil {
 		return nil
 	}
-	if r.CreatedAt.IsZero() {
-		r.CreatedAt = time.Now().UTC()
-	}
-	_, err := tx.ExecContext(ctx, s.rebind(`INSERT INTO audit_records (user_id, action, resource, details, ip_address, created_at) VALUES (?, ?, ?, ?, ?, ?)`),
-		r.UserID, r.Action, r.Resource, r.Details, r.IPAddress, r.CreatedAt)
-	return err
+	return s.appendAudit(ctx, tx, r)
 }
 
 func (g guardStore) Bundle(ctx context.Context) (*BootstrapBundle, error) {

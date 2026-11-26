@@ -208,7 +208,7 @@ func (m *Machine) deliver(ctx context.Context, a *Account, c *Challenge, raw []b
 	now := m.now()
 	a.Lease = &Lease{RequestID: tx.RequestID, Tx: c.Tx, TxDigest: d.Hex(), SecretVersion: tx.Action.SecretVersion, EncKeyID: tx.Action.EncKeyID,
 		PolicyDigest: tx.PolicyDigest, TargetDescriptorDigest: tx.Action.TargetDescriptorDigest,
-		OpenedAt: now, ExpiresAt: now.Add(time.Duration(tx.Action.CheckoutTTLSeconds) * time.Second), State: LeaseActive}
+		OpenedAt: now, ExpiresAt: now.Add(time.Duration(tx.Action.CheckoutTTLSeconds) * time.Second), State: LeaseActive, Delivering: true}
 	if err := m.J.SaveConsume(a, tx.RequestID, tx.ExpiresAt.Time); err != nil {
 		return err
 	}
@@ -252,11 +252,61 @@ func (m *Machine) deliver(ctx context.Context, a *Account, c *Challenge, raw []b
 	if err != nil {
 		return err
 	}
-	a.Lease.Delivery = &wrap // journaled, so a lost delivery is re-sent (flush)
+	a.Lease.Delivery, a.Lease.Delivering = &wrap, false // journaled, so a lost delivery is re-sent (flush)
 	if err := m.J.Save(a); err != nil {
 		return err
 	}
-	return m.deliverWrap(ctx, a)
+	// Pending, not refused: the lease is active and flush re-sends the wrap (Guide on #16,
+	// "Premature refusal").
+	if err := m.deliverWrap(ctx, a); err != nil {
+		log.Printf("[BROKER] delivery for lease %s not sent: %v", a.Lease.RequestID, err)
+	}
+	return nil
+}
+
+// Refused journals a transaction's refusal, or with an empty code drops it, and sends every
+// journaled refusal; Tick and Recover re-send them until acknowledged (Guide on #16, "Lost
+// refusals").
+func (m *Machine) Refused(ctx context.Context, id pqcrypto.UUID, code string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if code == "" {
+		if err := m.J.DeleteRefusal(id); err != nil {
+			log.Printf("[BROKER] refusal of %s not dropped: %v", id, err)
+		}
+		return
+	}
+	if err := m.J.PutRefusal(id, code); err != nil {
+		log.Printf("[BROKER] refusal of %s not journaled: %v", id, err)
+		if err := m.CP.TxResult(ctx, brokerproto.TxResultRequest{RequestID: id, Result: code}); err != nil {
+			log.Printf("[BROKER] result for %s not delivered: %v", id, err)
+		}
+	}
+	m.refusals(ctx)
+}
+
+// refusals sends the journaled refusals. One the Control Plane rejects is dropped: it would
+// reject it again.
+func (m *Machine) refusals(ctx context.Context) {
+	rs, err := m.J.Refusals()
+	if err != nil {
+		log.Printf("[BROKER] refusals not read: %v", err)
+		return
+	}
+	for _, x := range rs {
+		err := m.CP.TxResult(ctx, brokerproto.TxResultRequest{RequestID: x.RequestID, Result: x.Result})
+		var rerr brokerproto.RemoteError
+		if err != nil && !errors.As(err, &rerr) {
+			log.Printf("[BROKER] result for %s not delivered: %v", x.RequestID, err)
+			return
+		}
+		if err != nil {
+			log.Printf("[BROKER] result for %s rejected: %v", x.RequestID, err)
+		}
+		if err := m.J.DeleteRefusal(x.RequestID); err != nil {
+			log.Printf("[BROKER] refusal of %s not dropped: %v", x.RequestID, err)
+		}
+	}
 }
 
 // deliverWrap sends a journaled checkout wrap until the Control Plane acknowledges it.
@@ -279,6 +329,14 @@ func (m *Machine) deliverWrap(ctx context.Context, a *Account) error {
 // flush re-sends what the Control Plane has not acknowledged for the account's lease: its
 // state and its delivery. Recover and every scheduler tick call it.
 func (m *Machine) flush(ctx context.Context, a *Account) {
+	// A lease opened whose wrap was never journaled delivered nothing: close it and tell
+	// the requester (Guide on #16, "Interrupted delivery").
+	if l := a.Lease; l != nil && l.State == LeaseActive && l.Delivering {
+		if err := m.endDelivery(ctx, a, "interrupted", false); err != nil {
+			log.Printf("[BROKER] interrupted lease %s not closed: %v", l.RequestID, err)
+		}
+		return
+	}
 	m.results(ctx, a)
 	if err := m.mirror(ctx, a); err != nil {
 		return
@@ -302,7 +360,9 @@ func (m *Machine) unflushed(ctx context.Context, a *Account) error {
 
 // endDelivery closes a lease that delivered nothing and, after a denied login, quarantines.
 func (m *Machine) endDelivery(ctx context.Context, a *Account, reason string, quarantine bool) error {
-	a.Lease.State, a.Lease.CloseReason, a.Lease.Mirrored, a.Lease.Delivery = LeaseClosed, reason, false, nil
+	a.Lease.State, a.Lease.CloseReason, a.Lease.Mirrored, a.Lease.Delivery, a.Lease.Delivering = LeaseClosed, reason, false, nil, false
+	// Journaled with the closure and re-sent until acknowledged (Guide on #16, "Lost outcome").
+	a.Results = append(a.Results, TxResult{RequestID: a.Lease.RequestID, Result: reason})
 	if quarantine {
 		log.Printf("[BROKER] ALERT: account %s quarantined: the current credential was denied at checkout", a.ID)
 		a.Quarantined = true
@@ -316,7 +376,10 @@ func (m *Machine) endDelivery(ctx context.Context, a *Account, reason string, qu
 	if err := m.applyDeferred(a); err != nil {
 		return err
 	}
-	return m.CP.TxResult(ctx, brokerproto.TxResultRequest{RequestID: a.Lease.RequestID, Result: reason})
+	if b, err := m.J.Account(a.ID); err == nil { // applyDeferred may have saved a newer record
+		m.results(ctx, b)
+	}
+	return nil
 }
 
 // checkinProof moves the lease to rotation_pending on a proof from the transaction's cnf
@@ -439,14 +502,9 @@ func (m *Machine) results(ctx context.Context, a *Account) {
 	}
 }
 
-// Cleanup runs the next attempt of a rotation_pending lease's cleanup rotation (§3.6 step 5).
-func (m *Machine) Cleanup(ctx context.Context, account pqcrypto.UUID) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	a, err := m.J.Account(account)
-	if err != nil {
-		return err
-	}
+// cleanup runs the next attempt of a rotation_pending lease's cleanup rotation (§3.6 step 5),
+// with m.mu held.
+func (m *Machine) cleanup(ctx context.Context, a *Account) error {
 	l := a.Lease
 	if l == nil || l.State != LeaseRotationPending || a.Run.Open() || a.Quarantined || m.now().Before(l.NextAttemptAt) {
 		return nil

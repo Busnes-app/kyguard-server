@@ -14,17 +14,18 @@ import (
 )
 
 func (s *Server) draftRoutes() {
-	// TODO(hawthorn §7.5): classify + fresh(StepupWindow) (5 minutes for policy drafts, §7.3 rule 6).
-	s.mux.HandleFunc("PUT /api/accounts/{id}/policy-draft", s.requireAdmin(s.handlePutDraft))
-	// TODO(hawthorn §7.5): classify + fresh(StepupWindow).
-	s.mux.HandleFunc("DELETE /api/policy-drafts/{id}", s.requireAdmin(s.handleDeleteDraft))
-	// TODO(hawthorn §7.5): classify (session). Custodians fetch and sign from kyguard-cli.
-	s.mux.HandleFunc("GET /api/policy-drafts", s.requireSession(s.handleListDrafts))
-	s.mux.HandleFunc("GET /api/policy-drafts/{id}", s.requireSession(s.handleGetDraft))
-	// Signatures carry their own authority; the session only identifies the submitter.
-	s.mux.HandleFunc("POST /api/policy-drafts/{id}/signatures", s.requireSession(s.handleSignDraft))
-	s.mux.HandleFunc("GET /api/principals", s.requireAdmin(s.handleListPrincipals))
-	s.mux.HandleFunc("GET /api/trust", s.requireSession(s.handleTrustSummary))
+	// Saving and deleting a draft need a step-up within five minutes (§7.3 rule 6); fetching,
+	// signing and the lookups need none: signatures carry their own authority and the session
+	// only identifies the submitter, as for POST /api/manifests (decision 212).
+	admin := func(h http.HandlerFunc) http.Handler { return http.HandlerFunc(s.requireAdmin(h)) }
+	session := func(h http.HandlerFunc) http.Handler { return http.HandlerFunc(s.requireSession(h)) }
+	s.route(ClassSession, "PUT /api/accounts/{id}/policy-draft", admin(s.handlePutDraft), fresh(StepupWindow))
+	s.route(ClassSession, "DELETE /api/policy-drafts/{id}", admin(s.handleDeleteDraft), fresh(StepupWindow))
+	s.route(ClassSession, "GET /api/policy-drafts", session(s.handleListDrafts))
+	s.route(ClassSession, "GET /api/policy-drafts/{id}", session(s.handleGetDraft))
+	s.route(ClassSession, "POST /api/policy-drafts/{id}/signatures", session(s.handleSignDraft))
+	s.route(ClassSession, "GET /api/principals", admin(s.handleListPrincipals))
+	s.route(ClassSession, "GET /api/trust", session(s.handleTrustSummary))
 }
 
 type draftRequest struct {

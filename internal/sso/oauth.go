@@ -19,13 +19,14 @@ type oauthFlow struct {
 	issuer       string
 	clientID     string
 	clientSecret string
+	mfaACRs      []string // the issuer profile's MFA acr set (spec §7.2)
 	mu           sync.Mutex
 	provider     *oidc.Provider
 	verifier     *oidc.IDTokenVerifier
 }
 
-func newOAuthFlow(issuer, clientID, clientSecret string) *oauthFlow {
-	return &oauthFlow{issuer: strings.TrimRight(issuer, "/"), clientID: clientID, clientSecret: clientSecret}
+func newOAuthFlow(issuer, clientID, clientSecret string, mfaACRs []string) *oauthFlow {
+	return &oauthFlow{issuer: strings.TrimRight(issuer, "/"), clientID: clientID, clientSecret: clientSecret, mfaACRs: mfaACRs}
 }
 
 func (f *oauthFlow) getProvider(ctx context.Context) (*oidc.Provider, error) {
@@ -91,7 +92,13 @@ func (f *oauthFlow) authCodeURL(ctx context.Context, redirectURI, state, verifie
 	if err != nil {
 		return "", err
 	}
-	return config.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier), oauth2.SetAuthURLParam("nonce", nonce)), nil
+	// max_age=0 makes the IdP authenticate the user now (step-up layer 1, spec §7.2); the
+	// profile's MFA acr asks it to do so with MFA.
+	opts := []oauth2.AuthCodeOption{oauth2.S256ChallengeOption(verifier), oauth2.SetAuthURLParam("nonce", nonce), oauth2.SetAuthURLParam("max_age", "0")}
+	if len(f.mfaACRs) > 0 {
+		opts = append(opts, oauth2.SetAuthURLParam("acr_values", strings.Join(f.mfaACRs, " ")))
+	}
+	return config.AuthCodeURL(state, opts...), nil
 }
 
 func (f *oauthFlow) exchange(ctx context.Context, code, verifier, redirectURI, expectedNonce string) (*IdentityClaims, error) {
@@ -112,7 +119,12 @@ func (f *oauthFlow) exchange(ctx context.Context, code, verifier, redirectURI, e
 	if err != nil || expectedNonce == "" || idToken.Nonce != expectedNonce {
 		return nil, ErrInvalidIDToken
 	}
-	return claimsFromIDToken(idToken)
+	claims, err := claimsFromIDToken(idToken)
+	if err != nil {
+		return nil, err
+	}
+	claims.MFA = MFAAsserted(claims.AMR, claims.ACR, f.mfaACRs)
+	return claims, nil
 }
 
 func requireOIDCHTTPS(endpoints ...string) error {
@@ -154,6 +166,9 @@ func claimsFromIDToken(idToken *oidc.IDToken) (*IdentityClaims, error) {
 		PreferredUsername string          `json:"preferred_username"`
 		Role              string          `json:"role"`
 		Roles             json.RawMessage `json:"roles"`
+		AuthTime          *json.Number    `json:"auth_time"`
+		AMR               []string        `json:"amr"`
+		ACR               string          `json:"acr"`
 	}
 	if err := idToken.Claims(&raw); err != nil || raw.Sub == "" {
 		return nil, ErrInvalidIDToken
@@ -174,5 +189,14 @@ func claimsFromIDToken(idToken *oidc.IDToken) (*IdentityClaims, error) {
 	if username == "" {
 		username = raw.Sub
 	}
-	return &IdentityClaims{Subject: raw.Sub, Email: raw.Email, Name: raw.Name, PreferredUsername: username, Role: raw.Role, Roles: roles, SessionID: raw.SID, IssuedAt: idToken.IssuedAt}, nil
+	var authTime time.Time
+	if raw.AuthTime != nil {
+		secs, err := raw.AuthTime.Int64()
+		if err != nil || secs <= 0 {
+			return nil, ErrInvalidIDToken
+		}
+		authTime = time.Unix(secs, 0).UTC()
+	}
+	return &IdentityClaims{Subject: raw.Sub, Email: raw.Email, Name: raw.Name, PreferredUsername: username, Role: raw.Role, Roles: roles, SessionID: raw.SID, IssuedAt: idToken.IssuedAt,
+		Issuer: idToken.Issuer, AuthTime: authTime, AMR: raw.AMR, ACR: raw.ACR}, nil
 }

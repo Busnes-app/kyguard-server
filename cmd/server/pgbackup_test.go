@@ -237,7 +237,11 @@ func TestPostgresBackupRestoreDrill(t *testing.T) {
 	restoredCfg.Database.DataDir = t.TempDir()
 	restoredCfg.Security.EncryptionKey, err = hex.DecodeString(strings.TrimSpace(string(keyHex)))
 	must(err)
+	restoredCfg.Database.AuditKey, err = config.AuditChainKey(restoredCfg.Security.EncryptionKey)
+	must(err)
 	restoredSt := openStore(t, &restoredCfg)
+	// Acceptance 13: the restored chain verifies under the key the restored deployment derives.
+	must(restoredSt.Audit().VerifyAuditChain(ctx))
 	must(bootstrap(ctx, &restoredCfg, restoredSt))
 	settings := backup.Settings(ctx, restoredSt.Settings())
 	must(backup.SyncRecoveryKey(ctx, &restoredCfg, restoredSt))

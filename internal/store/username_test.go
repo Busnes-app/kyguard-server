@@ -114,7 +114,7 @@ func TestExistingCaseVariantsSkipTheIndex(t *testing.T) {
 func TestProfileWritesLeaveTheSSOLinkAlone(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
-	if err := st.Users().CreateUser(ctx, &store.User{ID: "u1", Username: "frank", Role: "user", Status: "active", SSOProvider: "scim", SSOSubject: "f", SCIMManaged: true}); err != nil {
+	if err := st.Users().CreateUser(ctx, &store.User{ID: "u1", Username: "frank", Role: "user", Status: "active", SSOProvider: "scim", SSOSubject: "f", SSOIssuer: "iss", SCIMManaged: true}); err != nil {
 		t.Fatal(err)
 	}
 	stale, _ := st.Users().GetUserByID(ctx, "u1")
@@ -128,7 +128,7 @@ func TestProfileWritesLeaveTheSSOLinkAlone(t *testing.T) {
 	if err := st.Users().UpdateUserProfile(ctx, stale, stale.Role, stale.Status); err != nil {
 		t.Fatal(err)
 	}
-	if u, _ := st.Users().GetUserBySSO(ctx, "kysignon", "f"); u == nil || u.DisplayName != "Frank" {
+	if u, _ := st.Users().GetUserBySSO(ctx, "iss", "f"); u == nil || u.DisplayName != "Frank" || u.SSOProvider != "kysignon" {
 		t.Fatalf("stale profile write undid the link: %+v", u)
 	}
 }
@@ -171,7 +171,7 @@ func TestSubjectChangesAreCompareAndSwaps(t *testing.T) {
 	ctx := context.Background()
 	st := newTestStore(t)
 	for _, u := range []*store.User{
-		{ID: "u1", Username: "gina", Role: "user", Status: "active", SSOProvider: "scim", SSOSubject: "a", SCIMManaged: true},
+		{ID: "u1", Username: "gina", Role: "user", Status: "active", SSOProvider: "scim", SSOSubject: "a", SSOIssuer: "iss", SCIMManaged: true},
 		{ID: "u2", Username: "hal", Role: "user", Status: "active", SSOProvider: "local"},
 	} {
 		if err := st.Users().CreateUser(ctx, u); err != nil {
@@ -204,7 +204,7 @@ func TestSubjectChangesAreCompareAndSwaps(t *testing.T) {
 	if err := set("b", "d", "gina"); err != nil {
 		t.Fatal(err)
 	}
-	if u, _ := st.Users().GetUserBySSO(ctx, "kysignon", "b"); u == nil || u.ID != "u1" {
+	if u, _ := st.Users().GetUserBySSO(ctx, "iss", "b"); u == nil || u.ID != "u1" || u.SSOProvider != "kysignon" {
 		t.Fatalf("an adopted row's subject changed: %+v", u)
 	}
 }

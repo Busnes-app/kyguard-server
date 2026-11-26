@@ -15,6 +15,9 @@ type User struct {
 	Status       string `json:"status"`       // "active", "suspended", "inactive"
 	SSOProvider  string `json:"sso_provider"` // "local", "kysignon", "oidc", "scim"
 	SSOSubject   string `json:"sso_subject,omitempty"`
+	// SSOIssuer is the identity provider that vouches for SSOSubject; the account's identity
+	// is the pair (spec §7.2). SCIM rows take the configured SCIM issuer.
+	SSOIssuer string `json:"-"`
 	// AccountType is "sso" or "break_glass"; only break-glass accounts sign in with a
 	// password, and only with a TOTP code (spec §7.4). Empty is stored as "sso".
 	AccountType string `json:"account_type"`
@@ -42,6 +45,8 @@ type Session struct {
 	ExpiresAt time.Time `json:"expires_at"`
 	// SSOSID is the identity provider's sid for an SSO login; empty for local sign-in.
 	SSOSID string `json:"-"`
+	// SSOIssuer is the issuer of the SSO login; the logout fences are keyed by it.
+	SSOIssuer string `json:"-"`
 	// Stage is "pending" until TOTP step-up exchanges the session, then "active" (§7.3).
 	// Empty is stored as "active".
 	Stage string `json:"-"`
@@ -50,6 +55,11 @@ type Session struct {
 	// BreakGlassReason is the reason a break-glass session gave before its first privileged
 	// action (§7.4).
 	BreakGlassReason string `json:"-"`
+	// MFAAsserted records that a pending session's ID token asserted MFA (spec §7.2), the
+	// condition for enrolling a first factor.
+	MFAAsserted bool `json:"-"`
+	// PendingSecretEnc is the sealed TOTP secret offered to a pending session for enrollment.
+	PendingSecretEnc string `json:"-"`
 	// FactorID, when set, is the factor whose code authorized this session; CreateSession
 	// refuses it once that factor has been replaced. Not stored.
 	FactorID string `json:"-"`

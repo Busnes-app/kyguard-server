@@ -78,7 +78,15 @@ Sources: [auth handlers](../internal/api/auth_handlers.go),
 |---|---|---|
 | GET `/api/auth/pow-challenge` | Anonymous; no body | 200 challenge object described below |
 | POST `/api/auth/login` | Anonymous JSON: `username`, `password`, `totp_code` (all required, else 400), optional `captcha_token`. Break-glass accounts only: an SSO account with a correct password gets 403 | 200 authenticated user and session/CSRF cookies; the session is active, stepped up and ends 30 minutes later |
-| GET `/api/auth/me` | Optional session; no body | 200 `{"authenticated":false}` or `{"authenticated":true,"user":User}`; a break-glass session adds `break_glass: {reason, expires_at}` |
+| GET `/api/auth/me` | Optional session, pending included; no body | 200 `{"authenticated":false}` or `{"authenticated":true,"user":User}`; a pending session adds `stepup: {required, enrolled, can_enroll}`, a break-glass session `break_glass: {reason, expires_at}` |
+| GET `/api/sso/{kysignon,oidc}/login?cli_port=P&cli_challenge=C` | Anonymous; started by `kyguard-cli login` with its loopback port (1024–65535) and an S256 PKCE challenge | As the browser login, but the callback sets no session: it redirects to `http://127.0.0.1:P/cb?code=…`, a one-time code valid 60 seconds and bound to the verified login (audited `auth.cli_code_issued`) |
+| POST `/api/auth/cli/exchange` | Anonymous JSON `{"code","code_verifier"}` | 200 `{"token","stage":"pending"}`: a pending session for `Authorization: Bearer`, audited `auth.cli_login`. The code is spent by the first attempt; 401 for a wrong verifier, an expired or spent code, or a login the IdP ended |
+| POST `/api/auth/stepup/totp` | Pending SSO session; JSON `{"code":"123456"}`; cookie CSRF applies | 200 `{"authenticated":true}` and new session/CSRF cookies: the pending session is deleted and a new active one issued; 401 for a refused code, an expired pending session or a login the IdP ended |
+| (bearer callers) | The same routes with `Authorization: Bearer <pending token>` | The 200 body also carries `"token"`, the new active session's bearer token; cookie callers never get it in the body |
+| POST `/api/auth/stepup/totp` (active session) | Active session; JSON `{"code":"123456"}` | 200 `{"stepped_up":true}`; refreshes the session's step-up time for routes with a window |
+| DELETE `/api/admin/users/{id}/factor` | Administrator; JSON `{"code":"123456"}`, the administrator's own current code | 200 `{"factor_reset":true}`: the SSO user's factor and sessions are gone and the next sign-in enrolls again; 404 for break-glass or factor-less accounts; audited `admin.factor_reset` (`severity=critical`) |
+| POST `/api/auth/stepup/enroll` | Pending SSO session of a user with no factor, whose ID token asserted MFA; no body | 200 `{"secret","otpauth_uri"}`; 403 without IdP MFA (audited `auth.enrollment_blocked`, `severity=critical`); 409 when a factor exists |
+| POST `/api/auth/stepup/enroll/confirm` | The same pending session; JSON `{"code":"123456"}` from the offered secret | As `/stepup/totp`, storing the factor in the same transaction |
 | POST `/api/auth/break-glass/reason` | Break-glass session (403 otherwise); JSON `{"reason":"…"}`, 1–500 characters; cookie CSRF applies | 200 `{"recorded":true}`; 409 when the session already has one; audited `break_glass.reason` |
 | POST `/api/auth/change-password` | Break-glass session (also a restricted one); JSON: `current_password`, `new_password`, `totp_code`; cookie CSRF applies; 409 for an SSO account | 200 `{"password_changed":true,"login_required":true}`; replacement flag cleared; all sessions revoked |
 | POST `/api/auth/logout` | Optional session; no body; cookie CSRF applies | 200 `{"logged_out":true}`; current session revoked and cookies expired |
@@ -93,6 +101,19 @@ unique regardless of letter case: creating or renaming to a case variant of anot
 account's name is refused (SCIM 409 `uniqueness`, KyIdentity sign-in 409). An
 installation that already holds such duplicates keeps them, logs each clash at
 startup and builds the case-insensitive unique index once they are resolved.
+
+Every SSO sign-in ends in a pending session (spec §7.3): five minutes long, authenticating
+only GET `/api/auth/me`, POST `/api/auth/logout` and `/api/auth/stepup/*`. Anything else
+answers 403 `{"code":"stepup_required"}`, and `GET /api/settings` gives it only the public
+payload, by cookie or Bearer. A TOTP code exchanges it for a new active session with a new
+token, lasting 12 hours without sliding and still bound to the login's issuer, `sid` and
+original ID-token `iat`, so back-channel logout reaches it; the pending token never becomes
+active. Codes are single-use; five failed codes end the pending session, and past ten failed
+codes per user in 15 minutes every code fails, even a correct one. Every failure is audited
+(`auth.stepup_failed`). A user without a factor may enroll one only when the ID token asserted
+MFA. Backup actions (drill, export, pairing, deposit, unpair, pin, schedule) also need a
+step-up in the last five minutes: otherwise 403 `{"code":"stepup_stale"}`, cleared by a code at
+`/api/auth/stepup/totp`.
 
 Local sign-in is for break-glass accounts only (spec §7.4). They are created on the host
 with `kyguard-server break-glass create` and carry a TOTP factor (`mfa_factors`, sealed under
@@ -128,6 +149,11 @@ after trimming surrounding whitespace). The current password must verify, then t
 (counted like a sign-in code). Limits are ten attempts per IP and five per account per minute.
 Success requires signing in again with the replacement.
 
+Every audit record is a link of a hash chain (spec §9.3): `seq`, `prev_hash` and `hash`
+(HMAC-SHA256 under a key derived from `data/encryption.key`) over action, user, resource,
+details, address and time, anchored in `audit_chain_head`. A request whose audit record cannot
+be written fails, and its change is rolled back with it.
+
 ## Settings
 
 Source: [settings handlers](../internal/api/settings_handlers.go).
@@ -160,28 +186,30 @@ Sources: [SSO handlers](../internal/api/sso_handlers.go),
 
 | Method and path | Input and authority | Successful output |
 |---|---|---|
-| GET `/api/sso/kysignon/login` | Browser; no body | 302 to provider authorization URL; five-minute HttpOnly PKCE/nonce cookies |
-| GET `/api/sso/kysignon/callback` | Provider query `code`, `state`; matching PKCE/nonce cookies | 302 to `/` and session/CSRF cookies |
+| GET `/api/sso/kysignon/login`, `/api/sso/oidc/login` | Browser; no body | 302 to the provider's authorization URL with PKCE S256, nonce, `max_age=0` and, when the profile has an MFA acr set, `acr_values`; five-minute HttpOnly PKCE/nonce cookies |
+| GET `/api/sso/kysignon/callback`, `/api/sso/oidc/callback` | Provider query `code`, `state`; matching PKCE/nonce cookies | 302 to `/` and session/CSRF cookies |
 | POST `/api/sso/kysignon/backchannel-logout` | Provider server; form body `logout_token` (≤16 KiB) | 200, `Cache-Control: no-store`; 400 `{"error":"invalid_request"}` for any token that fails verification |
 | any `/saml/*` | Anonymous | 404: SAML is removed (spec §7.2) |
 
-The callback verifies provider tokens, PKCE and nonce. Invalid state/nonce is 400;
-failed exchange is 401. A subject with no KyIdentity account adopts the SCIM account
-whose `externalId` equals the subject: that row becomes a KyIdentity row (so
-back-channel logout reaches it) and stays SCIM-managed, audited as
-`sso.scim_account_linked`. Otherwise an unprovisioned account is 403 when automatic
-provisioning is off, and a username that another account already holds (in any letter
-case) is 409 naming it. A disabled account is 403. The role follows KyIdentity on every
-sign-in: `admin` in the ID token's per-app `roles` array means `admin`, any other `roles`
-value means `user`; a token without `roles` uses the legacy IdP-wide `role` (`admin` or
-`user`), and a token with neither leaves the stored role unchanged (automatic provisioning
-then creates `user`). A malformed `roles` claim (not an array, `null` included) fails the
-sign-in (401). A role change
-revokes the account's other sessions in the same transaction and is audited as
-`sso.role_changed`; only the role is written, so a concurrent directory edit stays, and a
-concurrent role or status change is 409 (sign in again). Only
-KyIdentity rows are reached, so local accounts never change. The server constructs a generic OIDC
-helper but does not yet register its login or callback route.
+The callback verifies provider tokens, PKCE and nonce. Invalid state/nonce is 400; a failed
+exchange is 401, and so is an ID token whose `auth_time` is missing, more than 120 seconds
+old or in the future. An account's identity is the verified token's `(iss, sub)`; two issuers
+with the same subject are two accounts. A SCIM account whose issuer (`KY_SCIM_ISSUER`) and
+`externalId` match is adopted: it becomes a provider row (so back-channel logout reaches it)
+and stays SCIM-managed, audited as `sso.scim_account_linked`. Otherwise an unprovisioned
+account is 403 when automatic provisioning is off, and a username that another account
+already holds (in any letter case) is 409 naming it. A disabled account is 403.
+
+The role is recomputed from the token at every sign-in: `admin` in the per-app `roles`
+array means `admin`; anything else, including no `roles` claim, means `user`. The IdP-wide
+`role` claim is never used. A malformed `roles` claim (not an array, `null` included) fails
+the sign-in (401). A role change revokes the account's other sessions in the same
+transaction and is audited as `sso.role_changed`; a concurrent role or status change is 409
+(sign in again).
+
+The callback also records whether the token asserted MFA: `amr` contains `mfa`, or `acr` is
+in the profile's MFA set (KySignOn: `urn:kysignon:acr:mfa`; generic OIDC:
+`KY_OIDC_MFA_ACRS`). `otp`, `hwk` or `swk` alone is not MFA. TOTP step-up (spec §7.3) uses it.
 
 Back-channel logout follows OpenID Connect Back-Channel Logout 1.0. The token must
 carry KySignOn's signature, this client as audience, an unexpired `exp`, an `iat`, a
@@ -191,7 +219,9 @@ JSON object and no `nonce`; a `typ` header, when present, must be `logout+jwt`. 
 so a callback still in flight for it answers 401 instead of signing in. A token with
 only `sub` ends the subject's logins whose ID token was issued before the second
 after its `iat`, and fences that cutoff for ten minutes by provider and subject, so
-it also stops a callback in flight, including a first login still provisioning. SSO
+it also stops a callback in flight, including a first login still provisioning. Both fences
+and the sessions they end are keyed by the logout token's issuer, so the same `sid` or `sub`
+from another issuer is untouched. SSO
 sessions are dated by their ID token's `iat`, not by when the callback finished. A
 replay is harmless and acknowledged; an unknown subject is acknowledged. The route is
 anonymous by design: the signature is its authority, and no session cookie means no
@@ -208,12 +238,8 @@ are ignored; a nonempty environment setting produces a startup migration warning
 without logging its value. Remove it after migrating. Existing stored webhook-ordering
 data is retained and unused. OIDC sign-in and back-channel logout are unchanged.
 
-**Before upgrading**, register this application in KyIdentity and assign its explicit
-per-app `admin` role to each application administrator. A present `roles: []` means
-ordinary user even alongside an IdP-wide `role: "admin"`; it never falls back to the
-global role. Only tokens with no `roles` claim retain the legacy mapping described
-above. Keep SCIM admin-role mappings specific to this app if
-`KY_SCIM_ALLOW_ADMIN=true`; directory provisioning is separate from the sign-in grant.
+Register this application in KyIdentity and assign its explicit per-app `admin` role to each
+KyGuard administrator: no other claim makes an administrator.
 
 ## SCIM 2.0
 
@@ -226,10 +252,11 @@ must be enabled. Use `application/scim+json` for request/response bodies. Do not
 browser session cookies; otherwise the shared CSRF rule also applies to writes.
 
 SCIM sees only the accounts it created (`scim_managed`, kept when a KyIdentity sign-in
-adopts one). Local and other SSO accounts, the bootstrap admin included, are absent
-from lists and filters, 404 by id, and 400 `invalidValue` as group members. SCIM may
-not grant the `admin` role (400 `invalidValue`) unless `KY_SCIM_ALLOW_ADMIN=true`;
-an account that is already an admin can still be updated, deactivated or demoted. A
+adopts one). Break-glass and other SSO accounts are absent
+from lists and filters, 404 by id, and 400 `invalidValue` as group members. SCIM never
+grants the `admin` role (400 `invalidValue`; there is no setting to allow it); an account
+that is already an admin can still be updated, deactivated or demoted. SCIM accounts take
+the issuer `KY_SCIM_ISSUER`. A
 `userName` that another account holds in any letter case is 409 `uniqueness`.
 `POST /Users` for someone who already signed in through KyIdentity takes that account
 over instead: when `externalId` equals the subject of a KyIdentity account SCIM does not
@@ -421,7 +448,7 @@ normally go to stderr. Setup/operational failures return a nonzero exit status.
 | `backup-drill` | Collect the payload (SQLite file, or a PostgreSQL snapshot); seal/open with throwaway keys and check restore recipe | Human summary on stdout with PASSED/FAILED and per-check results; exit status 1 when the drill FAILED |
 | `export-capsule [-out PATH]` | Require suite pin; seal payload to custodian public key; default output `<capsule-id>.kycap` | File plus capsule/key/size confirmation on stderr |
 | `deposit` | Seal once and deliver to configured destinations | Audit record; remote success logs capsule/time/digest on stderr; failures on stderr; no JSON stdout contract |
-| `restore -capsule PATH -to DIRECTORY [-service NAME]` | Read custodian shares from stdin, one `ky2-…` line each; target must be empty; expected service defaults to `KY_APP_NAME`, then `KyGuard` | Authenticated manifest/restore result on stdout; optional terminal prompt on stderr. In the restored database, in one transaction: the backup schedule off (`backup_interval_sec` = 0), every `sessions` row deleted and the `replica_config_fingerprint` row deleted; it prints all three. The admin turns the schedule back on |
+| `restore -capsule PATH -to DIRECTORY [-service NAME]` | Read custodian shares from stdin, one `ky2-…` line each; target must be empty; expected service defaults to `KY_APP_NAME`, then `KyGuard` | Authenticated manifest/restore result on stdout; optional terminal prompt on stderr. In the restored database, in one transaction: the backup schedule off (`backup_interval_sec` = 0), every `sessions` row, every CLI login code and every unconsumed broker pairing token deleted, and the `replica_config_fingerprint` row deleted; it prints what it did. The admin turns the schedule back on |
 
 No command takes a secret in argv. Custodian shares are accepted only on stdin. `backup-drill`
 exits 1 when the drill FAILED, so cron and monitoring see a failed recovery check. An unknown
@@ -467,10 +494,11 @@ reader in the binary. The shipped `docker-compose.yml` passes its `.env` to the 
 | `KY_KYSIGNON_SECRET` | Empty | Registered client secret |
 | `KY_KYSIGNON_HMAC_SECRET` | Empty | Deprecated, accepted and ignored; a nonempty value logs a startup warning to migrate KyIdentity to the SCIM connector |
 | `KY_SSO_AUTO_PROVISION` | `true` | Allow a validated KySignOn login to create a local user |
-| `KY_OIDC_ISSUER`, `KY_OIDC_CLIENT_ID`, `KY_OIDC_SECRET` | Empty | Generic OIDC helper configuration; no public login/callback routes are wired |
+| `KY_OIDC_ISSUER`, `KY_OIDC_CLIENT_ID`, `KY_OIDC_SECRET` | Empty | Generic OIDC profile behind `/api/sso/oidc/login` and `/callback` |
+| `KY_OIDC_MFA_ACRS` | Empty | Comma- or space-separated acr values that mean MFA for the generic profile; sent as `acr_values` |
 | `KY_SCIM_ENABLED` | `true` | Enable authenticated provisioning |
 | `KY_SCIM_TOKEN` | Fresh random 24-byte hex on each SQLite load | Provisioning bearer credential; required explicitly with PostgreSQL when SCIM is enabled, identical across replicas |
-| `KY_SCIM_ALLOW_ADMIN` | `false` | Let SCIM grant the `admin` role |
+| `KY_SCIM_ISSUER` | `KY_KYSIGNON_ISSUER` | SSO issuer of SCIM-created accounts; a sign-in from it adopts them by `(issuer, externalId)` |
 | `KY_CAPTCHA_PROVIDER` | `pow` | Login PoW check; `none` disables it; other provider verification is not wired |
 | `KY_CAPTCHA_SITE_KEY`, `KY_CAPTCHA_SECRET_KEY` | Empty | Reserved provider configuration; not used by the current PoW verifier |
 | `KY_CAPTCHA_POW_DIFFICULTY` | `500000` | Maximum puzzle candidate number; nonpositive values fall back to the default. The default solves in about one second (median) in a desktop browser |
@@ -553,7 +581,7 @@ whose SHA-256 differs from the one any paired broker pinned.
 
 Source: [inventory handlers](../internal/api/inventory_handlers.go). Spec §8.2, §10. Writes
 are administrator only, audited in the same transaction, and use cookie CSRF. Every route
-carries `TODO(hawthorn §7.5)` until the route registry classifies it.
+is session class; the writes need a step-up within five minutes (decision 204b).
 
 | Route | Authentication and input | Success |
 |---|---|---|

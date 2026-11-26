@@ -88,7 +88,7 @@ func TestScorecard(t *testing.T) {
 
 	// carol signs in through KySignOn and is enrolled as a principal with the same identity.
 	carolP := pqtest.NewPrincipal(t)
-	carol := &store.User{ID: "usr_carol", Username: "carol", Role: "user", Status: "active", SSOProvider: "kysignon", SSOSubject: "sub-" + string(carolP.ID)}
+	carol := &store.User{ID: "usr_carol", Username: "carol", Role: "user", Status: "active", SSOProvider: "kysignon", SSOSubject: "sub-" + string(carolP.ID), SSOIssuer: "https://idp.example.test"}
 	if err := st.Users().CreateUser(ctx, carol); err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +252,7 @@ func TestScorecard(t *testing.T) {
 		t.Fatalf("carol sees %+v", hers.Rows)
 	}
 	// dave has carol's subject from another identity provider: not her principal.
-	dave := &store.User{ID: "usr_dave", Username: "dave", Role: "user", Status: "active", SSOProvider: "oidc", SSOSubject: carol.SSOSubject}
+	dave := &store.User{ID: "usr_dave", Username: "dave", Role: "user", Status: "active", SSOProvider: "oidc", SSOSubject: carol.SSOSubject, SSOIssuer: "https://other-idp.example.test"}
 	if err := st.Users().CreateUser(ctx, dave); err != nil {
 		t.Fatal(err)
 	}
