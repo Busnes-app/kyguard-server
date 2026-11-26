@@ -52,6 +52,7 @@ func seedEveryTable(t *testing.T, st *SQLStore) {
 	must(err)
 	_, err = st.Intents().Begin(ctx, "deposit", "kyguard")
 	must(err)
+	must(st.Sessions().CreateCLICode(ctx, &CLICode{CodeHash: "cli1", UserID: "u1", SSOIssuer: "https://idp", SSOSID: "sid", IssuedAt: now, Challenge: "c", ExpiresAt: now.Add(time.Minute)}, &AuditRecord{Action: "test"}))
 	_, err = st.SpendChallenge(ctx, "0123456789abcdef0123456789abcdef", now.Add(time.Minute).UnixMilli())
 	must(err)
 	g := st.Guard()
