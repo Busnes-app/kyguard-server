@@ -28,7 +28,7 @@ type Server struct {
 }
 
 func NewServer(st store.Store, cfg config.SCIMConfig, appURL string) *Server {
-	userHandler := &userResourceHandler{store: st, allowAdmin: cfg.AllowAdmin}
+	userHandler := &userResourceHandler{store: st, issuer: cfg.Issuer}
 	groupHandler := &groupResourceHandler{store: st}
 	server, err := protocol.NewServer(&protocol.ServerArgs{
 		ServiceProviderConfig: &protocol.ServiceProviderConfig{
@@ -49,10 +49,12 @@ func NewServer(st store.Store, cfg config.SCIMConfig, appURL string) *Server {
 	return &Server{config: cfg, protocol: server}
 }
 
-func (s *Server) RegisterRoutes(mux *http.ServeMux) {
+// RegisterRoutes hands the SCIM routes to the caller's registrar (the API's classified route
+// registry), never to a mux directly.
+func (s *Server) RegisterRoutes(register func(pattern string, h http.Handler)) {
 	h := http.StripPrefix("/scim", s.protocol)
-	mux.Handle("/scim/v2", h)
-	mux.Handle("/scim/v2/", h)
+	register("/scim/v2", h)
+	register("/scim/v2/", h)
 }
 
 func (s *Server) AuthMiddleware(next http.Handler) http.Handler {
@@ -86,21 +88,28 @@ func writeAuthError(w http.ResponseWriter, status int, detail string) {
 }
 
 type userResourceHandler struct {
-	store      store.Store
-	allowAdmin bool
+	store store.Store
+	// issuer is the SSO issuer SCIM accounts belong to; with externalId it is their identity.
+	issuer string
 	// mu serializes SCIM user writes, so two PATCHes read from the same row cannot each write
 	// back the other's stale fields (the store compares only role, status and subject).
 	mu sync.Mutex
 }
 
+// errNoIssuer refuses an externalId while no issuer is configured: identity is (issuer,
+// subject), and a subject without an issuer would stop the next start (spec §7.2).
+var errNoIssuer = protocolErrors.ScimError{ScimType: protocolErrors.ScimTypeInvalidValue, Status: http.StatusBadRequest,
+	Detail: "externalId needs KY_SCIM_ISSUER or KY_KYSIGNON_ISSUER to be set"}
+
 // errAdminGrant refuses a SCIM write that would make an account an administrator.
 var errAdminGrant = protocolErrors.ScimError{ScimType: protocolErrors.ScimTypeInvalidValue, Status: http.StatusBadRequest,
-	Detail: "SCIM may not grant the admin role (KY_SCIM_ALLOW_ADMIN is off)"}
+	Detail: "SCIM may not grant the admin role; KyGuard admin comes only from the per-app roles claim at sign-in"}
 
-// checkRole refuses a grant of admin, not an account that already holds it: an existing
-// admin can still be renamed, deactivated or demoted through SCIM.
+// checkRole refuses every admin grant, with no setting to allow one (spec §7.2). An account
+// that already holds admin (from its last sign-in) can still be renamed, deactivated or
+// demoted, so deprovisioning an administrator keeps working.
 func (h *userResourceHandler) checkRole(oldRole, newRole string) error {
-	if newRole == "admin" && oldRole != "admin" && !h.allowAdmin {
+	if newRole == "admin" && oldRole != "admin" {
 		return errAdminGrant
 	}
 	return nil
@@ -121,9 +130,12 @@ func (h *userResourceHandler) managedUser(r *http.Request, id string) (*store.Us
 
 func (h *userResourceHandler) Create(r *http.Request, attrs protocol.ResourceAttributes) (protocol.Resource, error) {
 	username, _ := attrs["userName"].(string)
-	user := &store.User{ID: "usr_" + crypto.RandomHex(12), Username: username, Email: primaryValue(attrs["emails"]), DisplayName: stringValue(attrs, "displayName", username), Role: primaryValue(attrs["roles"]), Status: statusFromActive(attrs), SSOProvider: "scim", SSOSubject: stringValue(attrs, "externalId", ""), SCIMManaged: true}
+	user := &store.User{ID: "usr_" + crypto.RandomHex(12), Username: username, Email: primaryValue(attrs["emails"]), DisplayName: stringValue(attrs, "displayName", username), Role: primaryValue(attrs["roles"]), Status: statusFromActive(attrs), SSOProvider: "scim", SSOSubject: stringValue(attrs, "externalId", ""), SSOIssuer: h.issuer, SCIMManaged: true}
 	if user.Role == "" {
 		user.Role = "user"
+	}
+	if user.SSOSubject != "" && h.issuer == "" {
+		return protocol.Resource{}, errNoIssuer
 	}
 	if existing, err := h.kyIdentityAccount(r, user.SSOSubject, username); err != nil {
 		return protocol.Resource{}, err
@@ -133,10 +145,9 @@ func (h *userResourceHandler) Create(r *http.Request, attrs protocol.ResourceAtt
 	if err := h.checkRole("", user.Role); err != nil {
 		return protocol.Resource{}, err
 	}
-	if err := h.store.Users().CreateUser(r.Context(), user); err != nil {
+	if err := h.store.Users().CreateUser(store.WithAudit(r.Context(), &store.AuditRecord{UserID: user.ID, Action: "scim.user.create", Resource: user.Username}), user); err != nil {
 		return protocol.Resource{}, scimStoreError(err, user.ID)
 	}
-	_ = h.store.Audit().LogAudit(r.Context(), &store.AuditRecord{UserID: user.ID, Action: "scim.user.create", Resource: user.Username})
 	return userResource(user), nil
 }
 
@@ -146,9 +157,9 @@ func (h *userResourceHandler) Create(r *http.Request, attrs protocol.ResourceAtt
 // uniqueness conflict, never a second account.
 func (h *userResourceHandler) kyIdentityAccount(r *http.Request, subject, username string) (*store.User, error) {
 	if subject != "" {
-		existing, err := h.store.Users().GetUserBySSO(r.Context(), "kysignon", subject)
+		existing, err := h.store.Users().GetUserBySSO(r.Context(), h.issuer, subject)
 		if err == nil {
-			if existing.SCIMManaged {
+			if existing.SCIMManaged || existing.SSOProvider != "kysignon" {
 				return nil, protocolErrors.ScimErrorUniqueness
 			}
 			return existing, nil
@@ -164,7 +175,7 @@ func (h *userResourceHandler) kyIdentityAccount(r *http.Request, subject, userna
 	if err != nil {
 		return nil, err
 	}
-	if existing.SSOProvider == "kysignon" && !existing.SCIMManaged {
+	if existing.SSOProvider == "kysignon" && existing.SSOIssuer == h.issuer && !existing.SCIMManaged {
 		if subject != "" && subject != existing.SSOSubject {
 			return nil, protocolErrors.ScimErrorUniqueness
 		}
@@ -186,12 +197,11 @@ func (h *userResourceHandler) takeOver(r *http.Request, user *store.User, attrs 
 	if err := h.checkRole(oldRole, user.Role); err != nil {
 		return protocol.Resource{}, err
 	}
-	if err := h.store.Users().TakeOverForSCIM(r.Context(), user, oldRole, oldStatus); errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrNotFound) {
+	if err := h.store.Users().TakeOverForSCIM(store.WithAudit(r.Context(), &store.AuditRecord{UserID: user.ID, Action: "scim.user.adopt", Resource: user.Username}), user, oldRole, oldStatus); errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrNotFound) {
 		return protocol.Resource{}, protocolErrors.ScimErrorUniqueness // changed or taken meanwhile; the IdP retries
 	} else if err != nil {
 		return protocol.Resource{}, scimStoreError(err, user.ID)
 	}
-	_ = h.store.Audit().LogAudit(r.Context(), &store.AuditRecord{UserID: user.ID, Action: "scim.user.adopt", Resource: user.Username})
 	return userResource(user), nil
 }
 
@@ -422,6 +432,12 @@ func (h *userResourceHandler) update(r *http.Request, id string, change func(*st
 		// keeps its sign-in subject.
 		if user.SSOProvider != "scim" {
 			user.SSOSubject = oldSubject
+		} else if user.SSOSubject != "" && user.SSOIssuer == "" {
+			// A row created before an issuer was set takes it with its first subject.
+			if h.issuer == "" {
+				return protocol.Resource{}, errNoIssuer
+			}
+			user.SSOIssuer = h.issuer
 		}
 		err = h.store.Users().UpdateSCIMProfile(r.Context(), user, oldRole, oldStatus, oldSubject)
 		if errors.Is(err, store.ErrConflict) && attempt < 3 {

@@ -101,6 +101,28 @@ func (f *Factors) Check(ctx context.Context, userID, sessionHash, code string) (
 	return factor.ID, f.store.MFA().ReleaseAttempt(ctx, attempt)
 }
 
+// CheckEnrollment verifies a code against the sealed secret a pending session was offered
+// (sessionHash), counting it like any code, and returns the matched counter for the new
+// factor's last_counter.
+func (f *Factors) CheckEnrollment(ctx context.Context, userID, sessionHash, sealed, code string) (int64, error) {
+	attempt, perUser, perSession, err := f.store.MFA().ReserveAttempt(ctx, userID, sessionHash, CodeWindow)
+	if err != nil {
+		return 0, err
+	}
+	if perUser > UserCodeLimit || perSession > SessionCodeLimit || sealed == "" {
+		return 0, f.reject(ctx, sessionHash, perSession)
+	}
+	secret, err := f.open(userID, sealed)
+	if err != nil {
+		return 0, err
+	}
+	counter, ok := totp.Validate(secret, code, time.Now())
+	if !ok {
+		return 0, f.reject(ctx, sessionHash, perSession)
+	}
+	return counter, f.store.MFA().ReleaseAttempt(ctx, attempt)
+}
+
 func (f *Factors) reject(ctx context.Context, sessionHash string, perSession int) error {
 	if sessionHash != "" && perSession >= SessionCodeLimit {
 		if err := f.store.Sessions().DeleteSession(ctx, sessionHash); err != nil {

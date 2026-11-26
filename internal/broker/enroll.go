@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -261,13 +262,14 @@ func (m *Machine) enrollSend(ctx context.Context, a *Account) error {
 		if r.EnvelopeID == cand.EnvelopeID {
 			continue
 		}
-		for i := range a.Chains {
-			if v, err := m.Trust.VerifyEnvelope(a.Chains[i].Envelope, pqcrypto.EnvelopeContext{}); err == nil && v.EnvelopeID == r.EnvelopeID {
-				a.Chains[i].Receipts = append(a.Chains[i].Receipts, raw)
-			}
-		}
+		addReceipt(a, r.EnvelopeID, raw)
 	}
-	a.Chains = append(a.Chains, ChainCopy{Envelope: e.Candidate, Receipts: e.Receipts[len(e.Receipts)-1:]})
+	// A sync since a restart may already hold the candidate or these receipts, so the merge
+	// adds only what is missing (Guide on #15, "Recovery duplication").
+	if !slices.ContainsFunc(a.Chains, func(c ChainCopy) bool { return envelopeID(c.Envelope) == cand.EnvelopeID }) {
+		a.Chains = append(a.Chains, ChainCopy{Envelope: e.Candidate, Receipts: []pqcrypto.B64{}})
+	}
+	addReceipt(a, cand.EnvelopeID, e.Receipts[len(e.Receipts)-1])
 	if err := m.J.Save(a); err != nil {
 		return err
 	}
@@ -291,6 +293,16 @@ func (m *Machine) recoverEnrollment(ctx context.Context, a *Account) error {
 		return m.verifyEnrollment(ctx, a)
 	}
 	return m.enrollFail(ctx, a)
+}
+
+// addReceipt appends raw to the copy of envelope id unless the copy already holds it.
+func addReceipt(a *Account, id pqcrypto.UUID, raw pqcrypto.B64) {
+	for i := range a.Chains {
+		c := &a.Chains[i]
+		if envelopeID(c.Envelope) == id && !slices.ContainsFunc(c.Receipts, func(x pqcrypto.B64) bool { return bytes.Equal(x, raw) }) {
+			c.Receipts = append(c.Receipts, raw)
+		}
+	}
 }
 
 // envelopeID reads an envelope's envelope_id, or "".

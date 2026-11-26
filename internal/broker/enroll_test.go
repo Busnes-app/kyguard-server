@@ -631,3 +631,53 @@ func TestReEnrollmentAfterSyncCopiedTheStuckEnvelope(t *testing.T) {
 		t.Fatalf("next rotation %+v", a.Run)
 	}
 }
+
+// lostAck stores receipts on the Control Plane but reports a failure, as a reply lost on
+// the channel would.
+type lostAck struct{ broker.ControlPlane }
+
+func (l lostAck) Receipts(ctx context.Context, op, account pqcrypto.UUID, rs []pqcrypto.B64) error {
+	if err := l.ControlPlane.Receipts(ctx, op, account, rs); err != nil {
+		return err
+	}
+	return errors.New("reply lost")
+}
+
+// After a restart whose sync already copied the delivered candidate and receipts, recovery
+// re-sends them without duplicating anything in the local copy (Guide on #15, "Recovery
+// duplication").
+func TestRecoveryAfterSyncDoesNotDuplicateChains(t *testing.T) {
+	r := newEnrollRig(t, true)
+	m := r.machine()
+	quarantineV2(t, r, m)
+	r.target.password = "Reset-By-Operator-1!"
+	m.CP = lostAck{m.CP}
+	if _, err := r.enroll(m, "Reset-By-Operator-1!"); err == nil {
+		t.Fatal("the lost reply was not reported")
+	}
+	m.J.Close()
+	m2 := r.machine()
+	defer m2.J.Close()
+	if err := m2.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := m2.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	a := r.account(m2)
+	seen := map[string]bool{}
+	for _, c := range a.Chains {
+		var e pqcrypto.SecretEnvelope
+		pqtest.Decode(t, c.Envelope, &e)
+		if seen[string(e.EnvelopeID)] {
+			t.Fatalf("envelope v%d copied twice", e.SecretVersion)
+		}
+		seen[string(e.EnvelopeID)] = true
+	}
+	if cur := r.current(m2); !a.Enrollment.Sent || cur.Envelope.SecretVersion != 3 || r.cpLock() != "" {
+		t.Fatalf("sent=%v current=%d lock=%q", a.Enrollment.Sent, cur.Envelope.SecretVersion, r.cpLock())
+	}
+	if err := m2.Rotate(context.Background(), r.pol.AccountID, 1, due.Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+}

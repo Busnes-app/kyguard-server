@@ -304,3 +304,25 @@ func TestSuccessfulSignInsDoNotFillTheAccountWindow(t *testing.T) {
 		}
 	}
 }
+
+// §9.3: the saved list and its audit record commit together; when the append fails, the
+// list is not saved and the answer is 500.
+func TestExemptNetworksRollBackWithTheirAudit(t *testing.T) {
+	srv, st, cfg := setupTestServer(t)
+	admin := loginAs(t, srv, st, "alice", "admin")
+	keyless := cfg.Database
+	keyless.AuditKey = nil // every audit append fails
+	broken, err := store.Open(context.Background(), keyless)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = broken.Close() })
+	api.SetStoreForTest(srv, broken)
+	if w := putNetworks(t, srv, admin, officeRange); w.Code != http.StatusInternalServerError {
+		t.Fatalf("save with a failing audit: %d %s", w.Code, w.Body)
+	}
+	api.SetStoreForTest(srv, st)
+	if networks, _, _ := networksStatus(t, do(t, srv, "GET", "/api/settings/rate-limit-networks", admin)); networks != "" {
+		t.Fatalf("the list %q was saved without its record", networks)
+	}
+}

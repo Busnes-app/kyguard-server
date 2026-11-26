@@ -1,7 +1,9 @@
 package config
 
 import (
+	"crypto/hkdf"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -66,6 +68,17 @@ type DatabaseConfig struct {
 	MaxOpenConns    int           `json:"max_open_conns"`
 	MaxIdleConns    int           `json:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `json:"conn_max_lifetime"`
+	// AuditKey is the audit chain's HMAC key (spec §9.3), derived from the encryption key
+	// with AuditChainKey. Without one the store refuses every audit write.
+	AuditKey []byte `json:"-"`
+}
+
+// AuditChainLabel is the HKDF label of the audit chain key (spec §9.3).
+const AuditChainLabel = "kyguard:auditchain"
+
+// AuditChainKey derives the 32-byte audit chain key from the deployment encryption key.
+func AuditChainKey(encryptionKey []byte) ([]byte, error) {
+	return hkdf.Key(sha256.New, encryptionKey, nil, AuditChainLabel, 32)
 }
 
 // SecurityConfig holds encryption keys, cookie secrets, and session settings.
@@ -96,16 +109,19 @@ type SSOConfig struct {
 	GenericOIDCIssuer   string `json:"generic_oidc_issuer"`
 	GenericOIDCClientID string `json:"generic_oidc_client_id"`
 	GenericOIDCSecret   string `json:"generic_oidc_secret"`
-	AutoProvision       bool   `json:"auto_provision"`
+	// GenericOIDCMFAACRs is the generic profile's MFA acr set (spec §7.2): sent as acr_values,
+	// and an ID token whose acr is in it asserts MFA. Empty means only amr "mfa" counts.
+	GenericOIDCMFAACRs []string `json:"generic_oidc_mfa_acrs"`
+	AutoProvision      bool     `json:"auto_provision"`
 }
 
 // SCIMConfig holds settings for RFC 7643/7644 inbound user provisioning.
 type SCIMConfig struct {
 	Enabled     bool   `json:"enabled"`
 	BearerToken string `json:"bearer_token"`
-	// AllowAdmin lets SCIM grant the admin role. Off by default: the IdP's token must not be
-	// able to mint administrators of this app.
-	AllowAdmin bool `json:"allow_admin"`
+	// Issuer is the SSO issuer SCIM-created accounts belong to (spec §7.2), so a later
+	// sign-in matches them on (issuer, subject). Defaults to KY_KYSIGNON_ISSUER.
+	Issuer string `json:"issuer"`
 }
 
 // BackupConfig holds parameters for KyBackup capsules & recovery drills.
@@ -196,6 +212,11 @@ func LoadFromEnv() (*Config, error) {
 		}
 	}
 
+	auditKey, err := AuditChainKey(encryptionKey)
+	if err != nil {
+		return nil, fmt.Errorf("audit chain key: %w", err)
+	}
+
 	depositInterval, err := getEnvDuration("KY_BACKUP_DEPOSIT_INTERVAL", 24*time.Hour)
 	if err != nil {
 		return nil, fmt.Errorf("KY_BACKUP_DEPOSIT_INTERVAL: %w", err)
@@ -252,6 +273,7 @@ func LoadFromEnv() (*Config, error) {
 			MaxOpenConns:    maxOpenConns,
 			MaxIdleConns:    getEnvInt("KY_DB_MAX_IDLE_CONNS", 5),
 			ConnMaxLifetime: 15 * time.Minute,
+			AuditKey:        auditKey,
 		},
 		Security: SecurityConfig{
 			SessionSecret:           sessionSecret,
@@ -259,7 +281,7 @@ func LoadFromEnv() (*Config, error) {
 			CookieSecure:            cookieSecure,
 			CookieDomain:            cookieDomain,
 			HostCookies:             https,
-			SessionTTL:              7 * 24 * time.Hour,
+			SessionTTL:              12 * time.Hour, // spec §7.3: an active session lasts 12 hours
 			TrustedProxies:          trustedProxies,
 			RateLimitExemptNetworks: exemptNetworks.String(),
 		},
@@ -272,12 +294,13 @@ func LoadFromEnv() (*Config, error) {
 			GenericOIDCIssuer:   getEnv("KY_OIDC_ISSUER", ""),
 			GenericOIDCClientID: getEnv("KY_OIDC_CLIENT_ID", ""),
 			GenericOIDCSecret:   getEnv("KY_OIDC_SECRET", ""),
+			GenericOIDCMFAACRs:  strings.Fields(strings.ReplaceAll(getEnv("KY_OIDC_MFA_ACRS", ""), ",", " ")),
 			AutoProvision:       getEnvBool("KY_SSO_AUTO_PROVISION", true),
 		},
 		SCIM: SCIMConfig{
 			Enabled:     getEnvBool("KY_SCIM_ENABLED", true),
 			BearerToken: getEnv("KY_SCIM_TOKEN", generateRandomHex(24)),
-			AllowAdmin:  getEnvBool("KY_SCIM_ALLOW_ADMIN", false),
+			Issuer:      strings.TrimRight(getEnv("KY_SCIM_ISSUER", getEnv("KY_KYSIGNON_ISSUER", "")), "/"),
 		},
 		Backup: BackupConfig{
 			Dir:                  getEnv("KY_BACKUP_DIR", ""),
