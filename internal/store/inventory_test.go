@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"testing"
+	"time"
 )
 
 func inventoryFor(t *testing.T) (*SQLStore, InventoryStore) {
@@ -193,5 +195,37 @@ func TestInventoryWriteRollsBackWithItsAudit(t *testing.T) {
 	assets, err := inv.ListAssets(ctx)
 	if err != nil || len(assets) != 1 {
 		t.Fatalf("assets %v %v", assets, err)
+	}
+}
+
+// ReportFacts returns each account's newest release, however many it has had.
+func TestReportFactsNewestRelease(t *testing.T) {
+	s, inv := inventoryFor(t)
+	ctx := context.Background()
+	v := s.Vault()
+	var last time.Time
+	for i := 1; i <= 3; i++ {
+		n := strconv.Itoa(i)
+		op := "op" + n
+		ver, err := v.Reserve(ctx, "ac", op, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := v.PutEnvelope(ctx, op, &StoredEnvelope{EnvelopeID: "e" + n, AccountID: "ac", SecretVersion: ver, EnvelopeKind: "managed", Digest: "d" + n, Envelope: []byte("{}")}); err != nil {
+			t.Fatal(err)
+		}
+		rs := []*StoredReceipt{{EnvelopeID: "e" + n, ReceiptSeq: 1, ReceiptType: "commit_target", OperationID: op, Digest: "c" + n, PrevReceiptHash: zeroHash, Receipt: []byte("1")},
+			{EnvelopeID: "e" + n, ReceiptSeq: 2, ReceiptType: "release", OperationID: op, Digest: "r" + n, PrevReceiptHash: "c" + n, Receipt: []byte("2")}}
+		if err := v.Complete(ctx, op, "ac", rs, "e"+n, "", LockDelete); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.db.QueryRowContext(ctx, s.rebind(`SELECT created_at FROM envelope_receipts WHERE digest = ?`), "r"+n).Scan(&last); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	f, err := inv.ReportFacts(ctx)
+	if err != nil || !f["ac"].LastRelease.Equal(last) {
+		t.Fatalf("facts %+v %v, want %v", f["ac"], err, last)
 	}
 }

@@ -590,6 +590,16 @@ is session class; the writes need a step-up within five minutes (decision 204b).
 | DELETE `/api/attributes/{id}` | Administrator | 204; the values go with it; 400 for a SCIM definition |
 | PUT `/api/attributes/{id}/values/{entity_id}` | Administrator; JSON `{"value"}` (≤256 printable characters, `""` clears) | 200; 400 for a SCIM attribute, an enum value outside the list or an unknown account or user; audited `attribute.value_set` |
 
+### Scorecard and jobs (spec §8.1–§8.3, §10)
+
+Source: [report handlers](../internal/api/report_handlers.go), [reporting](../internal/reporting/reporting.go).
+
+| Route | Authentication and input | Success |
+|---|---|---|
+| GET `/api/reports/scorecard` | Any active session; filters `class`, `health`, `pool`, `attr.<key>`, `owner.<key>` (equality) | 200 `{generated_at, totals:{active, decommissioned, classes, percent, health}, account_attribute_keys, owner_attribute_keys, rows}`; admins see every account, others the accounts they own or are listed on in the current policy |
+| GET `/api/reports/scorecard?format=json\|csv` | Same | 200 download (`Content-Disposition: attachment`, `no-store`) with the same rows and totals; CSV has the fixed columns, then `attr.<key>` and `owner.<key>`. Audited `report.exported` (format, row count, filter) before the body is sent; 500 and no body if the audit fails |
+| GET `/api/jobs` | Administrator | 200 `{runs, leases}`: the 200 newest rotation runs and checkout leases, open leases first |
+
 ## Replicas and database migration
 
 [Replication and migration](REPLICAS.md) owns deployment requirements and the cutover runbook.

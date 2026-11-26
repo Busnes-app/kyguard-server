@@ -57,6 +57,12 @@ type InventoryStore interface {
 	Values(ctx context.Context, entity string) (map[string]map[string]string, error)
 	// EntityValues maps attribute key to value for one entity.
 	EntityValues(ctx context.Context, entity, entityID string) (map[string]string, error)
+
+	// ReportFacts returns, per account, the newest release receipt and the open leases.
+	ReportFacts(ctx context.Context) (map[string]*ReportFacts, error)
+	// RecentRuns and RecentLeases feed the jobs screen, newest (and open leases) first.
+	RecentRuns(ctx context.Context, limit int) ([]*JobRun, error)
+	RecentLeases(ctx context.Context, limit int) ([]*JobLease, error)
 }
 
 // InventoryAccount is an account row with its inventory columns.

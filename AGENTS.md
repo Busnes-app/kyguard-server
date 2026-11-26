@@ -150,6 +150,7 @@ overlay merges with synthetic inputs and starts no containers.
 - [internal/backup/AGENTS.md](internal/backup/AGENTS.md): Product-side adapters over `ky-primitives/recoveryclient`: payload collection, drill checks, settings and sealer glue.
 - [internal/testdb/AGENTS.md](internal/testdb/AGENTS.md): Test-only isolated database provisioning (SQLite or PostgreSQL).
 - [internal/api/AGENTS.md](internal/api/AGENTS.md): HTTP REST API endpoints, routing, and middleware.
+- [internal/reporting/AGENTS.md](internal/reporting/AGENTS.md): Traffic-light scorecard, health overlay, filters and CSV/JSON export (spec §8).
 - [web/AGENTS.md](web/AGENTS.md): React 19 + TypeScript + Vite PWA frontend and KySecurity design system.
 
 `docs/REPLICAS.md` owns topology, shared secrets, health/drain, the Compose replica overlay

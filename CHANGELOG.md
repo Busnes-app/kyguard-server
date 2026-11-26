@@ -159,6 +159,10 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   account's owner and status, upload target descriptors (strictly decoded, 1A slice only,
   bound to this deployment, account and asset) and define account and user attributes
   (`string` or `enum`); SCIM-sourced attributes are read-only.
+- Traffic-light scorecard (spec §8.1, §8.3): every active account is Green (scheduled and
+  released at least once), Yellow (sealed current envelope) or Red, with one health value
+  beside it; `GET /api/reports/scorecard` serves the dashboard and, with `format=json|csv`,
+  an audited download of the same rows. Non-admins see accounts they own or are listed on.
 
 ### Upgrade impact
 

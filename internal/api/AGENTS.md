@@ -18,6 +18,10 @@ Owns HTTP routing, request parsing, session cookie validation, CORS headers, and
   JSON (unknown fields refused), audited in the store transaction, session class; the
   writes need a five-minute step-up (decision 204b). Descriptor upload decodes with `pqcrypto.DecodeTargetDescriptor` and
   stores the canonical bytes.
+- `report_handlers.go`: GET `/api/reports/scorecard` (session) serves the dashboard and,
+  with `format=json|csv`, an audited download from the same `reporting.Build` dataset and
+  filter; GET `/api/jobs` (admin). Both are session class with no step-up window.
+  `callerIssuer` is `users.sso_issuer`, empty for a local account.
 - Update `docs/INTERFACES.md` when a route's inputs, outputs, permissions or errors change.
 - POST `/api/auth/change-password` accepts a break-glass session (restricted or not; SSO accounts get 409), current password, a TOTP code (checked after the password) and a different policy-valid new password. Browser CSRF and per-IP/account limits apply. Success revokes all sessions and requires sign-in again; flagged sessions get `password_change_required` on protected routes and public-only settings.
 - `GET|HEAD /livez` and `/readyz` (`health.go`) are unauthenticated, `Cache-Control: no-store`,

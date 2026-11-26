@@ -506,3 +506,16 @@ Numbered separately: these came from the parallel crypto stack.
     `session` class. The writes (assets, accounts, target descriptors, attribute definitions
     and values) also need a step-up within five minutes: a descriptor is what a policy pins,
     and the rest feed the reports. The reads need none.
+205. §8.1 (overdue). An account is `overdue` when the newest occurrence due at least one
+    `interval_seconds` ago came after its last `release` receipt (Control Plane time).
+206. §8.1 (one health value). Health is a single value: a non-`healthy` broker report wins,
+    then `checkout_open`, `pending_first_rotation`, `overdue`, else `healthy`. It never
+    changes the class.
+207. §8.3 (listed on in the policy). A non-admin is listed when a principal in any of the
+    current policy's principal lists has a verified `KeyEnrollmentManifest` whose issuer
+    and subject are the caller's own (`users.sso_issuer`, §7.2); a subject alone never
+    matches, and a local account is never listed.
+208. §8.3 (what is audited). The dashboard view is not an export and is not audited; every
+    `format=json` or `format=csv` download is, before its body is sent. CSV cells that a
+    spreadsheet would run as a formula are prefixed with `'`.
+
