@@ -108,7 +108,7 @@ type VaultStore interface {
 	GetLease(ctx context.Context, requestID string) (*Lease, error)
 	// TxMailbox holds what the broker sent back for a transaction: a challenge, a delivery
 	// wrap, a refusal. SetTxMailbox sets one field; an empty value leaves it, and a new
-	// challenge clears the result.
+	// delivery challenge clears the result.
 	TxMailbox(ctx context.Context, requestID string) (*TxMail, error)
 	SetTxMailbox(ctx context.Context, requestID string, m *TxMail) error
 	// TxAccount is the account a stored transaction names.
@@ -976,15 +976,16 @@ func (v vaultStore) TxMailbox(ctx context.Context, requestID string) (*TxMail, e
 	return &m, err
 }
 
-// SetTxMailbox sets the non-empty fields of a request's mailbox. A new challenge clears the
-// earlier result: it supersedes that outcome (PR Reviewer Guide "Stale refusal" on #16).
+// SetTxMailbox sets the non-empty fields of a request's mailbox. A new delivery challenge
+// clears the earlier result, which it supersedes (PR Reviewer Guide "Stale refusal" on
+// #16); a check-in challenge keeps the delivery's (security review of #16).
 func (v vaultStore) SetTxMailbox(ctx context.Context, requestID string, m *TxMail) error {
 	_, err := v.s.db.ExecContext(ctx, v.s.rebind(`UPDATE access_transactions SET
  challenge = CASE WHEN ? <> '' THEN ? ELSE challenge END,
  purpose = CASE WHEN ? <> '' THEN ? ELSE purpose END,
  delivery = CASE WHEN ? <> '' THEN ? ELSE delivery END,
- result = CASE WHEN ? <> '' THEN ? WHEN ? <> '' THEN '' ELSE result END
- WHERE request_id = ?`), m.Challenge, m.Challenge, m.Purpose, m.Purpose, m.Delivery, m.Delivery, m.Result, m.Result, m.Challenge, requestID)
+ result = CASE WHEN ? <> '' THEN ? WHEN ? = 'deliver' THEN '' ELSE result END
+ WHERE request_id = ?`), m.Challenge, m.Challenge, m.Purpose, m.Purpose, m.Delivery, m.Delivery, m.Result, m.Result, m.Purpose, requestID)
 	return err
 }
 

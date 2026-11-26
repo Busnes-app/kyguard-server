@@ -99,20 +99,10 @@ func (m *Machine) tick(ctx context.Context, id pqcrypto.UUID) error {
 	}
 	now := m.now()
 	if l := a.Lease; l.Open() {
-		// Expiry moves the lease to rotation_pending; then its cleanup is the only
-		// rotation path and scheduled occurrences wait (§3.6 step 5).
 		if l.State == LeaseActive && !now.Before(l.ExpiresAt) {
-			l.State, l.NextAttemptAt, l.Mirrored = LeaseRotationPending, now, false
-			// A wrap still undelivered is dropped and its expiry queued in the same save,
-			// before any later lease can replace this one (security review of #16).
-			if l.Delivery != nil {
-				l.Delivery = nil
-				a.Results = append(a.Results, TxResult{RequestID: l.RequestID, Result: ReasonLeaseExpired})
-			}
-			if err := m.J.Save(a); err != nil {
+			if err := m.expireLease(ctx, a); err != nil {
 				return err
 			}
-			_ = m.mirror(ctx, a)
 		}
 		return m.cleanup(ctx, a)
 	}

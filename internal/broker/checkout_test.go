@@ -225,8 +225,15 @@ func TestCheckinTriggersTheCleanupRotation(t *testing.T) {
 	if err := c.m.Proof(ctx, co.RequestID, bad); err == nil {
 		t.Fatal("check-in with another key accepted")
 	}
-	// A proof that does not verify publishes nothing (security review of #16).
-	if _, res := c.delivery(co.RequestID); res != "" {
+	// A proof that does not verify publishes nothing, and a repeated check-in request keeps
+	// the outstanding challenge and the delivery's result (security review of #16).
+	if err := c.m.Checkin(ctx, co.RequestID); err != nil {
+		t.Fatal(err)
+	}
+	if again := c.challenge(co.RequestID); string(again) != string(ch) {
+		t.Fatal("a repeated check-in request replaced the outstanding challenge")
+	}
+	if _, res := c.delivery(co.RequestID); res != "ok" {
 		t.Fatalf("result after the refused check-in %q", res)
 	}
 	good, _ := co.Proof(ch, pqcrypto.PurposeCheckin)
@@ -789,32 +796,42 @@ func TestAReplayKeepsTheEarlierOutcome(t *testing.T) {
 	}
 }
 
-// A lease that expires with its wrap still undelivered tells the requester so in the same
-// save that ends it, and a later checkout cannot lose that outcome (PR Reviewer Guide
-// "Missing outcome" and security review of #16).
+// A lease that expires with its wrap still undelivered never releases it, whether a tick or
+// recovery finds it first, and tells the requester so in the same save that ends the lease;
+// a later checkout cannot lose that outcome (PR Reviewer Guide "Missing outcome" and
+// security review of #16).
 func TestAnUndeliveredWrapThatExpiresIsReported(t *testing.T) {
-	c := newCheckoutRig(t)
-	ctx := context.Background()
-	w := c.wrapCP()
-	w.DeliveryErr = errors.New("connection lost")
-	co := c.checkoutTx(60)
-	if err := c.m.Tx(ctx, co.Tx); err != nil {
-		t.Fatal(err)
-	}
-	pop, _ := co.Proof(c.challenge(co.RequestID), pqcrypto.PurposeDeliver)
-	if err := c.m.Proof(ctx, co.RequestID, pop); err != nil {
-		t.Fatal(err)
-	}
-	c.now = c.now.Add(time.Hour)
-	c.m.Tick(ctx) // expires the lease; its cleanup closes it
-	if d, res := c.delivery(co.RequestID); d != nil || res != broker.ReasonLeaseExpired || c.account(c.m).Lease.Delivery != nil {
-		t.Fatalf("delivered=%v result=%q", d != nil, res)
-	}
-	w.DeliveryErr = nil
-	c.open(60) // another checkout replaces the lease
-	c.m.Tick(ctx)
-	if _, res := c.delivery(co.RequestID); res != broker.ReasonLeaseExpired {
-		t.Fatalf("result after the next checkout %q", res)
+	for _, path := range []string{"tick", "recover"} {
+		t.Run(path, func(t *testing.T) {
+			c := newCheckoutRig(t)
+			ctx := context.Background()
+			w := c.wrapCP()
+			w.DeliveryErr = errors.New("connection lost")
+			co := c.checkoutTx(60)
+			if err := c.m.Tx(ctx, co.Tx); err != nil {
+				t.Fatal(err)
+			}
+			pop, _ := co.Proof(c.challenge(co.RequestID), pqcrypto.PurposeDeliver)
+			if err := c.m.Proof(ctx, co.RequestID, pop); err != nil {
+				t.Fatal(err)
+			}
+			w.DeliveryErr = nil // the Control Plane is back, but the lease has expired
+			c.now = c.now.Add(time.Hour)
+			if path == "tick" {
+				c.m.Tick(ctx)
+			} else {
+				c.m.Recover(ctx)
+			}
+			if d, res := c.delivery(co.RequestID); d != nil || res != broker.ReasonLeaseExpired || c.account(c.m).Lease.Delivery != nil {
+				t.Fatalf("delivered=%v result=%q", d != nil, res)
+			}
+			c.m.Tick(ctx) // the cleanup rotation closes the expired lease
+			c.open(60)    // another checkout replaces it
+			c.m.Tick(ctx)
+			if _, res := c.delivery(co.RequestID); res != broker.ReasonLeaseExpired {
+				t.Fatalf("result after the next checkout %q", res)
+			}
+		})
 	}
 }
 

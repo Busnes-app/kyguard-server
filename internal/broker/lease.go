@@ -147,6 +147,11 @@ func (m *Machine) doCheckin(ctx context.Context, id pqcrypto.UUID) error {
 	if a.Lease.State != LeaseActive {
 		return ErrNoChallenge
 	}
+	// An outstanding check-in challenge is sent again, not replaced: a request that proves
+	// nothing must not invalidate the holder's (security review of #16).
+	if c := m.J.GetChallenge(id); c != nil && c.Purpose == pqcrypto.PurposeCheckin && m.now().Before(c.ExpiresAt) {
+		return m.CP.Challenge(ctx, brokerproto.ChallengeRequest{RequestID: id, Challenge: c.Challenge, Purpose: c.Purpose})
+	}
 	return m.challenge(ctx, a, id, pqcrypto.PurposeCheckin, a.Lease.Tx, m.now().Add(pqcrypto.MaxTxLifetime))
 }
 
@@ -380,22 +385,36 @@ func (m *Machine) deliverWrap(ctx context.Context, a *Account) error {
 	if l == nil || l.Delivery == nil {
 		return nil
 	}
-	if l.State != LeaseActive {
-		// Expired before the wrap was delivered (a check-in clears it first): the requester
-		// is told, journaled with the drop (PR Reviewer Guide "Missing outcome" on #16).
-		l.Delivery = nil
-		a.Results = append(a.Results, TxResult{RequestID: l.RequestID, Result: ReasonLeaseExpired})
-		if err := m.J.Save(a); err != nil {
-			return err
-		}
-		m.results(ctx, a)
-		return nil
+	// The broker's clock decides, before every delivery: an expired lease never releases its
+	// wrap (security review of #16).
+	if l.State != LeaseActive || !m.now().Before(l.ExpiresAt) {
+		return m.expireLease(ctx, a)
 	}
 	if err := m.CP.Delivery(ctx, brokerproto.DeliveryRequest{RequestID: l.RequestID, Wrap: *l.Delivery}); err != nil {
 		return err
 	}
 	l.Delivery = nil
 	return m.J.Save(a)
+}
+
+// expireLease moves an expired active lease to rotation_pending; then its cleanup is the only
+// rotation path (§3.6 step 5). A wrap still undelivered is dropped and lease_expired queued in
+// the same save, before any later lease can replace this one (security review of #16).
+func (m *Machine) expireLease(ctx context.Context, a *Account) error {
+	l := a.Lease
+	if l.State == LeaseActive {
+		l.State, l.NextAttemptAt, l.Mirrored = LeaseRotationPending, m.now(), false
+	}
+	if l.Delivery != nil {
+		l.Delivery = nil
+		a.Results = append(a.Results, TxResult{RequestID: l.RequestID, Result: ReasonLeaseExpired})
+	}
+	if err := m.J.Save(a); err != nil {
+		return err
+	}
+	_ = m.mirror(ctx, a)
+	m.results(ctx, a)
+	return nil
 }
 
 // flush re-sends what the Control Plane has not acknowledged for the account's lease: its

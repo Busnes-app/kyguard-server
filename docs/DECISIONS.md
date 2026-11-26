@@ -457,9 +457,11 @@ Numbered separately: these came from the parallel crypto stack.
     and the journaled wrap is re-sent. Only an outcome the requester authenticated reaches
     the mailbox: a transaction's own refusal (a replay keeps the earlier result) or one after
     its possession proof verified. A check-in request or a proof that does not verify
-    publishes nothing, because any session can send one. A lease that expires with its wrap
-    undelivered queues `lease_expired` in the same save. Expired challenges are pruned on
-    every tick.
+    publishes nothing, because any session can send one. A repeated check-in request re-sends
+    the outstanding challenge, and only a delivery challenge clears a mailbox result. Every
+    delivery checks the lease's expiry on the broker's clock first; an expired lease never
+    releases its wrap and queues `lease_expired` in the same save. Expired challenges are
+    pruned on every tick.
 
 ## Post-quantum key exchange (PQC plan W0, owner-approved 2026-11-25)
 

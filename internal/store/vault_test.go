@@ -608,6 +608,13 @@ func TestANewChallengeClearsTheEarlierResult(t *testing.T) {
 	if mb, _ := v.TxMailbox(ctx, "req"); mb.Result != "ok" || mb.Challenge != "c2" {
 		t.Fatalf("after delivery %+v", mb)
 	}
+	// A check-in challenge keeps the delivery's result (security review of #16).
+	if err := v.SetTxMailbox(ctx, "req", &TxMail{Challenge: "c3", Purpose: "checkin"}); err != nil {
+		t.Fatal(err)
+	}
+	if mb, _ := v.TxMailbox(ctx, "req"); mb.Result != "ok" || mb.Challenge != "c3" {
+		t.Fatalf("after a check-in challenge %+v", mb)
+	}
 }
 
 // A retry of a completed enrollment's reservation takes no new version and no lock (PR
