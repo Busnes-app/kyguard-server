@@ -771,3 +771,46 @@ func TestRecoveredManualRotationKeepsItsResult(t *testing.T) {
 		t.Fatalf("manual_rotation result %q", res)
 	}
 }
+
+// A duplicate of a completed manual_rotation is refused as a replay without replacing the
+// "ok" its requester already has (PR Reviewer Guide "Overwritten success" on #16).
+func TestAReplayKeepsTheEarlierOutcome(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	mr := c.tx(c.alice, pqcrypto.Action{ActionType: pqcrypto.ActionManualRotation})
+	if err := c.m.Tx(ctx, mr.Tx); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.m.Tx(ctx, mr.Tx); !errors.Is(err, pqcrypto.ErrReplay) {
+		t.Fatalf("duplicate: %v", err)
+	}
+	if _, res := c.delivery(mr.RequestID); res != "ok" {
+		t.Fatalf("result after the replay %q", res)
+	}
+}
+
+// A lease that expires with its wrap still undelivered tells the requester so, instead of
+// leaving the mailbox at the challenge (PR Reviewer Guide "Missing outcome" on #16).
+func TestAnUndeliveredWrapThatExpiresIsReported(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	w := c.wrapCP()
+	w.DeliveryErr = errors.New("connection lost")
+	co := c.checkoutTx(60)
+	if err := c.m.Tx(ctx, co.Tx); err != nil {
+		t.Fatal(err)
+	}
+	pop, _ := co.Proof(c.challenge(co.RequestID), pqcrypto.PurposeDeliver)
+	if err := c.m.Proof(ctx, co.RequestID, pop); err != nil {
+		t.Fatal(err)
+	}
+	c.now = c.now.Add(time.Hour)
+	c.m.Tick(ctx) // expires the lease
+	c.m.Tick(ctx) // drops the wrap
+	if d, res := c.delivery(co.RequestID); d != nil || res != broker.ReasonLeaseExpired {
+		t.Fatalf("delivered=%v result=%q", d != nil, res)
+	}
+	if c.account(c.m).Lease.Delivery != nil {
+		t.Fatal("the wrap is still journaled")
+	}
+}

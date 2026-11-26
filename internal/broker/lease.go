@@ -20,6 +20,10 @@ var (
 	ErrMinAge      = errors.New("broker: the target's minimum password age has not passed")
 )
 
+// ReasonLeaseExpired is the result of a checkout whose lease expired before its wrap was
+// delivered.
+const ReasonLeaseExpired = "lease_expired"
+
 // CleanupRetry is the pace of a refused lease cleanup (§4.4).
 const CleanupRetry = time.Hour
 
@@ -299,6 +303,12 @@ func (m *Machine) outcome(ctx context.Context, id pqcrypto.UUID, err error) {
 		return
 	}
 	code := ""
+	if errors.Is(err, pqcrypto.ErrReplay) {
+		// A duplicate of a request already taken: its earlier outcome stands (PR Reviewer
+		// Guide "Overwritten success" on #16).
+		log.Printf("[BROKER] request %s replayed: %v", id, err)
+		return
+	}
 	if err != nil {
 		log.Printf("[BROKER] request %s refused: %v", id, err)
 		code = err.Error()
@@ -366,8 +376,15 @@ func (m *Machine) deliverWrap(ctx context.Context, a *Account) error {
 		return nil
 	}
 	if l.State != LeaseActive {
-		l.Delivery = nil // checked in or expired: the wrap is of no use any more
-		return m.J.Save(a)
+		// Expired before the wrap was delivered (a check-in clears it first): the requester
+		// is told, journaled with the drop (PR Reviewer Guide "Missing outcome" on #16).
+		l.Delivery = nil
+		a.Results = append(a.Results, TxResult{RequestID: l.RequestID, Result: ReasonLeaseExpired})
+		if err := m.J.Save(a); err != nil {
+			return err
+		}
+		m.results(ctx, a)
+		return nil
 	}
 	if err := m.CP.Delivery(ctx, brokerproto.DeliveryRequest{RequestID: l.RequestID, Wrap: *l.Delivery}); err != nil {
 		return err
