@@ -126,12 +126,26 @@ const AddAccount: React.FC<{ onDone: () => void }> = ({ onDone }) => {
   const [kind, setKind] = useState<'managed' | 'vaulted'>('managed');
   const [pool, setPool] = useState('');
   const [err, setErr] = useState('');
+  // One submission at a time: a second click would POST a second asset and account.
+  const inFlight = useRef(false);
+  const [busy, setBusy] = useState(false);
 
   if (!shown) {
     return <div className="dr-section"><button type="button" className="btn-secondary" onClick={() => setShown(true)}><Plus size={16} />Add account</button></div>;
   }
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
+    try {
+      await create();
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  };
+  const create = async () => {
     let assetID = asset;
     if (!assetID) {
       const r = await fetchJSON('POST', '/api/assets', { name: newAsset });
@@ -165,7 +179,7 @@ const AddAccount: React.FC<{ onDone: () => void }> = ({ onDone }) => {
         {kind === 'managed' && <label className="dr-field">Broker pool ID<input value={pool} onChange={(e) => setPool(e.target.value)} placeholder="optional" /></label>}
       </div>
       {err && <p role="alert" className="dr-danger">{err}</p>}
-      <div className="dr-actions"><button type="submit">Add</button><button type="button" className="btn-secondary" onClick={() => setShown(false)}>Cancel</button></div>
+      <div className="dr-actions"><button type="submit" disabled={busy}>Add</button><button type="button" className="btn-secondary" onClick={() => setShown(false)}>Cancel</button></div>
     </form>
   );
 };

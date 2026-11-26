@@ -99,3 +99,34 @@ it('lets an admin reach decommissioned accounts', async () => {
   fireEvent.click(await screen.findByText('Show decommissioned accounts'));
   expect(await screen.findByText('db1 / old-sa')).toBeTruthy();
 });
+
+// A second Add while the first is still pending creates nothing more (one asset, one account).
+it('creates one asset and one account when Add is clicked twice', async () => {
+  const posts: string[] = [];
+  let release: () => void = () => {};
+  const held = new Promise<void>((r) => { release = r; });
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (init?.method === 'POST') {
+      posts.push(url);
+      await held;
+      return json(url === '/api/assets' ? { ID: 'as1', Name: 'db1' } : { ID: 'ac1' }, 201);
+    }
+    if (url === '/api/attributes') return json({ account: [], user: [] });
+    if (url === '/api/assets') return json([]);
+    if (url.startsWith('/api/reports/scorecard')) return json(card([]));
+    throw new Error(`unexpected fetch ${url}`);
+  }));
+  render(<Accounts isAdmin />);
+  fireEvent.click(await screen.findByText('Add account'));
+  fireEvent.change(screen.getByLabelText('New asset name'), { target: { value: 'db1' } });
+  fireEvent.change(screen.getByLabelText('Account name'), { target: { value: 'svc' } });
+  const form = screen.getByRole('form', { name: 'Add account' });
+  fireEvent.submit(form);
+  fireEvent.submit(form);
+  release();
+  await vi.waitFor(() => expect(posts).toContain('/api/accounts'));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(posts.filter((u) => u === '/api/assets')).toHaveLength(1);
+  expect(posts.filter((u) => u === '/api/accounts')).toHaveLength(1);
+});
