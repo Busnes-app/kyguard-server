@@ -207,6 +207,7 @@ const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onCl
   const detail = useJSON<Detail>(`/api/accounts/${id}`);
   const defs = useJSON<Record<string, AttributeDefinition[]>>('/api/attributes');
   const [err, setErr] = useState('');
+  const ref = useRef<HTMLDialogElement>(null);
   // Writes still in flight: closing waits for them, so the page reloads after they land.
   const pending = useRef(new Set<Promise<string>>());
   const act = async (fail: Promise<string>) => {
@@ -220,9 +221,15 @@ const AccountDetail: React.FC<{ id: string; onClose: () => void }> = ({ id, onCl
       pending.current.delete(fail);
     }
   };
-  const close = async () => { await Promise.allSettled([...pending.current]); onClose(); };
+  const close = async () => {
+    // A refused save keeps the dialog open with its error (Escape already closed it: reopen).
+    if ((await Promise.all([...pending.current])).some(Boolean)) {
+      if (ref.current && !ref.current.open) ref.current.showModal?.();
+      return;
+    }
+    onClose();
+  };
   const d = detail.data;
-  const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const dlg = ref.current;
     if (dlg && !dlg.open) dlg.showModal?.();

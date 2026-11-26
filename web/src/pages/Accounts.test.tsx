@@ -179,3 +179,30 @@ it('reloads the accounts after a save that was pending at close', async () => {
   await vi.waitFor(() => expect(screen.queryByLabelText('Account details')).toBeNull());
   await vi.waitFor(() => expect(log.lastIndexOf('scorecard')).toBeGreaterThan(log.indexOf('saved')));
 });
+
+// A save that was pending at close and then refused keeps the dialog open with its error.
+it('keeps account details open when a save pending at close is refused', async () => {
+  let release: () => void = () => {};
+  const held = new Promise<void>((r) => { release = r; });
+  const onPage = vi.fn();
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (init?.method === 'PUT') { await held; return json({ error: 'refused' }, 409); }
+    if (url === '/api/attributes') return json({ account: [{ id: 'cc', entity: 'account', key: 'cost_center', label: 'Cost center', type: 'string', enum_values: [], source: 'admin' }], user: [] });
+    if (url === '/api/accounts/a') return json({ account: { ID: 'a', Name: 'svc-a', AccountKind: 'managed', Status: 'active', asset_name: 'dc1', owner_user_id: '', min_password_age_seconds: null }, descriptors: [], attributes: { cost_center: 'CC1' } });
+    if (url.startsWith('/api/reports/scorecard')) { onPage(); return json(card([row('a', 'green', 'Ops')])); }
+    throw new Error(`unexpected fetch ${url}`);
+  }));
+  render(<Accounts isAdmin />);
+  fireEvent.click(await screen.findByText('dc1 / svc-a'));
+  const field = (await screen.findByLabelText('Cost center')) as HTMLInputElement;
+  fireEvent.change(field, { target: { value: 'CC2' } });
+  fireEvent.blur(field);
+  fireEvent.click(screen.getByLabelText('Close'));
+  const before = onPage.mock.calls.length;
+  release();
+  expect(await screen.findByText('refused')).toBeTruthy();
+  await new Promise((r) => setTimeout(r, 20));
+  expect(screen.getByLabelText('Account details')).toBeTruthy();
+  expect(onPage.mock.calls.length).toBe(before);
+});
