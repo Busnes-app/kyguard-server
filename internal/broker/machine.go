@@ -121,6 +121,9 @@ type rotationContext struct {
 	target  *pqcrypto.TargetDescriptor
 	current *pqcrypto.Chain
 	conn    Connector
+	// scheduled is set for a scheduled occurrence, which never runs while the target's
+	// minimum password age is longer than the schedule interval (§4.4).
+	scheduled bool
 }
 
 func (m *Machine) rotationContext(a *Account) (*rotationContext, error) {
@@ -187,6 +190,12 @@ func (m *Machine) Rotate(ctx context.Context, account pqcrypto.UUID, occurrence 
 	if err != nil {
 		return err
 	}
+	return m.rotate(ctx, a, occurrence, due)
+}
+
+// rotate is Rotate with m.mu held and the account loaded.
+func (m *Machine) rotate(ctx context.Context, a *Account, occurrence pqcrypto.Counter, due time.Time) error {
+	account := a.ID
 	if a.Quarantined {
 		return ErrQuarantined
 	}
@@ -209,6 +218,7 @@ func (m *Machine) Rotate(ctx context.Context, account pqcrypto.UUID, occurrence 
 	if err != nil {
 		return err
 	}
+	rc.scheduled = true
 	attempt := pqcrypto.Counter(0)
 	if r := a.Run; r != nil && r.PolicyEpoch == rc.policy.Epoch && r.Occurrence == occurrence {
 		attempt = r.Attempt + 1
@@ -371,6 +381,17 @@ func (m *Machine) mutate(ctx context.Context, a *Account, rc *rotationContext, p
 		s.Close()
 		return m.abort(ctx, a, pqcrypto.ReasonRestartBeforeSend)
 	}
+	if ar, ok := s.(AgeReporter); ok {
+		if last, minAge, err := ar.PasswordAge(ctx); err == nil {
+			a.MinAgeSeconds, a.MinAgeDeadline = int64(minAge/time.Second), last.Add(minAge)
+		}
+	}
+	// Recheck the age just read: Tick saw only the journaled one (PR Reviewer Guide on #12).
+	if sch := rc.policy.RotationSchedule; rc.scheduled && sch != nil && a.MinAgeSeconds > sch.IntervalSeconds {
+		s.Close()
+		setHealth(a, HealthRotationFailed, ReasonBelowMinAge)
+		return m.abort(ctx, a, pqcrypto.ReasonRestartBeforeSend)
+	}
 	committed := false
 	commit := func() error {
 		if err := m.commitIntent(ctx, a, rc, baseline); err != nil {
@@ -520,6 +541,7 @@ func (m *Machine) abort(ctx context.Context, a *Account, reason string) error {
 	a.Run.State, a.Run.Reason, a.Run.Receipts = StateAborted, reason, []pqcrypto.B64{r}
 	if reason == pqcrypto.ReasonRefused {
 		setHealth(a, HealthRotationFailed, "the target refused the change")
+		m.refused(a)
 	}
 	if err := m.J.Save(a); err != nil {
 		return err
@@ -572,6 +594,7 @@ func (m *Machine) send(ctx context.Context, a *Account) error {
 		a.Run.State = StateReleaseAuthorized
 		a.LastConsumedDue, a.CurrentCommitAt = a.Run.Due, m.now()
 		setHealth(a, HealthHealthy, "")
+		a.Refusals, a.NextAttemptAt = 0, time.Time{}
 	}
 	if err := m.J.Save(a); err != nil {
 		return err

@@ -93,7 +93,7 @@ func TestPairWithTheBundleFile(t *testing.T) {
 	}
 }
 
-func TestRunHoldsTheChannelAndTakesNudges(t *testing.T) {
+func TestRunHoldsTheChannel(t *testing.T) {
 	cp := brokertest.NewCP(t)
 	a, _ := newApp(t)
 	if err := a.Pair(context.Background(), cp.Token(cp.Srv, time.Minute), string(cp.Dep.Fingerprint), ""); err != nil {
@@ -110,11 +110,6 @@ func TestRunHoldsTheChannelAndTakesNudges(t *testing.T) {
 			t.Fatal("broker never connected")
 		}
 		time.Sleep(20 * time.Millisecond)
-	}
-	select {
-	case <-a.Nudges:
-	case <-time.After(10 * time.Second):
-		t.Fatal("nudge not delivered")
 	}
 	// A second daemon on the same journal is refused while the first holds the lock.
 	if _, err := broker.OpenJournal(a.Dir); err == nil || !strings.Contains(err.Error(), "locked") {
@@ -145,6 +140,69 @@ func TestRunRefusesAnUnpairedHost(t *testing.T) {
 	os.MkdirAll(a.Dir, 0o700)
 	if err := a.Run(context.Background()); err != broker.ErrNotPaired {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// A dropped channel never lets a second Machine work on the journal while the first is
+// still inside a rotation: the daemon reconnects only once that rotation has ended
+// (security review of #12).
+func TestReconnectWaitsForTheRotationInFlight(t *testing.T) {
+	cp := brokertest.NewCP(t)
+	a, _ := newApp(t)
+	if err := a.Pair(context.Background(), cp.Token(cp.Srv, time.Minute), string(cp.Dep.Fingerprint), ""); err != nil {
+		t.Fatal(err)
+	}
+	j, err := broker.OpenJournal(a.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := j.Identity()
+	j.Close()
+	k, err := broker.LoadKeys(a.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &brokertest.Broker{ID: id.BrokerID, TLS: k.TLS, Sig: k.Sig, Enc: k.Enc, Paired: &brokerproto.Paired{BrokerID: id.BrokerID, Cert: id.Cert, CACert: id.CACert}}
+	cp.AdmitPool(1, b.Member(pqcrypto.StatusActive))
+	r := &rig{t: t, cp: cp, b: b, dir: a.Dir, target: newTarget(initialPassword)}
+	r.pol = cp.Account(func(p *pqcrypto.PolicyManifest) {
+		p.RotationSchedule = &pqcrypto.Schedule{AnchorUTC: pqcrypto.NewTime(time.Now().Add(-time.Hour)), IntervalSeconds: 1}
+	})
+	r.seed()
+	r.target.hold, r.target.held = make(chan struct{}), make(chan struct{}, 1)
+	a.Connectors = map[string]broker.Connector{pqcrypto.ConnectorSSHPasswd: r.target}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error)
+	go func() { done <- a.Run(ctx) }()
+	deadline := time.Now().Add(15 * time.Second)
+	for waiting := true; waiting; {
+		select {
+		case <-r.target.held:
+			waiting = false
+		case <-time.After(100 * time.Millisecond):
+			if time.Now().After(deadline) {
+				t.Fatal("no rotation reached the target")
+			}
+			cp.L.Send(context.Background(), b.ID, brokerproto.Message{V: 1, Type: brokerproto.MsgNudge})
+		}
+	}
+	// Drop the daemon's channel: the listener replaces it with this connection.
+	if err := cp.Dial(b); err != nil {
+		t.Fatal(err)
+	}
+	// The daemon's backoff is one second; a reconnect would replace this connection.
+	time.Sleep(2500 * time.Millisecond)
+	cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer ccancel()
+	var s brokerproto.SyncReply
+	if err := b.Conn.Call(cctx, brokerproto.MsgSync, brokerproto.SyncRequest{}, &s); err != nil {
+		t.Fatalf("the daemon reconnected while its rotation was still running: %v", err)
+	}
+	close(r.target.hold)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 

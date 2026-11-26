@@ -305,6 +305,12 @@ Numbered separately: these came from the parallel crypto stack.
     `needs_enrollment` and nothing is sent. Recovery probes the descriptor of the intent's
     own envelope. Deferring a descriptor-changing policy while an intent or lease is open
     (the full §3.3 rule) is not built yet.
+46. §3.4 (skipped occurrences). Skipping is implicit: when the latest outstanding occurrence
+    releases, its due time becomes the floor, so every earlier one is no longer
+    outstanding. The broker journals the occurrence each run belongs to, not a skip list.
+47. §4.4 (three refusals). The refusal counter is per account across occurrences and resets
+    on `release` and on a new policy epoch; `next_attempt_at` and the minimum-age deadline
+    carry across epochs.
 61. §4.1 (sync frame bound). `cptrust.Submit` refuses a manifest over 512 KiB
     (`MaxManifest`), so any stored manifest fits a 4 MiB channel frame base64url-encoded. A
     `sync` page carries at most 64 manifests whose encoded size stays within `SyncBudget`
@@ -343,6 +349,10 @@ Numbered separately: these came from the parallel crypto stack.
 73. §8.1 (health delivery). Every health change sets `Unreported` in the same journal save,
     and only an acknowledged report clears it, so a crash between the save and the report
     still leaves the health to be sent by `Recover`.
+74. §4.4 (minimum age source). Besides enrollment, the broker reads the account's last
+    change and the target's minimum password age at every pre-rotation login, through the
+    connector's `AgeReporter`, so the schedule stop and refusal retries use the target's
+    real values; a connector that cannot read them leaves the journaled values unchanged.
 77. §3.5, §3.6 (chain room for completion). The spec bounds neither a chain's size nor
     `standing_recipient_principal_ids`. A policy may name at most 32 standing recipients
     (`pqcrypto.MaxStandingRecipients`; refused as `invalid_body`), and the Control Plane

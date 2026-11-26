@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
 )
@@ -36,4 +37,11 @@ type Session interface {
 	// the new password leaves; if commit fails, nothing is sent and Change returns its error.
 	Change(ctx context.Context, oldPassword, newPassword []byte, commit func() error) error
 	Close() error
+}
+
+// AgeReporter is a Session that can read the account's last change and the target's
+// minimum password age (§4.4). The broker reads it at every pre-rotation login, so the
+// schedule and refusal retries use the target's real minimum age.
+type AgeReporter interface {
+	PasswordAge(ctx context.Context) (lastChange time.Time, minAge time.Duration, err error)
 }

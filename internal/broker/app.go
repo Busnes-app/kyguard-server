@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -153,6 +154,11 @@ func (a *App) serve(ctx context.Context, j *Journal, k *Keys, id pqcrypto.UUID, 
 		defer func() { cancel(); <-done }()
 		go func() { defer close(done); retry(cctx, time.Second, start) }()
 	}
+	// Every goroutine of this connection ends before serve returns, so the next connection's
+	// Machine never works on the journal beside this one (security review of #12).
+	var wg sync.WaitGroup
+	defer func() { cancel(); wg.Wait() }()
+	wg.Go(func() { m.Schedule(cctx, time.Minute, a.Nudges) })
 	for msg := range conn.Pushes {
 		switch msg.Type {
 		case brokerproto.MsgNudge:
