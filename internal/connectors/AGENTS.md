@@ -21,13 +21,14 @@ Owns how a broker talks to a target. The rotation order, journaling and quaranti
   leaves and sends nothing if it fails.
 - Return `broker.ErrAuthFailed` only for a deterministic authentication failure and
   `broker.ErrRefused` only when the target is known unchanged. Everything else is ambiguous.
-- `adldaps`: simple bind only (empty passwords refused), LDAPS only, TLS 1.2 minimum;
+- `adldaps`: simple bind only (empty passwords refused), LDAPS only, TLS 1.2 minimum with
+  Go's default PQ-first group order; logs `[ADLDAPS]` host:port, negotiated TLS version
+  and `ConnectionState().CurveID` on connect (never credentials);
   baseline is `pwdLastSet` and `msDS-KeyVersionNumber`; verify is a fresh bind plus
   `pwdLastSet` advancing; LDAP 49 is `ErrAuthFailed`, 19 and 53 on the modify are
   `ErrRefused`; `PasswordAge` reads `pwdLastSet` and the minimum age of the account's
   resultant PSO (`msDS-ResultantPSO`), failing if that PSO is unreadable, or the domain
   `minPwdAge` when there is none (DECISIONS 65).
-  `ErrRefused`; `PasswordAge` reads `pwdLastSet` and the domain `minPwdAge`.
 - `sshpasswd`: the host-key callback compares the hex SHA-256 of the wire-format key in
   constant time and fails before authentication. Password or keyboard-interactive (only
   questions mentioning "password" are answered). `LC_ALL=C passwd` runs in a PTY; the

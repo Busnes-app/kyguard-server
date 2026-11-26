@@ -5,6 +5,7 @@ import (
 	"net"
 	"testing"
 
+	"github.com/Busnes-app/ky-primitives/pqtls"
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
 )
 
@@ -62,9 +63,8 @@ func TestBrokerTLSNegotiatesTheHybrid(t *testing.T) {
 	if srvErr != nil || cliErr != nil {
 		t.Fatalf("server %v, client %v", srvErr, cliErr)
 	}
-	if srv.CurveID != tls.X25519MLKEM768 || cli.CurveID != tls.X25519MLKEM768 {
-		t.Fatalf("server %v, client %v", srv.CurveID, cli.CurveID)
-	}
+	pqtls.RequireHybrid(t, srv)
+	pqtls.RequireHybrid(t, cli)
 }
 
 // PQC plan Q9: the listener refuses a client offering only classical X25519.
@@ -82,10 +82,12 @@ func TestListenerRefusesAClassicalClient(t *testing.T) {
 func TestBrokerClientOffersOnlyTheHybrid(t *testing.T) {
 	ca, server := listenerTLS(t)
 	server.CurvePreferences = []tls.CurveID{tls.X25519, tls.X25519MLKEM768}
-	_, cli, srvErr, cliErr := handshake(t, server, brokerproto.ClientTLS(ca.SHA256(), host, nil))
-	if srvErr != nil || cliErr != nil || cli.CurveID != tls.X25519MLKEM768 {
-		t.Fatalf("server %v, client %v, curve %v", srvErr, cliErr, cli.CurveID)
+	srv, cli, srvErr, cliErr := handshake(t, server, brokerproto.ClientTLS(ca.SHA256(), host, nil))
+	if srvErr != nil || cliErr != nil {
+		t.Fatalf("server %v, client %v", srvErr, cliErr)
 	}
+	pqtls.RequireHybrid(t, srv)
+	pqtls.RequireHybrid(t, cli)
 	server.CurvePreferences = []tls.CurveID{tls.X25519}
 	if _, _, srvErr, cliErr := handshake(t, server, brokerproto.ClientTLS(ca.SHA256(), host, nil)); srvErr == nil || cliErr == nil {
 		t.Fatalf("server %v, client %v", srvErr, cliErr)

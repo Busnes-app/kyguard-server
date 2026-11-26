@@ -15,8 +15,9 @@ Owns `/broker/v1/*`. It is never mounted on the main mux. Signed-object rules ar
   verified internal-CA certificate's `urn:uuid:<broker_id>` names a paired broker and the
   current manifest of that broker's pool lists it `active` with the certificate's SHA-256 as
   `mtls_cert_sha256`. Pairing alone admits nothing.
-- Listener: TLS 1.3, `VerifyClientCertIfGiven` against the CA, `X25519MLKEM768` then
-  `X25519`. The leaf is issued for `KY_BROKER_HOSTNAME` at every start and carries the CA in
+- Listener and broker client: TLS 1.3 with `X25519MLKEM768` only via `pqtls.HybridOnly`
+  (no classical fallback, DECISIONS 81). Listener uses `VerifyClientCertIfGiven` against
+  the CA; the leaf is issued for `KY_BROKER_HOSTNAME` at every start and carries the CA in
   its chain.
 - Brokers pin the CA by SHA-256 and the hostname from the token URL. `ClientTLS` replaces
   Go's verification with `VerifyConnection`; never return its config with the callback
