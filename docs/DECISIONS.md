@@ -401,3 +401,5 @@ Numbered separately: these came from the parallel crypto stack.
 81. §4.1, §11 (broker TLS groups). Both ends of the broker channel are KyGuard on Go 1.27, so
     the listener and the broker client offer and accept only `X25519MLKEM768` (PQC plan Q9).
     A peer offering only classical X25519 fails the handshake. The pinned-CA check is unchanged.
+    This departs from the literal `CurvePreferences` in §4.1 by the owner's approval; SPEC.md is
+    left as signed.
