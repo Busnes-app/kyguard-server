@@ -204,7 +204,7 @@ func (m *Machine) rotate(ctx context.Context, a *Account, occurrence pqcrypto.Co
 			return fmt.Errorf("%w: an earlier reservation is not settled: %w", ErrBlocked, err)
 		}
 	}
-	if a.Run.Open() {
+	if a.Run.Open() || a.Enrollment.Open() {
 		return ErrBlocked
 	}
 	rc, err := m.rotationContext(a)
@@ -662,7 +662,10 @@ func (m *Machine) Recover(ctx context.Context) error {
 		if err := m.recover(ctx, a); err != nil {
 			errs = append(errs, fmt.Errorf("account %s: %w", a.ID, err))
 		}
-		if a.Unreported { // keeps the start-up retry going until the health is delivered
+		if err := m.recoverEnrollment(ctx, a); err != nil {
+			errs = append(errs, fmt.Errorf("account %s enrollment: %w", a.ID, err))
+		}
+		if b, err := m.J.Account(a.ID); err == nil && b.Unreported { // keeps the start-up retry going until the health is delivered
 			errs = append(errs, fmt.Errorf("account %s: health not delivered", a.ID))
 		}
 	}

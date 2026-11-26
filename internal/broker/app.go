@@ -2,6 +2,7 @@ package broker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -161,6 +162,17 @@ func (a *App) serve(ctx context.Context, j *Journal, k *Keys, id pqcrypto.UUID, 
 	wg.Go(func() { m.Schedule(cctx, time.Minute, a.Nudges) })
 	for msg := range conn.Pushes {
 		switch msg.Type {
+		case brokerproto.MsgEnroll:
+			var e brokerproto.EnrollPush
+			if err := json.Unmarshal(msg.Body, &e); err != nil {
+				log.Printf("[BROKER] malformed enroll push")
+				continue
+			}
+			wg.Go(func() {
+				if err := m.Enroll(cctx, e.Tx, e.Envelope); err != nil {
+					log.Printf("[BROKER] enrollment refused: %v", err)
+				}
+			})
 		case brokerproto.MsgNudge:
 			select {
 			case a.Nudges <- struct{}{}:

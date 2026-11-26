@@ -70,6 +70,12 @@ func (m *Machine) tick(ctx context.Context, id pqcrypto.UUID) error {
 	if err != nil {
 		return err
 	}
+	// An open enrollment blocks rotation. Enroll holds m.mu, so one seen here stopped
+	// early: it resumes as after a restart, re-sending receipts and never binding twice
+	// (PR Reviewer Guide on #15).
+	if a.Enrollment.Open() {
+		return m.recoverEnrollment(ctx, a)
+	}
 	// An open run stopped part-way: Rotate holds m.mu throughout, so none is in progress
 	// here. It is finished as after a restart, so a failed call never leaves it until the
 	// next reconnect (decision 72; PR Reviewer Guide "Stalled rotations" on #12).

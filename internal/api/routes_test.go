@@ -241,3 +241,21 @@ func TestBrokerRoutesAreClassifiedWithTheirWindows(t *testing.T) {
 		t.Errorf("%s is not registered", pattern)
 	}
 }
+
+// §4.5, §7.3 rule 6: the broker actions that need a fresh step-up declare the five-minute
+// window; the middleware that enforces it is tested above (TestBackupActionsNeedAFreshStepUp).
+func TestBrokerActionsNeedAFreshStepUp(t *testing.T) {
+	srv, _, _ := setupTestServer(t)
+	fresh := map[string]time.Duration{}
+	for _, r := range srv.Routes() {
+		fresh[r.Pattern] = r.Fresh
+	}
+	for _, p := range []string{
+		"POST /api/broker-pools", "POST /api/broker-pools/{id}/pairing-tokens",
+		"POST /api/accounts/{id}/enrollments", "POST /api/accounts/{id}/enrollments/{request}",
+	} {
+		if fresh[p] != api.StepupWindow {
+			t.Errorf("%s: step-up window %v, want %v", p, fresh[p], api.StepupWindow)
+		}
+	}
+}

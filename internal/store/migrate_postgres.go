@@ -181,6 +181,7 @@ var migrationTables = []string{
 	"mfa_factors", "totp_attempts", "audit_chain_head", "cli_login_codes",
 	"bootstrap_bundles", "trust_manifests", "broker_pools", "brokers", "pairing_tokens", "operation_intents",
 	"assets", "accounts", "target_descriptors", "secret_envelopes", "envelope_receipts", "rotation_locks", "rotation_runs",
+	"access_transactions", "broker_outbox",
 }
 
 type migrationColumn struct{ name, kind string }
