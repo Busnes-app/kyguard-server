@@ -303,8 +303,16 @@ Numbered separately: these came from the parallel crypto stack.
 46a. §3.3 (target change). Phase 1A rotates and checks out only while the current envelope's
     sealing policy pins the same descriptor as the current policy; otherwise health is
     `needs_enrollment` and nothing is sent. Recovery probes the descriptor of the intent's
-    own envelope. Deferring a descriptor-changing policy while an intent or lease is open
-    (the full §3.3 rule) is not built yet.
+    own envelope. A lease records the policy and descriptor it opened under, and its cleanup
+    runs only at that descriptor. While a lease is open the broker verifies a policy that
+    changes the descriptor and holds it in the journal (the highest epoch only) instead of
+    applying it; it applies it when the lease closes, and a crash in between loses nothing
+    because the Control Plane re-sends every manifest on sync. The Control Plane refuses
+    such a policy (409) while `checkout_leases` holds an open lease, and refuses to record a
+    new lease unless it was opened under the account's current policy; both checks run
+    under the manifest lock, and the broker touches the credential only after the lease is
+    mirrored, so the Control Plane never reports a descriptor the broker has deferred.
+    Write intents keep the binding above; deferral for them is not built.
 46. §3.4 (skipped occurrences). Skipping is implicit: when the latest outstanding occurrence
     releases, its due time becomes the floor, so every earlier one is no longer
     outstanding. The broker journals the occurrence each run belongs to, not a skip list.
@@ -342,6 +350,17 @@ Numbered separately: these came from the parallel crypto stack.
     `enroll_reservation`, at most 5 minutes old); otherwise 403 and no lock is taken. It
     stops anyone who is not an enroller from holding the account's lock for 15 minutes; it
     authorizes nothing at the broker.
+56. §3.6 step 4 (verification failure at delivery). Only a deterministic authentication
+    failure quarantines; an unreachable target also delivers nothing and closes the lease
+    (reason `target_unavailable`) but does not quarantine, since nothing was learned about
+    the credential.
+57. §3.4 (`manual_rotation`). It runs under `opid(request_id, 0)` and burns `request_id` in
+    the same journal write as `prepared`. Inside the minimum age it is refused
+    (`ErrMinAge`) after resetting the refusal counter and setting `next_attempt_at` to the
+    deadline, so the schedule resumes there.
+58. §3.6 (relay mailbox). The CLI collects challenges, deliveries and refusals from
+    `access_transactions`; any session can read a mailbox, which reveals nothing usable: a
+    challenge needs the transaction's `cnf` key and a delivery the requester's key.
 
 61. §4.1 (sync frame bound). `cptrust.Submit` refuses a manifest over 512 KiB
     (`MaxManifest`), so any stored manifest fits a 4 MiB channel frame base64url-encoded. A
@@ -411,6 +430,10 @@ Numbered separately: these came from the parallel crypto stack.
     `DELETE ... RETURNING`, so each queued push is taken once. A queued push expires with
     its transaction. The submission answers 202 either way; the CLI follows the
     enrollment's state.
+76. §3.4 (`standing_release` not yet built). The broker has no `standing_release` path in
+    this slice (no `rewrap_user` receipts), so the Control Plane refuses one at submission
+    with 422 `unsupported_action` instead of relaying a transaction the broker would
+    reject. The route accepts it again when the broker path lands.
 77. §3.5, §3.6 (chain room for completion). The spec bounds neither a chain's size nor
     `standing_recipient_principal_ids`. A policy may name at most 32 standing recipients
     (`pqcrypto.MaxStandingRecipients`; refused as `invalid_body`), and the Control Plane
@@ -423,6 +446,25 @@ Numbered separately: these came from the parallel crypto stack.
     as a broker action. The status reads, the possession proof and the check-in are
     `session` with no window: they continue a transaction already submitted under step-up,
     the proof is bound to it, and a check-in may come hours later when the lease ends.
+79. §3.6, §4.1 (transaction refusals). A refusal of a relayed transaction, proof or
+    check-in is journaled in a `refusals` bucket keyed by request ID and re-sent by every
+    tick and by recovery until the Control Plane acknowledges it. A refusal the Control
+    Plane rejects (a `RemoteError`, such as an unknown request) is dropped, since it would
+    be rejected again; a later accepted message for the same request drops its refusal.
+    The bucket holds at most 1,024 refusals, so a Control Plane that pushes junk while
+    withholding acknowledgements cannot grow the journal; past that a refusal is sent once.
+    A checkout wrap whose delivery fails is pending, not refused: the lease stays active
+    and the journaled wrap is re-sent. Only an outcome the requester authenticated reaches
+    the mailbox: a transaction's own refusal (a replay keeps the earlier result) or one after
+    its possession proof verified. A check-in request or a proof that does not verify
+    publishes nothing, because any session can send one. A repeated check-in request re-sends
+    the outstanding challenge. An identical checkout submission re-sends its unexpired
+    delivery challenge. A delivery challenge supersedes an earlier result. When a verified
+    proof opens a lease, the first active mirror clears an earlier refusal
+    atomically so the mailbox shows a pending checkout until delivery. Repeated mirrors
+    preserve later outcomes. Every delivery checks the lease's expiry on the broker's
+    clock first. An expired lease never releases its wrap and queues `lease_expired` in the same
+    save. Expired challenges are pruned on every tick.
 
 ## Post-quantum key exchange (PQC plan W0, owner-approved 2026-11-25)
 

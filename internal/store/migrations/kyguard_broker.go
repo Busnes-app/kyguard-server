@@ -144,7 +144,26 @@ CREATE TABLE broker_outbox (
     body TEXT NOT NULL,
     expires_at {{ts}} NOT NULL
 );
-CREATE INDEX broker_outbox_broker ON broker_outbox (broker_id, id);`))
+CREATE INDEX broker_outbox_broker ON broker_outbox (broker_id, id);`),
+		dialects(103, "kyguard_checkout", `
+CREATE TABLE checkout_leases (
+    request_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    broker_id TEXT NOT NULL,
+    secret_version BIGINT NOT NULL CHECK (secret_version > 0),
+    state TEXT NOT NULL CHECK (state IN ('active', 'rotation_pending', 'closed')),
+    close_reason TEXT NOT NULL DEFAULT '',
+    policy_digest TEXT NOT NULL DEFAULT '',
+    target_descriptor_digest TEXT NOT NULL DEFAULT '',
+    opened_at {{ts}} NOT NULL,
+    expires_at {{ts}} NOT NULL,
+    updated_at {{ts}} NOT NULL
+);
+CREATE UNIQUE INDEX idx_checkout_leases_one_open ON checkout_leases(account_id) WHERE state <> 'closed';
+ALTER TABLE access_transactions ADD COLUMN challenge TEXT NOT NULL DEFAULT '';
+ALTER TABLE access_transactions ADD COLUMN purpose TEXT NOT NULL DEFAULT '';
+ALTER TABLE access_transactions ADD COLUMN delivery TEXT NOT NULL DEFAULT '';
+ALTER TABLE access_transactions ADD COLUMN result TEXT NOT NULL DEFAULT '';`))
 }
 
 // dialects builds one migration from shared DDL; {{ts}} is the timestamp type.

@@ -44,6 +44,10 @@ func Outstanding(s *pqcrypto.Schedule, a *Account, now time.Time) (k pqcrypto.Co
 // due rotation beyond withholding service; a nudge only calls Tick early.
 func (m *Machine) Tick(ctx context.Context) error {
 	m.mu.Lock()
+	m.refusals(ctx)
+	if err := m.J.PruneChallenges(m.now()); err != nil {
+		log.Printf("[BROKER] expired challenges not pruned: %v", err)
+	}
 	accts, err := m.J.Accounts()
 	m.mu.Unlock()
 	if err != nil {
@@ -61,8 +65,9 @@ func (m *Machine) Tick(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// tick selects and starts one account's occurrence under one hold of the mutex, so a policy
-// accepted by a concurrent Sync is always the one checked (security review of #12).
+// tick selects and starts one account's occurrence or lease cleanup under one hold of the
+// mutex, so a policy accepted by a concurrent Sync is always the one checked (security
+// review of #12).
 func (m *Machine) tick(ctx context.Context, id pqcrypto.UUID) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -70,6 +75,7 @@ func (m *Machine) tick(ctx context.Context, id pqcrypto.UUID) error {
 	if err != nil {
 		return err
 	}
+	m.flush(ctx, a)
 	// An open enrollment blocks rotation. Enroll holds m.mu, so one seen here stopped
 	// early: it resumes as after a restart, re-sending receipts and never binding twice
 	// (PR Reviewer Guide on #15).
@@ -84,8 +90,23 @@ func (m *Machine) tick(ctx context.Context, id pqcrypto.UUID) error {
 			return err
 		}
 	}
-	p, _ := m.Trust.Policy(a.ID)
+	// A run whose receipts are journaled but not acknowledged is finished and re-sent,
+	// as after a restart, so it never stays open until a reconnect (PR Reviewer Guide on #16).
+	if r := a.Run; r != nil && !r.Sent && len(r.Receipts) > 0 {
+		if err := m.recover(ctx, a); err != nil {
+			return err
+		}
+	}
 	now := m.now()
+	if l := a.Lease; l.Open() {
+		if l.State == LeaseActive && !now.Before(l.ExpiresAt) {
+			if err := m.expireLease(ctx, a); err != nil {
+				return err
+			}
+		}
+		return m.cleanup(ctx, a)
+	}
+	p, _ := m.Trust.Policy(a.ID)
 	if p == nil || p.AccountKind != pqcrypto.KindManaged || p.RotationSchedule == nil || a.Quarantined || a.Run.Open() ||
 		now.Before(a.NextAttemptAt) || a.Refusals >= MaxRefusals {
 		return nil

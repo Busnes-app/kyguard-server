@@ -29,6 +29,13 @@ const (
 	MaxEnvelope   = MaxChain - 96<<10
 )
 
+// ErrLeaseOpen refuses a policy that changes the target descriptor of an account with an
+// open checkout lease (§3.3); submit it again once the lease's cleanup has closed it.
+var ErrLeaseOpen = errors.New("a checkout lease is open for this account under another target descriptor")
+
+// ErrPolicyChanged refuses a new lease opened under a policy that is no longer current.
+var ErrPolicyChanged = errors.New("the lease's policy is not the account's current policy")
+
 // LockAction is what Complete does with the lock op holds.
 type LockAction int
 
@@ -95,6 +102,17 @@ type VaultStore interface {
 	// EnrollmentState is reserved or accepted while op holds the lock, then committed or
 	// failed by its receipts, else expired.
 	EnrollmentState(ctx context.Context, accountID, op string) (string, error)
+	// MirrorLease upserts the broker's view of a checkout lease (§3.6 step 3). At most one
+	// non-closed lease per account is a database constraint.
+	MirrorLease(ctx context.Context, l *Lease) error
+	GetLease(ctx context.Context, requestID string) (*Lease, error)
+	// TxMailbox holds what the broker sent back for a transaction: a challenge, a delivery
+	// wrap, a refusal. SetTxMailbox sets one field; an empty value leaves it, and a new
+	// delivery challenge clears the result.
+	TxMailbox(ctx context.Context, requestID string) (*TxMail, error)
+	SetTxMailbox(ctx context.Context, requestID string, m *TxMail) error
+	// TxAccount is the account a stored transaction names.
+	TxAccount(ctx context.Context, requestID string) (string, error)
 	// PutTx stores a relayed transaction once.
 	PutTx(ctx context.Context, requestID, accountID, actionType, digest string, raw []byte) error
 	// QueuePush stores a Control Plane push for a broker until expires, for whichever
@@ -129,6 +147,29 @@ type Account struct {
 	Health               string
 	HealthReason         string
 	CreatedAt            time.Time
+}
+
+// Lease is a checkout lease as the broker reports it.
+type Lease struct {
+	RequestID     string
+	AccountID     string
+	BrokerID      string
+	SecretVersion uint64
+	State         string
+	CloseReason   string
+	// PolicyDigest and TargetDescriptorDigest are those the lease opened under (§3.3).
+	PolicyDigest           string
+	TargetDescriptorDigest string
+	OpenedAt               time.Time
+	ExpiresAt              time.Time
+}
+
+// TxMail is the Control Plane's relay mailbox for one transaction.
+type TxMail struct {
+	Challenge string // base64url
+	Purpose   string
+	Delivery  string // canonical JSON of the user wrap
+	Result    string // a refusal code, or "ok"
 }
 
 // StoredEnvelope is a verified SecretEnvelope.
@@ -865,4 +906,102 @@ func (v vaultStore) EnrollmentState(ctx context.Context, accountID, op string) (
 		return "failed", nil
 	}
 	return "expired", nil
+}
+
+func (v vaultStore) MirrorLease(ctx context.Context, l *Lease) error {
+	return v.s.inTx(ctx, func(tx *sql.Tx) error {
+		now := time.Now().UTC()
+		res, err := tx.ExecContext(ctx, v.s.rebind(`UPDATE checkout_leases SET state = ?, close_reason = ?, updated_at = ? WHERE request_id = ? AND account_id = ? AND state <> 'closed'`),
+			l.State, l.CloseReason, now, l.RequestID, l.AccountID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 1 {
+			return nil
+		}
+		var have string
+		err = tx.QueryRowContext(ctx, v.s.rebind(`SELECT state FROM checkout_leases WHERE request_id = ?`), l.RequestID).Scan(&have)
+		if err == nil {
+			if have == l.State {
+				return nil // a closed lease reported closed again
+			}
+			return ErrConflict // closed leases never reopen
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		// A new open lease must be under the current policy, checked under the lock policy
+		// acceptance takes, so a descriptor change and a lease never both succeed (§3.3).
+		if l.State != "closed" {
+			if err := v.s.lockManifests(ctx, tx); err != nil {
+				return err
+			}
+			var cur string
+			err := tx.QueryRowContext(ctx, v.s.rebind(`SELECT digest FROM trust_manifests WHERE type = 'policy' AND scope_id = ? ORDER BY seq DESC LIMIT 1`), l.AccountID).Scan(&cur)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if cur == "" || cur != l.PolicyDigest {
+				return ErrPolicyChanged
+			}
+		}
+		_, err = tx.ExecContext(ctx, v.s.rebind(`INSERT INTO checkout_leases (request_id, account_id, broker_id, secret_version, state, close_reason, policy_digest, target_descriptor_digest, opened_at, expires_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			l.RequestID, l.AccountID, l.BrokerID, int64(l.SecretVersion), l.State, l.CloseReason, l.PolicyDigest, l.TargetDescriptorDigest, l.OpenedAt.UTC(), l.ExpiresAt.UTC(), now)
+		if err != nil {
+			return ErrConflict // the one-open-lease index, or a race on the same request
+		}
+		if l.State != "active" {
+			return nil
+		}
+		// A newly accepted proof supersedes a refusal before the wrap arrives. Clear
+		// it with the first lease mirror so retries preserve any later outcome.
+		_, err = tx.ExecContext(ctx, v.s.rebind(`UPDATE access_transactions SET result = ''
+ WHERE request_id = ? AND account_id = ? AND action_type = 'vault_checkout'
+ AND delivery = '' AND result NOT IN ('', 'ok')`), l.RequestID, l.AccountID)
+		return err
+	})
+}
+
+func (v vaultStore) GetLease(ctx context.Context, requestID string) (*Lease, error) {
+	var l Lease
+	var ver int64
+	err := v.s.db.QueryRowContext(ctx, v.s.rebind(`SELECT request_id, account_id, broker_id, secret_version, state, close_reason, policy_digest, target_descriptor_digest, opened_at, expires_at FROM checkout_leases WHERE request_id = ?`), requestID).
+		Scan(&l.RequestID, &l.AccountID, &l.BrokerID, &ver, &l.State, &l.CloseReason, &l.PolicyDigest, &l.TargetDescriptorDigest, &l.OpenedAt, &l.ExpiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	l.SecretVersion = uint64(ver)
+	return &l, err
+}
+
+func (v vaultStore) TxMailbox(ctx context.Context, requestID string) (*TxMail, error) {
+	var m TxMail
+	err := v.s.db.QueryRowContext(ctx, v.s.rebind(`SELECT challenge, purpose, delivery, result FROM access_transactions WHERE request_id = ?`), requestID).
+		Scan(&m.Challenge, &m.Purpose, &m.Delivery, &m.Result)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &m, err
+}
+
+// SetTxMailbox sets the non-empty fields of a request's mailbox. A new delivery challenge
+// clears the earlier result, which it supersedes (PR Reviewer Guide "Stale refusal" on
+// #16); a check-in challenge keeps the delivery's (security review of #16).
+func (v vaultStore) SetTxMailbox(ctx context.Context, requestID string, m *TxMail) error {
+	_, err := v.s.db.ExecContext(ctx, v.s.rebind(`UPDATE access_transactions SET
+ challenge = CASE WHEN ? <> '' THEN ? ELSE challenge END,
+ purpose = CASE WHEN ? <> '' THEN ? ELSE purpose END,
+ delivery = CASE WHEN ? <> '' THEN ? ELSE delivery END,
+ result = CASE WHEN ? <> '' THEN ? WHEN ? = 'deliver' THEN '' ELSE result END
+ WHERE request_id = ?`), m.Challenge, m.Challenge, m.Purpose, m.Purpose, m.Delivery, m.Delivery, m.Result, m.Result, m.Purpose, requestID)
+	return err
+}
+
+func (v vaultStore) TxAccount(ctx context.Context, requestID string) (string, error) {
+	var a string
+	err := v.s.db.QueryRowContext(ctx, v.s.rebind(`SELECT account_id FROM access_transactions WHERE request_id = ?`), requestID).Scan(&a)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return a, err
 }

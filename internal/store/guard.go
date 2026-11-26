@@ -62,6 +62,9 @@ type TrustManifest struct {
 	Digest     string
 	Manifest   []byte
 	AcceptedAt time.Time
+	// TargetDescriptor is a policy's target_descriptor_digest; AppendManifest refuses a
+	// change of it while a checkout lease is open (§3.3). Not stored.
+	TargetDescriptor string
 }
 
 // BrokerPool groups the accounts one broker serves.
@@ -108,6 +111,16 @@ type guardStore struct{ s *SQLStore }
 func (s *SQLStore) Guard() GuardStore { return guardStore{s} }
 
 // inTx runs fn in one transaction and commits only if it succeeds.
+// lockManifests serializes manifest acceptance with the lease checks that depend on it.
+// SQLite has one connection, so its transactions are already serial.
+func (s *SQLStore) lockManifests(ctx context.Context, tx *sql.Tx) error {
+	if s.driver != "postgres" {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(5, hashtext('kyguard:trust_manifests'))`)
+	return err
+}
+
 func (s *SQLStore) inTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -194,8 +207,16 @@ func (g guardStore) manifests(ctx context.Context, limit string, args ...any) ([
 
 func (g guardStore) AppendManifest(ctx context.Context, m *TrustManifest, audit *AuditRecord) error {
 	return g.s.inTx(ctx, func(tx *sql.Tx) error {
-		if g.s.driver == "postgres" {
-			if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(5, hashtext('kyguard:trust_manifests'))`); err != nil {
+		if err := g.s.lockManifests(ctx, tx); err != nil {
+			return err
+		}
+		if m.Type == "policy" {
+			var open string
+			err := tx.QueryRowContext(ctx, g.s.rebind(`SELECT target_descriptor_digest FROM checkout_leases WHERE account_id = ? AND state <> 'closed'`), m.ScopeID).Scan(&open)
+			switch {
+			case err == nil && open != m.TargetDescriptor:
+				return ErrLeaseOpen
+			case err != nil && !errors.Is(err, sql.ErrNoRows):
 				return err
 			}
 		}

@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,8 @@ var (
 	bucketDescriptors = []byte("descriptors") // digest -> canonical target descriptor
 	bucketAccounts    = []byte("accounts")    // account_id -> JSON Account
 	bucketBurned      = []byte("burned")      // request_id -> RFC 3339 expiry (§3.7)
+	bucketChallenges  = []byte("challenges")  // request_id -> JSON Challenge, single use (§3.7)
+	bucketRefusals    = []byte("refusals")    // request_id -> refusal code not yet acknowledged
 )
 
 // Rotation states (§4.2).
@@ -68,6 +71,57 @@ type Account struct {
 	Run *Run `json:"run,omitempty"`
 	// Enrollment is the latest enrollment attempt (§4.5).
 	Enrollment *Enrollment `json:"enrollment,omitempty"`
+	// Lease is the latest checkout lease (§3.6).
+	Lease *Lease `json:"lease,omitempty"`
+	// DeferredPolicy is a verified policy that changes the target descriptor, held back
+	// while a lease is open and applied once the lease closes (§3.3).
+	DeferredPolicy pqcrypto.B64 `json:"deferred_policy,omitempty"`
+	// Results are transaction outcomes for the CLI, re-sent until acknowledged.
+	Results []TxResult `json:"results,omitempty"`
+}
+
+// Lease states (§3.6).
+const (
+	LeaseActive          = "active"
+	LeaseRotationPending = "rotation_pending"
+	LeaseClosed          = "closed"
+)
+
+// Lease is an ephemeral checkout lease. Its cleanup rotation is the only rotation path while
+// it is rotation_pending, and only an attempt that appends release closes it.
+type Lease struct {
+	RequestID     pqcrypto.UUID    `json:"request_id"`
+	Tx            pqcrypto.B64     `json:"tx"`
+	TxDigest      pqcrypto.HexID   `json:"tx_digest"`
+	SecretVersion pqcrypto.Counter `json:"secret_version"`
+	EncKeyID      pqcrypto.HexID   `json:"enc_key_id"`
+	// The policy and descriptor the lease opened under; cleanup is bound to the descriptor.
+	PolicyDigest           pqcrypto.HexID   `json:"policy_digest"`
+	TargetDescriptorDigest pqcrypto.HexID   `json:"target_descriptor_digest"`
+	OpenedAt               time.Time        `json:"opened_at"`
+	ExpiresAt              time.Time        `json:"expires_at"`
+	State                  string           `json:"state"`
+	CloseReason            string           `json:"close_reason,omitempty"`
+	Attempt                pqcrypto.Counter `json:"attempt"`
+	NextAttemptAt          time.Time        `json:"next_attempt_at"`
+	Mirrored               bool             `json:"mirrored,omitempty"` // the Control Plane holds this state
+	// Delivering is set when the lease opens and cleared with the wrap; a lease still
+	// delivering after a crash or a failed step delivered nothing (flush closes it).
+	Delivering bool `json:"delivering,omitempty"`
+	// Delivery is the checkout wrap until the Control Plane acknowledges it (ciphertext).
+	Delivery *pqcrypto.Recipient `json:"delivery,omitempty"`
+}
+
+// Open reports whether the lease is not closed.
+func (l *Lease) Open() bool { return l != nil && l.State != LeaseClosed }
+
+// Challenge is a single-use broker challenge awaiting its possession proof.
+type Challenge struct {
+	Purpose   string        `json:"purpose"`
+	Challenge pqcrypto.B64  `json:"challenge"`
+	Account   pqcrypto.UUID `json:"account"`
+	Tx        pqcrypto.B64  `json:"tx"`
+	ExpiresAt time.Time     `json:"expires_at"`
 }
 
 // Enrollment is one enroll transaction, journaled from its acceptance (§4.5 step 2).
@@ -123,6 +177,18 @@ type Run struct {
 	// Receipts are the run's signed receipts; Sent once the Control Plane acknowledged them.
 	Receipts []pqcrypto.B64 `json:"receipts,omitempty"`
 	Sent     bool           `json:"sent,omitempty"`
+	// Lease is the request ID of the lease this cleanup rotation closes, if any.
+	Lease pqcrypto.UUID `json:"lease,omitempty"`
+	// Request is the manual_rotation this run answers; ResultQueued once its outcome is
+	// in the account's Results.
+	Request      pqcrypto.UUID `json:"request,omitempty"`
+	ResultQueued bool          `json:"result_queued,omitempty"`
+}
+
+// TxResult is a transaction outcome not yet acknowledged by the Control Plane.
+type TxResult struct {
+	RequestID pqcrypto.UUID `json:"request_id"`
+	Result    string        `json:"result"`
 }
 
 // Open reports whether the run still blocks the account (§4.2 blocking rule).
@@ -134,7 +200,7 @@ func seqKey(n uint64) []byte { return binary.BigEndian.AppendUint64(nil, n) }
 
 func (j *Journal) init() error {
 	return j.db.Update(func(tx *bolt.Tx) error {
-		for _, b := range [][]byte{bucketMeta, bucketManifests, bucketDescriptors, bucketAccounts, bucketBurned} {
+		for _, b := range [][]byte{bucketMeta, bucketManifests, bucketDescriptors, bucketAccounts, bucketBurned, bucketChallenges, bucketRefusals} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -272,4 +338,107 @@ func (j *Journal) SaveBurn(a *Account, id pqcrypto.UUID, until time.Time) error 
 		}
 		return tx.Bucket(bucketAccounts).Put([]byte(a.ID), v)
 	})
+}
+
+// PutChallenge journals a challenge for a request, replacing an earlier one.
+func (j *Journal) PutChallenge(id pqcrypto.UUID, c *Challenge) error {
+	v, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	return j.db.Update(func(tx *bolt.Tx) error { return tx.Bucket(bucketChallenges).Put([]byte(id), v) })
+}
+
+// GetChallenge reads a request's challenge, or nil.
+func (j *Journal) GetChallenge(id pqcrypto.UUID) *Challenge {
+	var c *Challenge
+	j.db.View(func(tx *bolt.Tx) error {
+		if v := tx.Bucket(bucketChallenges).Get([]byte(id)); v != nil {
+			c = &Challenge{}
+			if json.Unmarshal(v, c) != nil {
+				c = nil
+			}
+		}
+		return nil
+	})
+	return c
+}
+
+// PruneChallenges deletes every challenge expired at now, so abandoned requests do not grow
+// the journal (PR Reviewer Guide "Unpruned challenges" on #16).
+func (j *Journal) PruneChallenges(now time.Time) error {
+	return j.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketChallenges)
+		var dead [][]byte
+		if err := b.ForEach(func(k, v []byte) error {
+			var c Challenge
+			if json.Unmarshal(v, &c) != nil || !now.Before(c.ExpiresAt) {
+				dead = append(dead, bytes.Clone(k))
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, k := range dead {
+			if err := b.Delete(k); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// SaveConsume writes an account record, deletes the request's challenge (single use) and,
+// with a non-zero until, burns the request ID, all in one transaction.
+func (j *Journal) SaveConsume(a *Account, id pqcrypto.UUID, until time.Time) error {
+	v, err := json.Marshal(a)
+	if err != nil {
+		return err
+	}
+	return j.db.Update(func(tx *bolt.Tx) error {
+		if err := tx.Bucket(bucketChallenges).Delete([]byte(id)); err != nil {
+			return err
+		}
+		if !until.IsZero() {
+			if err := tx.Bucket(bucketBurned).Put([]byte(id), []byte(until.UTC().Format(time.RFC3339))); err != nil {
+				return err
+			}
+		}
+		return tx.Bucket(bucketAccounts).Put([]byte(a.ID), v)
+	})
+}
+
+// MaxPendingRefusals bounds the refusal outbox, so a Control Plane that pushes junk while it
+// withholds acknowledgements cannot grow the journal without limit.
+const MaxPendingRefusals = 1024
+
+// ErrOutboxFull means a refusal was not journaled; it is sent once only.
+var ErrOutboxFull = errors.New("broker: refusal outbox full")
+
+// PutRefusal journals a refusal for a request, replacing an earlier one.
+func (j *Journal) PutRefusal(id pqcrypto.UUID, code string) error {
+	return j.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketRefusals)
+		if b.Get([]byte(id)) == nil && b.Stats().KeyN >= MaxPendingRefusals {
+			return ErrOutboxFull
+		}
+		return b.Put([]byte(id), []byte(code))
+	})
+}
+
+// Refusals lists the journaled refusals.
+func (j *Journal) Refusals() ([]TxResult, error) {
+	var out []TxResult
+	err := j.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketRefusals).ForEach(func(k, v []byte) error {
+			out = append(out, TxResult{RequestID: pqcrypto.UUID(k), Result: string(v)})
+			return nil
+		})
+	})
+	return out, err
+}
+
+// DeleteRefusal drops a request's journaled refusal.
+func (j *Journal) DeleteRefusal(id pqcrypto.UUID) error {
+	return j.db.Update(func(tx *bolt.Tx) error { return tx.Bucket(bucketRefusals).Delete([]byte(id)) })
 }

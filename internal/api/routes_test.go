@@ -253,6 +253,7 @@ func TestBrokerActionsNeedAFreshStepUp(t *testing.T) {
 	for _, p := range []string{
 		"POST /api/broker-pools", "POST /api/broker-pools/{id}/pairing-tokens",
 		"POST /api/accounts/{id}/enrollments", "POST /api/accounts/{id}/enrollments/{request}",
+		"POST /api/accounts/{id}/transactions",
 	} {
 		if fresh[p] != api.StepupWindow {
 			t.Errorf("%s: step-up window %v, want %v", p, fresh[p], api.StepupWindow)

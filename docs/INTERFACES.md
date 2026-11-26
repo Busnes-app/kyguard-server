@@ -555,6 +555,18 @@ Source: [enrollment handlers](../internal/api/enroll_handlers.go).
 | POST `/api/accounts/{id}/enrollments/{request_id}` | Session; JSON `{"tx", "envelope"}` (base64url canonical bytes) | 202 relayed; 422 `{"code"}` when the transaction or candidate fails verification; 409 without a matching reservation; 503 when the broker is not connected (the candidate is stored; submit again) |
 | GET `/api/accounts/{id}/enrollments/{request_id}` | Session | 200 `{"state"}`: `reserved`, `accepted`, `committed`, `failed` or `expired` |
 
+### Transactions and checkout (spec §3.4, §3.6)
+
+Source: [transaction handlers](../internal/api/tx_handlers.go). The Control Plane relays and
+holds a mailbox; the broker decides. A delivery is sealed to the requester's key.
+
+| Route | Authentication and input | Success |
+|---|---|---|
+| POST `/api/accounts/{id}/transactions` | Session; JSON `{"tx"}`: a signed `vault_checkout` or `manual_rotation` | 202 relayed; 422 `{"code"}` on a signature, policy or validity failure, and `unsupported_action` for `standing_release`, which the broker does not run yet; 503 when the broker is not connected. Audited as `vault.transaction_relayed` |
+| GET `/api/transactions/{request_id}` | Session | 200 `{"challenge", "purpose", "delivery", "result"}`: the broker's single-use challenge, the checkout wrap, or a refusal code |
+| POST `/api/transactions/{request_id}/proof` | Session; JSON `{"proof"}`: a possession proof over the challenge | 202 relayed |
+| POST `/api/transactions/{request_id}/checkin` | Session | 202; the broker posts a `checkin` challenge |
+
 The listener is TLS 1.3 only with `X25519MLKEM768` preferred. Startup refuses a broker CA
 whose SHA-256 differs from the one any paired broker pinned.
 

@@ -61,6 +61,25 @@ the wire and TLS are `internal/brokerproto`'s.
   journaled, unacknowledged receipts are re-sent by every `Tick` (and `Recover`), never
   verifying again (DECISIONS 68).
   Lease reset evidence (§4.5 step 3) arrives with checkout leases.
+- Checkout and leases (`lease.go`, §3.6): `Tx` verifies a relayed `vault_checkout` or
+  `manual_rotation` against the journal state. Checkout journals only a single-use
+  challenge. An identical submission re-sends an outstanding unexpired challenge.
+  `Proof` re-verifies the transaction and the possession proof. In one journal write it
+  burns `request_id`, consumes the challenge and opens the lease. It then unwraps, verifies
+  the credential once and wraps the DEK to `enc_key_id`. A denied
+  verification delivers nothing, closes the lease and quarantines. Check-in (proof from
+  the same `cnf_pub`) or expiry moves the lease to `rotation_pending`; its cleanup
+  rotation (`opid(request_id, attempt)`) is then the only rotation path, refusals retry at
+  `max(min-age deadline, now + 1 h)` without a stop, and only `release` closes the lease.
+  Scheduled occurrences wait while a lease is open. `manual_rotation` re-arms an idle
+  cleanup, is refused during an active lease, resets the refusal counter and waits for
+  the minimum age. Every lease state is mirrored to `checkout_leases`; a new lease must be
+  mirrored before the credential is unwrapped, and a lease whose last state is not
+  acknowledged is never replaced. The checkout wrap is journaled until delivered; `flush`
+  (every tick and `Recover`) re-sends both.
+- Target change (§3.3): a lease keeps its policy and descriptor digests, and its cleanup runs
+  only at that descriptor. `deferPolicy` holds a descriptor-changing policy in
+  `Account.DeferredPolicy` while the lease is open; `applyDeferred` accepts it once closed.
 - `Machine.Hook` is a test-only crash point; it must never be set in production.
 - Connectors implement `Connector`/`Session` (`connector.go`); `ErrAuthFailed` and
   `ErrRefused` are the only deterministic outcomes, any other error is ambiguous.

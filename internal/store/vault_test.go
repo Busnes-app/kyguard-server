@@ -12,6 +12,14 @@ import (
 
 func vaultAccount(t *testing.T) (VaultStore, string) {
 	t.Helper()
+	v, _, acct := vaultAccountGuard(t)
+	return v, acct
+}
+
+// vaultAccountGuard also returns the guard store, with policy epoch 1 (digest "p1",
+// descriptor "d1") accepted for the account.
+func vaultAccountGuard(t *testing.T) (VaultStore, GuardStore, string) {
+	t.Helper()
 	s, _ := guardStoreFor(t)
 	v := s.Vault()
 	ctx := context.Background()
@@ -21,7 +29,10 @@ func vaultAccount(t *testing.T) (VaultStore, string) {
 	if err := v.CreateAccount(ctx, &Account{ID: "ac", AssetID: "as", Name: "svc", AccountKind: "managed"}); err != nil {
 		t.Fatal(err)
 	}
-	return v, "ac"
+	if err := s.Guard().AppendManifest(ctx, &TrustManifest{Seq: 1, Type: "policy", ScopeID: "ac", Epoch: 1, Digest: "p1", Manifest: []byte(`{"p":1}`), TargetDescriptor: "d1"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	return v, s.Guard(), "ac"
 }
 
 func TestCompleteReleasesOnlyItsOwnLock(t *testing.T) {
@@ -143,6 +154,64 @@ func TestEnrollmentReservation(t *testing.T) {
 	}
 	if op, _, _ := v.Lock(ctx, acct); op != "rot" {
 		t.Fatalf("restore gave %q", op)
+	}
+}
+
+// §3.6 step 3: at most one non-closed lease per account, as a database constraint; a
+// closed lease never reopens.
+func TestOneOpenLeasePerAccount(t *testing.T) {
+	v, acct := vaultAccount(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	l := func(id, state string) *Lease {
+		return &Lease{RequestID: id, AccountID: acct, BrokerID: "b", SecretVersion: 1, State: state, PolicyDigest: "p1", TargetDescriptorDigest: "d1", OpenedAt: now, ExpiresAt: now.Add(time.Hour)}
+	}
+	if err := v.MirrorLease(ctx, l("r1", "active")); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.MirrorLease(ctx, l("r2", "active")); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second open lease: %v", err)
+	}
+	if err := v.MirrorLease(ctx, l("r1", "closed")); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.MirrorLease(ctx, l("r1", "active")); !errors.Is(err, ErrConflict) {
+		t.Fatalf("reopened: %v", err)
+	}
+	if err := v.MirrorLease(ctx, l("r2", "active")); err != nil {
+		t.Fatalf("after close: %v", err)
+	}
+}
+
+// §3.3 (security review of #16): a new lease must be under the current policy, and a policy
+// that changes the descriptor is refused while a lease is open; the same target is not.
+func TestDescriptorChangeWaitsForTheLease(t *testing.T) {
+	v, g, acct := vaultAccountGuard(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	lease := &Lease{RequestID: "r1", AccountID: acct, BrokerID: "b", SecretVersion: 1, State: "active", PolicyDigest: "p0", TargetDescriptorDigest: "d1", OpenedAt: now, ExpiresAt: now.Add(time.Hour)}
+	if err := v.MirrorLease(ctx, lease); !errors.Is(err, ErrPolicyChanged) {
+		t.Fatalf("lease under a stale policy: %v", err)
+	}
+	lease.PolicyDigest = "p1"
+	if err := v.MirrorLease(ctx, lease); err != nil {
+		t.Fatal(err)
+	}
+	policy := func(seq int64, digest, target string) error {
+		return g.AppendManifest(ctx, &TrustManifest{Seq: seq, Type: "policy", ScopeID: acct, Epoch: uint64(seq), Digest: digest, Manifest: []byte(`{}`), TargetDescriptor: target}, nil)
+	}
+	if err := policy(2, "p2", "d2"); !errors.Is(err, ErrLeaseOpen) {
+		t.Fatalf("descriptor change during the lease: %v", err)
+	}
+	if err := policy(2, "p2", "d1"); err != nil {
+		t.Fatalf("same target: %v", err)
+	}
+	lease.State = "closed"
+	if err := v.MirrorLease(ctx, lease); err != nil {
+		t.Fatal(err)
+	}
+	if err := policy(3, "p3", "d2"); err != nil {
+		t.Fatalf("after the lease: %v", err)
 	}
 }
 
@@ -512,6 +581,39 @@ func TestConcurrentIdenticalDescriptorStoresSucceed(t *testing.T) {
 				t.Fatalf("round %d, store %d: %v", round, i, err)
 			}
 		}
+	}
+}
+
+// A new challenge clears an earlier result: a checkout refused while another lease was open
+// and then retried does not still read as refused (PR Reviewer Guide "Stale refusal" on #16).
+func TestANewChallengeClearsTheEarlierResult(t *testing.T) {
+	v, a := vaultAccount(t)
+	ctx := context.Background()
+	if err := v.PutTx(ctx, "req", a, "vault_checkout", "d-req", []byte("tx")); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.SetTxMailbox(ctx, "req", &TxMail{Result: "lease_open"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.SetTxMailbox(ctx, "req", &TxMail{Challenge: "c2", Purpose: "deliver"}); err != nil {
+		t.Fatal(err)
+	}
+	mb, err := v.TxMailbox(ctx, "req")
+	if err != nil || mb.Challenge != "c2" || mb.Result != "" {
+		t.Fatalf("mailbox %+v %v", mb, err)
+	}
+	if err := v.SetTxMailbox(ctx, "req", &TxMail{Delivery: "w", Result: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	if mb, _ := v.TxMailbox(ctx, "req"); mb.Result != "ok" || mb.Challenge != "c2" {
+		t.Fatalf("after delivery %+v", mb)
+	}
+	// A check-in challenge keeps the delivery's result (security review of #16).
+	if err := v.SetTxMailbox(ctx, "req", &TxMail{Challenge: "c3", Purpose: "checkin"}); err != nil {
+		t.Fatal(err)
+	}
+	if mb, _ := v.TxMailbox(ctx, "req"); mb.Result != "ok" || mb.Challenge != "c3" {
+		t.Fatalf("after a check-in challenge %+v", mb)
 	}
 }
 

@@ -106,8 +106,12 @@ func (c *Trust) Submit(ctx context.Context, raw []byte, actor, ip string) (rec *
 		if len(c.tr.Records()) == before {
 			return rec, false, nil
 		}
-		err = c.st.Guard().AppendManifest(ctx, &store.TrustManifest{Seq: c.seq + 1, Type: rec.Type, ScopeID: string(rec.ScopeID),
-			Epoch: uint64(rec.Epoch), Digest: string(rec.Digest.Hex()), Manifest: rec.Canonical},
+		tm := &store.TrustManifest{Seq: c.seq + 1, Type: rec.Type, ScopeID: string(rec.ScopeID),
+			Epoch: uint64(rec.Epoch), Digest: string(rec.Digest.Hex()), Manifest: rec.Canonical}
+		if p, ok := rec.Manifest.(*pqcrypto.PolicyManifest); ok {
+			tm.TargetDescriptor = string(p.TargetDescriptorDigest)
+		}
+		err = c.st.Guard().AppendManifest(ctx, tm,
 			&store.AuditRecord{UserID: actor, Action: "trust.manifest_accepted", Resource: rec.Type + ":" + string(rec.ScopeID),
 				Details: "epoch=" + rec.Epoch.String() + " digest=" + string(rec.Digest.Hex()), IPAddress: ip})
 		if err == nil {

@@ -75,6 +75,11 @@ Owns data models, store interfaces (`UserStore`, `SessionStore`, `GroupStore`, `
   through one conditional delete (`state = 'reserved'` and past expiry), so an acceptance
   that commits first keeps the lock (`TestExpiryNeverReleasesAnAcceptanceItRaces`);
   `accepted` never expires; `Complete(..., LockRestore)` reinstates the displaced holder.
+- Checkout (migration 103): `checkout_leases` mirrors broker leases with a partial unique
+  index allowing one non-closed lease per account; a closed lease never reopens.
+  `access_transactions` doubles as the CLI's relay mailbox (challenge, purpose, delivery
+  wrap, result). Inserting an active lease clears any earlier refusal for that checkout
+  in the same transaction. Repeated lease mirrors preserve later mailbox outcomes.
 
 ## Verification
 - `go test -v ./internal/store/...`

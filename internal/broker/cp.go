@@ -18,6 +18,10 @@ type ControlPlane interface {
 	Receipts(ctx context.Context, op, account pqcrypto.UUID, receipts []pqcrypto.B64) error
 	Status(ctx context.Context, s brokerproto.StatusRequest) error
 	Accept(ctx context.Context, account, op pqcrypto.UUID) error
+	Challenge(ctx context.Context, r brokerproto.ChallengeRequest) error
+	Lease(ctx context.Context, r brokerproto.LeaseRequest) error
+	Delivery(ctx context.Context, r brokerproto.DeliveryRequest) error
+	TxResult(ctx context.Context, r brokerproto.TxResultRequest) error
 }
 
 // channelCP is the ControlPlane over the control channel.
@@ -60,4 +64,20 @@ func (c channelCP) Status(ctx context.Context, s brokerproto.StatusRequest) erro
 
 func (c channelCP) Accept(ctx context.Context, account, op pqcrypto.UUID) error {
 	return c.c.Call(ctx, brokerproto.MsgAccept, brokerproto.AcceptRequest{AccountID: account, OperationID: op}, nil)
+}
+
+func (c channelCP) Challenge(ctx context.Context, r brokerproto.ChallengeRequest) error {
+	return c.c.Call(ctx, brokerproto.MsgChallenge, r, nil)
+}
+
+func (c channelCP) Lease(ctx context.Context, r brokerproto.LeaseRequest) error {
+	return c.c.Call(ctx, brokerproto.MsgLease, r, nil)
+}
+
+func (c channelCP) Delivery(ctx context.Context, r brokerproto.DeliveryRequest) error {
+	return c.c.Call(ctx, brokerproto.MsgDelivery, r, nil)
+}
+
+func (c channelCP) TxResult(ctx context.Context, r brokerproto.TxResultRequest) error {
+	return c.c.Call(ctx, brokerproto.MsgTxResult, r, nil)
 }

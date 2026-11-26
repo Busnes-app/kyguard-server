@@ -173,6 +173,8 @@ func (a *App) serve(ctx context.Context, j *Journal, k *Keys, id pqcrypto.UUID, 
 					log.Printf("[BROKER] enrollment refused: %v", err)
 				}
 			})
+		case brokerproto.MsgTx, brokerproto.MsgProof, brokerproto.MsgCheckin:
+			wg.Go(func() { a.transaction(cctx, m, msg) })
 		case brokerproto.MsgNudge:
 			select {
 			case a.Nudges <- struct{}{}:
@@ -183,6 +185,28 @@ func (a *App) serve(ctx context.Context, j *Journal, k *Keys, id pqcrypto.UUID, 
 		}
 	}
 	return errors.New("channel closed")
+}
+
+// transaction handles a relayed transaction, proof or check-in request. The machine tells
+// the CLI, through the Control Plane, when it refuses one.
+func (a *App) transaction(ctx context.Context, m *Machine, msg brokerproto.Message) {
+	switch msg.Type {
+	case brokerproto.MsgTx:
+		var p brokerproto.TxPush
+		if json.Unmarshal(msg.Body, &p) == nil {
+			m.Tx(ctx, p.Tx)
+		}
+	case brokerproto.MsgProof:
+		var p brokerproto.ProofPush
+		if json.Unmarshal(msg.Body, &p) == nil {
+			m.Proof(ctx, p.RequestID, p.Proof)
+		}
+	case brokerproto.MsgCheckin:
+		var p brokerproto.CheckinPush
+		if json.Unmarshal(msg.Body, &p) == nil {
+			m.Checkin(ctx, p.RequestID)
+		}
+	}
 }
 
 // retry runs f after wait, doubling the wait up to a minute, until f succeeds or ctx ends.
