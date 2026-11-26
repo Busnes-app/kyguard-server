@@ -70,10 +70,11 @@ func (m *Machine) tick(ctx context.Context, id pqcrypto.UUID) error {
 	if err != nil {
 		return err
 	}
-	// A run left reserving by a lost reply is settled first, so its lock never blocks
-	// the schedule until the next reconnect (decision 72).
-	if a.Run != nil && a.Run.State == StateReserving {
-		if err := m.settle(ctx, a); err != nil {
+	// An open run stopped part-way: Rotate holds m.mu throughout, so none is in progress
+	// here. It is finished as after a restart, so a failed call never leaves it until the
+	// next reconnect (decision 72; PR Reviewer Guide "Stalled rotations" on #12).
+	if a.Run.Open() {
+		if err := m.recover(ctx, a); err != nil {
 			return err
 		}
 	}
