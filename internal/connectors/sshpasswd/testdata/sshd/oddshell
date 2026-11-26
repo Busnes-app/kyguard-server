@@ -1,0 +1,4 @@
+#!/bin/sh
+printf 'Enter your secret token: '
+read -r _ || true
+exit 1

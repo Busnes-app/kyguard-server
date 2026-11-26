@@ -1,0 +1,12 @@
+#!/bin/sh
+# Plays passwd's prompts and records how many answers arrived, so a test can check that no
+# new password left before the broker's commit.
+log="/tmp/answers-$(id -un)"
+printf 'Changing password for %s.\nCurrent password: ' "$(id -un)"
+read -r _; echo current >> "$log"
+printf 'New password: '
+read -r _; echo new >> "$log"
+printf 'Retype new password: '
+read -r _; echo retype >> "$log"
+printf 'passwd: password unchanged\n'
+exit 1
