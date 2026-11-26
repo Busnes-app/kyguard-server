@@ -106,6 +106,8 @@ jobs:
 
       - run: go mod verify
       - run: go vet ./...
+      - name: Post-quantum TLS guard
+        run: scripts/check-pqc-tls.sh
       - run: go build ./...
 
       - name: Tests with race detector and coverage

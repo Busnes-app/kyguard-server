@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"strconv"
 	"time"
@@ -54,7 +55,8 @@ func (c *Connector) open(ctx context.Context, d *pqcrypto.TargetDescriptor) (*ld
 	if dial == nil {
 		dial = (&net.Dialer{Timeout: c.timeout()}).DialContext
 	}
-	raw, err := dial(ctx, "tcp", net.JoinHostPort(d.Endpoint.Host, strconv.Itoa(d.Endpoint.Port)))
+	addr := net.JoinHostPort(d.Endpoint.Host, strconv.Itoa(d.Endpoint.Port))
+	raw, err := dial(ctx, "tcp", addr)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -65,6 +67,8 @@ func (c *Connector) open(ctx context.Context, d *pqcrypto.TargetDescriptor) (*ld
 		raw.Close()
 		return nil, nil, err
 	}
+	cs := tc.ConnectionState()
+	log.Printf("[ADLDAPS] %s: negotiated %s group=%s", addr, tls.VersionName(cs.Version), cs.CurveID)
 	l := ldap.NewConn(tc, true)
 	l.SetTimeout(c.timeout())
 	l.Start()

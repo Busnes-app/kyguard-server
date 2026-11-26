@@ -6,26 +6,23 @@ import (
 	"crypto/x509"
 	"errors"
 
+	"github.com/Busnes-app/ky-primitives/pqtls"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
 )
 
-// curves is the hybrid post-quantum key exchange only (§4.1, §11; PQC plan Q9): both ends
-// are KyGuard on Go 1.27, so there is no classical fallback to offer or accept.
-var curves = []tls.CurveID{tls.X25519MLKEM768}
-
 // ServerTLS is the listener configuration of §4.1. Client certificates are optional at the
 // TLS layer (pairing has none) and verified against the CA when present; the channel
-// handler refuses a connection without one.
+// handler refuses a connection without one. Both ends are KyGuard on Go 1.27, so
+// pqtls.HybridOnly restricts the link to TLS 1.3 and X25519MLKEM768 with no classical
+// fallback (§4.1, §11; PQC plan Q9).
 func ServerTLS(ca *CA, leaf tls.Certificate) *tls.Config {
 	pool := x509.NewCertPool()
 	pool.AddCert(ca.Cert)
-	return &tls.Config{
-		MinVersion:       tls.VersionTLS13,
-		ClientAuth:       tls.VerifyClientCertIfGiven,
-		ClientCAs:        pool,
-		CurvePreferences: curves,
-		Certificates:     []tls.Certificate{leaf},
-	}
+	return pqtls.HybridOnly(&tls.Config{
+		ClientAuth:   tls.VerifyClientCertIfGiven,
+		ClientCAs:    pool,
+		Certificates: []tls.Certificate{leaf},
+	})
 }
 
 // ErrPinnedCA reports a listener whose chain does not lead to the pinned CA.
@@ -40,15 +37,13 @@ func ClientTLS(caSHA256 pqcrypto.HexID, hostname string, client *tls.Certificate
 	// VerifyConnection replaces with verifyListener (chain to the pinned CA, hostname,
 	// serverAuth). Every handshake runs it; TestClientTLSPinsTheCA and
 	// TestBrokerRefusesAnotherCA fail if it is weakened.
-	pinVerified := &tls.Config{
-		MinVersion:         tls.VersionTLS13,
-		CurvePreferences:   curves,
+	pinVerified := pqtls.HybridOnly(&tls.Config{
 		ServerName:         hostname,
 		InsecureSkipVerify: true, //nolint:gosec // replaced by VerifyConnection
 		VerifyConnection: func(cs tls.ConnectionState) error {
 			return verifyListener(cs.PeerCertificates, caSHA256, hostname)
 		},
-	}
+	})
 	if client != nil {
 		pinVerified.Certificates = []tls.Certificate{*client}
 	}

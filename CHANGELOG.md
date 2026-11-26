@@ -16,8 +16,12 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 - The SSH connector offers only `mlkem768x25519-sha256`, curve25519 and NIST ECDH key exchanges
   and refuses a target that offers only SHA-1 (`diffie-hellman-group14-sha1`) or other finite-field
   Diffie-Hellman exchanges (DECISIONS 80). Targets need OpenSSH 5.7 or later.
-- The broker listener and broker client use only the hybrid `X25519MLKEM768` TLS group; a peer
-  offering classical X25519 alone is refused (DECISIONS 81).
+- The broker listener and broker client use `ky-primitives/pqtls.HybridOnly` (`v0.11.0`) for
+  the hybrid `X25519MLKEM768` TLS group; a peer offering classical X25519 alone is refused
+  (DECISIONS 81). Outbound LDAPS and OIDC HTTPS paths are verified with `pqtls.RequireHybrid`
+  normally and under `GODEBUG=fips140=on`, LDAPS logs the negotiated TLS version and key
+  exchange group on connect without credentials, and CI (`scripts/check-pqc-tls.sh`) refuses
+  non-test `CurvePreferences` and `tlsmlkem` overrides.
 
 ### Changes
 
