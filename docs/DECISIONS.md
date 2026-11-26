@@ -1,6 +1,8 @@
 # Build decisions
 
-Readings of `docs/SPEC.md` taken during the Phase 0/1A build where the spec is silent or
+[Overview](../README.md) · [Design specification](SPEC.md)
+
+Readings of [docs/SPEC.md](SPEC.md) taken during the Phase 0/1A build where the spec is silent or
 contradicts itself. Each names its section. The most secure reading wins.
 
 1. §13 Phase 0, §7.4 (bootstrap removal order). `ensureBootstrapAdmin` and `init-admin` are
