@@ -151,6 +151,42 @@ func TestCheckoutDeliversAWrapOnlyTheRequesterOpens(t *testing.T) {
 	}
 }
 
+func TestCheckoutRetryResendsTheOutstandingChallenge(t *testing.T) {
+	c := newCheckoutRig(t)
+	ctx := context.Background()
+	co := c.checkoutTx(600)
+	if err := c.m.Tx(ctx, co.Tx); err != nil {
+		t.Fatal(err)
+	}
+	challenge := c.challenge(co.RequestID)
+	proof, err := co.Proof(challenge, pqcrypto.PurposeDeliver)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The mailbox has a published refusal from a previous try. Resending the
+	// challenge clears it and leaves the proof already in flight valid.
+	c.m.Refused(ctx, co.RequestID, broker.ErrLeaseOpen.Error())
+	if _, result := c.delivery(co.RequestID); result != broker.ErrLeaseOpen.Error() {
+		t.Fatalf("expected an earlier refusal, got %q", result)
+	}
+	if err := c.m.Tx(ctx, co.Tx); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(c.challenge(co.RequestID), challenge) {
+		t.Fatal("checkout retry replaced the original challenge")
+	}
+	if _, result := c.delivery(co.RequestID); result != "" {
+		t.Fatalf("challenge was not resent, mailbox result %q", result)
+	}
+	if err := c.m.Proof(ctx, co.RequestID, proof); err != nil {
+		t.Fatalf("original proof after checkout retry: %v", err)
+	}
+	if wrap, result := c.delivery(co.RequestID); wrap == nil || result != "ok" {
+		t.Fatalf("delivered=%v result=%q", wrap != nil, result)
+	}
+}
+
 // §13 1A acceptance test 10: a possession proof over another transaction's digest opens no
 // lease and burns nothing.
 func TestProofOverAnotherTransactionOpensNothing(t *testing.T) {

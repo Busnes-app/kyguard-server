@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -115,6 +116,14 @@ func (m *Machine) checkout(ctx context.Context, a *Account, tx *pqcrypto.AccessT
 	}
 	if err := blocked(a); err != nil {
 		return err
+	}
+	// A submission can be retried after its challenge has been read. Keep any
+	// in-flight proof valid by resending the journaled challenge.
+	if c := m.J.GetChallenge(tx.RequestID); c != nil && m.now().Before(c.ExpiresAt) {
+		if c.Purpose != pqcrypto.PurposeDeliver || !bytes.Equal(c.Tx, raw) {
+			return pqcrypto.ErrReplay
+		}
+		return m.CP.Challenge(ctx, brokerproto.ChallengeRequest{RequestID: tx.RequestID, Challenge: c.Challenge, Purpose: c.Purpose})
 	}
 	return m.challenge(ctx, a, tx.RequestID, pqcrypto.PurposeDeliver, raw, tx.ExpiresAt.Time)
 }

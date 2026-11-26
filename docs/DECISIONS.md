@@ -458,8 +458,9 @@ Numbered separately: these came from the parallel crypto stack.
     the mailbox: a transaction's own refusal (a replay keeps the earlier result) or one after
     its possession proof verified. A check-in request or a proof that does not verify
     publishes nothing, because any session can send one. A repeated check-in request re-sends
-    the outstanding challenge. A delivery challenge supersedes an earlier result. When
-    a verified proof opens a lease, the first active mirror clears an earlier refusal
+    the outstanding challenge. An identical checkout submission re-sends its unexpired
+    delivery challenge. A delivery challenge supersedes an earlier result. When a verified
+    proof opens a lease, the first active mirror clears an earlier refusal
     atomically so the mailbox shows a pending checkout until delivery. Repeated mirrors
     preserve later outcomes. Every delivery checks the lease's expiry on the broker's
     clock first. An expired lease never releases its wrap and queues `lease_expired` in the same
