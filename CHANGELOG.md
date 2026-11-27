@@ -192,6 +192,10 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   details pauses edits and waits for saves, keeping the dialog open if a save fails.
   Account attribute edits and focus survive a detail refresh after saving. Inventory
   also works when no account or owner attribute values are present.
+- The broker client's certificate pin is held in place by a test: `ClientTLS` must return a
+  configuration carrying its `VerifyConnection` callback, and the callback must refuse a
+  chain without the pinned CA, a certificate issued for client authentication, an empty
+  hostname and an unusable pin.
 
 ### Upgrade impact
 
