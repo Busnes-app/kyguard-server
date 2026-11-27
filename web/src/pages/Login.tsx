@@ -1,3 +1,4 @@
+import { startKeyring, type VaultConfig } from '../vault';
 import React, { useState } from 'react';
 import { Key, AlertCircle, LogIn } from 'lucide-react';
 import { CaptchaWidget } from '../components/CaptchaWidget';
@@ -6,9 +7,10 @@ import { ThemeSwitcher } from '../components/ThemeSwitcher';
 interface LoginProps {
   onSuccess: (user: any) => void;
   appName: string;
+  vaultConfig?: VaultConfig | null;
 }
 
-export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
+export const Login: React.FC<LoginProps> = ({ onSuccess, appName, vaultConfig }) => {
   const [username, setUsername] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   const [totpCode, setTotpCode] = useState<string>('');
@@ -52,6 +54,18 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
       setLoading(false);
     }
   };
+
+  async function signInWithKeyring() {
+    if (!vaultConfig) return;
+    setLoading(true);
+    setError('');
+    try {
+      await startKeyring(vaultConfig);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not start KyIdentity sign-in.');
+      setLoading(false);
+    }
+  }
 
   return (
     <div
@@ -166,6 +180,11 @@ export const Login: React.FC<LoginProps> = ({ onSuccess, appName }) => {
                 <Key size={16} style={{ color: 'var(--accent)' }} />
                 <span>Continue with Single Sign On</span>
               </a>
+              {vaultConfig?.keyring && (
+                <button className="btn-secondary" type="button" disabled={loading} onClick={() => void signInWithKeyring()}>
+                  Sign in with KyIdentity keyring
+                </button>
+              )}
             </div>
           </form>
         </div>

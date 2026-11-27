@@ -7,6 +7,8 @@ Provides Single Sign-On federation for KySignOn and one generic OpenID Connect p
 Owns the application adapters around OAuth/OIDC login and verified back-channel logout. KyIdentity directory synchronization belongs to the SCIM connector, not a webhook.
 
 ## Local Contracts
+- The KyIdentity keyring path verifies the OIDC token through the usual KySignOn client.
+  Its optional `org_id` claim is compared with the configured keyring organization.
 - PKCE with `S256` is enforced on all OAuth/OIDC authorization requests.
 - ID tokens require provider signature, issuer, audience, expiry, and one-time nonce verification before claims are trusted.
 - OAuth discovery, authorization URLs, PKCE parameters, code exchange, key

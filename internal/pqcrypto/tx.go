@@ -127,6 +127,8 @@ type TxContext struct {
 	// Candidate is the enrollment candidate the Control Plane relayed and its reserved version.
 	CandidateDigest  HexID
 	CandidateVersion Counter
+	// AllowPartialApprovals is for collecting signatures. Broker and API admission always require quorum.
+	AllowPartialApprovals bool
 }
 
 // VerifyTx applies the broker's transaction checks of §3.4 in order, except the journal
@@ -196,7 +198,7 @@ func (t *Trust) VerifyTx(raw []byte, c TxContext) (*AccessTransaction, Digest, e
 		}
 		approvers[ap.ApproverPrincipalID] = true
 	}
-	if len(approvers) < pol.RequiredApproverCount {
+	if !c.AllowPartialApprovals && len(approvers) < pol.RequiredApproverCount {
 		return nil, d, ErrApprovals
 	}
 

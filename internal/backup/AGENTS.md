@@ -95,6 +95,9 @@ live in `recoveryclient` and in the settings rows it reads and writes through th
   nothing else.
 
 ## Verification
+
+- `nodecrypt_test.go` keeps browser user key opening outside the server's dependencies and
+  restricts suite recovery-key reconstruction to the restore command.
 - `go test -v ./internal/backup/...` (and with `KY_TEST_POSTGRES_DSN`: `postgres_test.go`,
   sealed-only deposit, 0700 scratch removal, unknown-schema refusal; `pin_test.go`, concurrent
   pins with an overlap detector, lock loss, backfill racing a pin, materialization, and

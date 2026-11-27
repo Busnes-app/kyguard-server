@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AppHeader } from './components/AppHeader';
 import { BreakGlassBanner } from './components/BreakGlassBanner';
 import { ReStepUp } from './components/ReStepUp';
@@ -22,12 +22,15 @@ import './ky-ui/navigation.css';
 import './ky-ui/appearance.css';
 import './ky-ui/appearance-themes.css';
 import { secureFetch } from './api';
+import { Vault } from './pages/Vault';
+import { loadVaultConfig, resetVault, type VaultConfig } from './vault';
 
-export const App: React.FC = () => {
+export const App = ({ initialNotice = '' }: { initialNotice?: string }) => {
   const [user, setUser] = useState<any>(null);
   const [breakGlass, setBreakGlass] = useState<BreakGlassState | null>(null);
   const [stepUp, setStepUp] = useState<StepUpState | null>(null);
-  const [notice, setNotice] = useState('');
+  const [notice, setNotice] = useState(initialNotice);
+  const [vaultConfig, setVaultConfig] = useState<VaultConfig | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [settings, setSettings] = useState<any>(null);
@@ -46,6 +49,13 @@ export const App: React.FC = () => {
         if (setResp.ok) {
           const s = await setResp.json();
           setSettings(s);
+          if (s.browser_vault === true) {
+            try {
+              setVaultConfig(await loadVaultConfig());
+            } catch (err) {
+              setNotice(err instanceof Error ? err.message : 'Could not load the trusted vault configuration.');
+            }
+          }
         }
 
         if (authResp.ok) {
@@ -76,6 +86,7 @@ export const App: React.FC = () => {
   };
 
   const handleLogout = async () => {
+    resetVault();
     await secureFetch('/api/auth/logout', { method: 'POST' });
     setUser(null);
     setBreakGlass(null);
@@ -97,6 +108,7 @@ export const App: React.FC = () => {
       <Login
         key={loginKey}
         appName={settings?.app_name || 'KyGuard'}
+        vaultConfig={settings?.keyring_enabled ? vaultConfig : null}
         onSuccess={async (u) => {
           // A Secure session cookie is dropped on a plain-HTTP page, so a 200 from login does
           // not mean the browser is signed in: ask the server before showing the app.
@@ -148,6 +160,7 @@ export const App: React.FC = () => {
         activeTab={activeTab}
         onTabChange={(tab) => setActiveTab(tab)}
         user={user}
+        hasVault={!!vaultConfig && user.account_type !== 'break_glass'}
         onLogout={handleLogout}
         onChangePassword={user.account_type === 'break_glass' ? () => setChangingPassword(true) : undefined}
       />
@@ -156,6 +169,9 @@ export const App: React.FC = () => {
       <main className="app-main">
         {breakGlass && <BreakGlassBanner state={breakGlass} onReason={(reason) => setBreakGlass({ ...breakGlass, reason })} />}
         {activeTab === 'dashboard' && <Dashboard settings={settings} user={user} onNavigate={(tab) => setActiveTab(tab)} />}
+        {notice && <p className="dr-alert dr-alert-error" role="status">{notice}</p>}
+        {activeTab === 'vault' && vaultConfig && user.account_type !== 'break_glass' &&
+          <Vault config={vaultConfig} userID={user.id} />}
         {activeTab === 'accounts' && <Accounts isAdmin={user.role === 'admin'} />}
         {activeTab === 'attributes' && <Attributes isAdmin={user.role === 'admin'} />}
         {activeTab === 'policies' && user.role === 'admin' && <Policies isAdmin />}

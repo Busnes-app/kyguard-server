@@ -7,6 +7,9 @@ Provides the unified Database Abstraction Layer (DAL) supporting pluggable backe
 Owns data models, store interfaces (`UserStore`, `SessionStore`, `GroupStore`, `AuditStore`, `SettingsStore`), dialect translations, and schema migrations.
 
 ## Local Contracts
+- `Guard().BrowserKey` scopes encrypted user bundles to the user, issuer and subject.
+  Migration 302 adds `browser_keys` to the snapshot and migration inventory.
+  Creation is atomic with its audit record and only exact retries can reuse the row.
 - The audit chain (spec §9.3, `auditchain.go`): `appendAudit` is the only writer of `audit_records`, always inside the caller's transaction. It serializes (PostgreSQL `pg_advisory_xact_lock(4, hashtext('kyguard:auditchain'))`; SQLite `_txlock=immediate`, added to every DSN in `openSQLite`), reads `audit_chain_head` (absent = genesis, and then `audit_records` must be empty), resumes from the head record and inserts record and head together. Fields, in order: action, user_id, resource, details, ip_address, created_at (UTC, microseconds), rendered through `logging.AuditFields`; the stored columns are the rendered values, so what is stored is what was hashed. `VerifyAuditChain` checks the log against the head (zero anchor when empty). The key is `config.DatabaseConfig.AuditKey` (HKDF of the encryption key, label `kyguard:auditchain`); without it every audit write fails.
 - A database-only change and its audit record share one transaction: pass the record as `Session.Audit`, the `audit` parameter of the MFA and reason writes, or `store.WithAudit(ctx, r)` for user writes (`CreateUser`, profile and role updates, `LinkSSOIdentity`).
 - `SettingsStore.UpdateSettings` commits related upserts and deletes in one transaction;

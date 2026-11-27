@@ -7,6 +7,9 @@ React 19 + TypeScript + Vite PWA frontend using the current shared ky-ui catalog
 Owns user interface components, service worker caching, PWA installation manifests, and frontend theme switching.
 
 ## Local Contracts
+- The SaaS Vault uses the independently deployed `make build-browser-vault` output and
+  a pinned bootstrap fingerprint. The WASM worker holds user secrets in memory. For
+  keyring setup and edge isolation, follow [Browser vault](../docs/BROWSER-VAULT.md).
 - Status colors use the shared palettes. Browser regressions measure every current named light palette against page and panel surfaces. Filled `.btn-danger` labels use the page color for named palettes except the Nord pair, which keeps `--button-text`; `browser/danger-button.spec.mjs` checks rest, hover and focus on a labelled diagnostic button in the real page.
 - Web themes default to Busnes light/dark following the OS until a browser-local choice is saved.
 - A signed-in user with `must_change_password` sees only password replacement and sign-out. Replacement uses `secureFetch`, returns to login after session revocation, and never exposes the normal navigation before completion. A break-glass account (`account_type` `break_glass`) can open the same form from the header's key button at any time; that form has Cancel instead of Sign out. SSO accounts get no button.
@@ -32,8 +35,7 @@ Owns user interface components, service worker caching, PWA installation manifes
   `/api/reports/scorecard?format=`), and admins get inventory controls there.
   `Attributes.tsx` (SCIM ones read-only), `Policies.tsx` (drafts with their digest for
   `kyguard-cli sign`; admin only), `Jobs.tsx` (admin only); the Overview shows the traffic
-  light, health counts and a 1-of-1 Custodian warning. No screen handles a credential or
-  signs anything. Closing account details by button or Escape pauses edits and waits for
+  light, health counts and a 1-of-1 Custodian warning. Reporting pages handle metadata. Closing account details by button or Escape pauses edits and waits for
   pending saves. A failed save keeps the dialog open with its error. Text attributes are
   read-only while saving. Each enum selector is disabled while its own save is in flight.
   Owner search, clear, and selection controls are disabled until an owner change finishes.

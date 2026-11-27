@@ -16,6 +16,8 @@ var (
 // IdentityClaims holds the unified identity extracted from any SSO provider.
 type IdentityClaims struct {
 	Subject           string `json:"sub"`
+	Organization      string `json:"-"`
+	HasOrganization   bool   `json:"-"`
 	Email             string `json:"email"`
 	Name              string `json:"name"`
 	PreferredUsername string `json:"preferred_username"`

@@ -1,4 +1,4 @@
-package cli
+package vaultclient
 
 import (
 	"errors"
@@ -6,7 +6,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto/canonical"
 )
@@ -19,7 +18,7 @@ type Enrollment struct {
 }
 
 // ErrNotEnroller means the current policy does not let this principal enroll the account.
-var ErrNotEnroller = errors.New("kyguard-cli: principal is not an enroller of this account")
+var ErrNotEnroller = errors.New("kyguard: principal is not an enroller of this account")
 
 // SealEnrollment seals password as a managed candidate to the account's active broker (and
 // the recovery key when the current policy escrows), signs it as the user, and signs an
@@ -28,14 +27,14 @@ var ErrNotEnroller = errors.New("kyguard-cli: principal is not an enroller of th
 func SealEnrollment(tr *pqcrypto.Trust, account, requestID pqcrypto.UUID, version pqcrypto.Counter, principal pqcrypto.UUID, key *pqcrypto.SigningKey, password []byte, now time.Time) (*Enrollment, error) {
 	pol, pd := tr.Policy(account)
 	if pol == nil || pol.AccountKind != pqcrypto.KindManaged {
-		return nil, errors.New("kyguard-cli: no verified managed policy for the account")
+		return nil, errors.New("kyguard: no verified managed policy for the account")
 	}
 	if !contains(pol.EnrollerPrincipalIDs, principal) {
 		return nil, ErrNotEnroller
 	}
 	pool := tr.Pool(pol.PoolID)
 	if pool == nil || pool.Active() == nil {
-		return nil, errors.New("kyguard-cli: the account's pool has no active broker")
+		return nil, errors.New("kyguard: the account's pool has no active broker")
 	}
 	b := pool.Active()
 	to := []pqcrypto.SealTo{{Type: pqcrypto.RecipientBroker, ID: string(b.BrokerID), Pub: b.EncPub}}
@@ -96,8 +95,8 @@ func contains(l []pqcrypto.UUID, id pqcrypto.UUID) bool {
 }
 
 // SignReservation signs the request to reserve an enrollment as an enroller's active key.
-func SignReservation(tr *pqcrypto.Trust, account, requestID, principal pqcrypto.UUID, key *pqcrypto.SigningKey, now time.Time) (*brokerproto.EnrollReservation, error) {
-	r := &brokerproto.EnrollReservation{DeploymentID: tr.DeploymentID(), AccountID: account, RequestID: requestID, PrincipalID: principal, IssuedAt: pqcrypto.NewTime(now)}
+func SignReservation(tr *pqcrypto.Trust, account, requestID, principal pqcrypto.UUID, key *pqcrypto.SigningKey, now time.Time) (*pqcrypto.EnrollReservation, error) {
+	r := &pqcrypto.EnrollReservation{DeploymentID: tr.DeploymentID(), AccountID: account, RequestID: requestID, PrincipalID: principal, IssuedAt: pqcrypto.NewTime(now)}
 	d, err := r.Digest()
 	if err != nil {
 		return nil, err

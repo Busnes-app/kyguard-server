@@ -103,6 +103,7 @@ func (s *Server) handleSubmitTx(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTxMailbox(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
 	m, err := s.store.Vault().TxMailbox(r.Context(), r.PathValue("request"))
 	if errors.Is(err, store.ErrNotFound) {
 		s.writeError(w, http.StatusNotFound, "unknown transaction")
@@ -115,6 +116,13 @@ func (s *Server) handleTxMailbox(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"challenge": m.Challenge, "purpose": m.Purpose, "result": m.Result}
 	if m.Delivery != "" {
 		out["delivery"] = json.RawMessage(m.Delivery)
+	}
+	lease, err := s.store.Vault().GetLease(r.Context(), r.PathValue("request"))
+	if err == nil {
+		out["lease_state"] = lease.State
+		if lease.State == "active" && time.Now().Before(lease.ExpiresAt) {
+			out["expires_at"] = lease.ExpiresAt
+		}
 	}
 	s.writeJSON(w, http.StatusOK, out)
 }

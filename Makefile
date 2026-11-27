@@ -1,10 +1,13 @@
-.PHONY: all build build-web test test-race test-postgres test-replicas test-web tidy-check lint pqc-tls-check smoke ci run clean docker-build notes-check audit-web
+.PHONY: all build build-web build-browser-vault test test-race test-postgres test-replicas test-web tidy-check lint pqc-tls-check smoke ci run clean docker-build notes-check audit-web
 
 all: build-web build
 
 build-web:
 	@echo "==> Building frontend web assets..."
 	@cd web && npm ci && npm run build
+
+build-browser-vault:
+	@cd web && npm ci && npm run build:vault
 
 build:
 	@echo "==> Compiling kyguard-server binary..."

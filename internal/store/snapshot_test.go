@@ -40,7 +40,10 @@ func seedEveryTable(t *testing.T, st *SQLStore) {
 		}
 	}
 	must(st.Users().CreateUser(ctx, &User{ID: "u1", Username: "owner", PasswordHash: "hash", Role: "admin", Status: "active", SSOProvider: "local", MustChangePassword: true, LastLoginAt: &now}))
-	must(st.Users().CreateUser(ctx, &User{ID: "u2", Username: "member", Role: "user", Status: "active", SSOProvider: "scim", SSOSubject: "ext-2", SCIMManaged: true}))
+	member := &User{ID: "u2", Username: "member", Role: "user", Status: "active",
+		SSOProvider: "kysignon", SSOIssuer: "https://idp", SSOSubject: "ext-2", SCIMManaged: true}
+	must(st.Users().CreateUser(ctx, member))
+	must(st.Guard().PutBrowserKey(ctx, member, BrowserKey{Enrollment: `{"public":"draft"}`, Sealed: `{"ciphertext":"fixture"}`}, nil))
 	must(st.Groups().CreateGroup(ctx, &Group{ID: "g1", DisplayName: "Staff", ExternalID: "x"}))
 	must(st.Groups().AddGroupMember(ctx, "g1", "u2"))
 	must(st.Sessions().CreateSession(ctx, &Session{TokenHash: "tok", UserID: "u1", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}, "hash"))

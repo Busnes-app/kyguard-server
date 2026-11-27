@@ -7,6 +7,9 @@ Manages environment and file-based configuration loading, defaults, and type con
 Owns environment variable parsing, configuration validation, default fallbacks, and security key generations.
 
 ## Local Contracts
+- `KY_BROWSER_VAULT` requires HTTPS and an independent static deployment.
+  `KY_KYSIGNON_KEYRING_ORG_ID` pins the suite keyring tenant when enabled.
+  These settings join the replica fingerprint when in use.
 - `LoadFromEnv() (*Config, error)` must supply safe, valid defaults for all subsystems.
   Canonicalize `sqlite3` to `sqlite`, and `postgresql`/`pgx` to `postgres`, before
   selecting instance ownership or validating shared secrets.

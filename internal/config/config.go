@@ -54,6 +54,7 @@ type ServerConfig struct {
 	Host         string        `json:"host"`
 	Port         int           `json:"port"`
 	AppURL       string        `json:"app_url"`
+	BrowserVault bool          `json:"browser_vault"`
 	AppName      string        `json:"app_name"`
 	ReadTimeout  time.Duration `json:"read_timeout"`
 	WriteTimeout time.Duration `json:"write_timeout"`
@@ -105,6 +106,7 @@ type SSOConfig struct {
 	KySignOnIssuer      string `json:"kysignon_issuer"`
 	KySignOnClientID    string `json:"kysignon_client_id"`
 	KySignOnSecret      string `json:"kysignon_secret"`
+	KySignOnKeyringOrg  string `json:"kysignon_keyring_org"`
 	KySignOnHMACSecret  string `json:"kysignon_hmac_secret"` // Deprecated: accepted but ignored.
 	GenericOIDCIssuer   string `json:"generic_oidc_issuer"`
 	GenericOIDCClientID string `json:"generic_oidc_client_id"`
@@ -255,12 +257,22 @@ func LoadFromEnv() (*Config, error) {
 	if https && cookieDomain != "" {
 		return nil, errors.New("KY_COOKIE_DOMAIN: not allowed with an https KY_APP_URL: there the cookies are __Host- cookies, which browsers refuse with a Domain, so that no other host under that domain can set them; leave KY_COOKIE_DOMAIN empty")
 	}
+	browserVault := getEnvBool("KY_BROWSER_VAULT", false)
+	keyringOrg := getEnv("KY_KYSIGNON_KEYRING_ORG_ID", "")
+	if browserVault && !https {
+		return nil, errors.New("KY_BROWSER_VAULT requires an HTTPS KY_APP_URL")
+	}
+	if keyringOrg != "" && (!browserVault || getEnv("KY_KYSIGNON_CLIENT_ID", "") == "" ||
+		!strings.HasPrefix(getEnv("KY_KYSIGNON_ISSUER", ""), "https://")) {
+		return nil, errors.New("KY_KYSIGNON_KEYRING_ORG_ID requires KY_BROWSER_VAULT, an HTTPS KySignOn issuer and a KySignOn client ID")
+	}
 
 	cfg := &Config{
 		Server: ServerConfig{
 			Host:         host,
 			Port:         port,
 			AppURL:       strings.TrimRight(appURL, "/"),
+			BrowserVault: browserVault,
 			AppName:      appName,
 			ReadTimeout:  15 * time.Second,
 			WriteTimeout: 15 * time.Second,
@@ -290,6 +302,7 @@ func LoadFromEnv() (*Config, error) {
 			KySignOnIssuer:      getEnv("KY_KYSIGNON_ISSUER", ""),
 			KySignOnClientID:    getEnv("KY_KYSIGNON_CLIENT_ID", ""),
 			KySignOnSecret:      getEnv("KY_KYSIGNON_SECRET", ""),
+			KySignOnKeyringOrg:  keyringOrg,
 			KySignOnHMACSecret:  kysignonHMAC,
 			GenericOIDCIssuer:   getEnv("KY_OIDC_ISSUER", ""),
 			GenericOIDCClientID: getEnv("KY_OIDC_CLIENT_ID", ""),

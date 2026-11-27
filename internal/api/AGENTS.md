@@ -7,6 +7,9 @@ Exposes HTTP REST routes, authentication endpoints, Single Sign-On callbacks, SC
 Owns HTTP routing, request parsing, session cookie validation, CORS headers, and error response formatting.
 
 ## Local Contracts
+- Browser vault routes protect each sealed bundle by the active SSO identity and require fresh
+  step-up for uploads. Signed account context requires a principal listed in that policy.
+  The KyIdentity handoff reuses OIDC verification and always issues a pending session.
 - PostgreSQL uses shared security-window reservations and CAPTCHA spending; never fall
   back to local allowances on storage errors. SQLite keeps its existing in-memory limits.
 - A successful login refunds only its original window. Office exemption decisions on

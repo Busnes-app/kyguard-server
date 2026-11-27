@@ -8,9 +8,10 @@ interface AppHeaderProps {
   user: any;
   onLogout: () => void;
   onChangePassword?: () => void;
+  hasVault?: boolean;
 }
 
-export const AppHeader: React.FC<AppHeaderProps> = ({ appName, activeTab, onTabChange, user, onLogout, onChangePassword }) => {
+export const AppHeader: React.FC<AppHeaderProps> = ({ appName, activeTab, onTabChange, user, onLogout, onChangePassword, hasVault }) => {
   const navRef = useRef<HTMLElement>(null);
   // Phones scroll the navigation sideways: keep the current page's row in view, also after Overview actions.
   useEffect(() => {
@@ -20,6 +21,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({ appName, activeTab, onTabC
   const navItems = [
     { id: 'dashboard', label: 'Overview', icon: LayoutDashboard },
     { id: 'accounts', label: 'Accounts', icon: ShieldCheck },
+    ...(hasVault ? [{ id: 'vault', label: 'Vault', icon: KeyRound }] : []),
     { id: 'attributes', label: 'Attributes', icon: Tags },
     ...(user?.role === 'admin' ? [{ id: 'policies', label: 'Policies', icon: FileSignature }, { id: 'jobs', label: 'Jobs', icon: Activity }] : []),
     { id: 'scim', label: 'Directory & SCIM', icon: Users },

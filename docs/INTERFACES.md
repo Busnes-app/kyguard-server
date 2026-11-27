@@ -472,6 +472,8 @@ reader in the binary. The shipped `docker-compose.yml` passes its `.env` to the 
 |---|---|---|
 | `KY_HOST` | `0.0.0.0` | HTTP listener address; use network/proxy controls in production |
 | `KY_PORT` / `PORT` | `8080` | Integer listener port; KY_PORT wins |
+| `KY_BROWSER_VAULT` | `false` | Enable the [independently deployed browser vault](BROWSER-VAULT.md) on HTTPS. |
+| `KY_KYSIGNON_KEYRING_ORG_ID` | empty | Enable the KyIdentity keyring handoff for this opaque organization ID. |
 | `KY_APP_URL` | `http://localhost:<port>` | External application origin, redirects and SCIM base URL. Set it to the public URL: behind a proxy that rewrites `Host`, a browser sign-in whose `Origin` matches neither is refused as cross-site |
 | `KY_APP_NAME` | `KyGuard` | Application and capsule service identity; preserve it for restore |
 | `KY_ENV` | `development` | `production` requires a session secret and defaults to Secure cookies |
@@ -578,6 +580,25 @@ holds a mailbox; the broker decides. A delivery is sealed to the requester's key
 
 The listener is TLS 1.3 only with `X25519MLKEM768` preferred. Startup refuses a broker CA
 whose SHA-256 differs from the one any paired broker pinned.
+
+## Browser vault
+
+These routes are enabled by `KY_BROWSER_VAULT=true` on an HTTPS deployment with
+[an independent browser client](BROWSER-VAULT.md). The private key and its
+wrapping secret never reach these routes.
+
+| Route | Authentication and input | Success |
+|---|---|---|
+| GET `/api/user/vault-key` | Active SSO session | `{issuer, subject, bundle, manifests}` and the user's `{enrollment, sealed}` when set. Bundle, manifests and enrollment are unpadded base64url of canonical bytes. |
+| PUT `/api/user/vault-key` | Active SSO session and five-minute step-up. JSON `{enrollment, sealed}`. The enrollment is a self-signed epoch-1 draft matching the session's issuer and subject. | 204 for creation or an identical retry. 409 on conflicting enrollment. Creation and its audit commit together. |
+| GET `/api/accounts/{id}/vault-context` | Active SSO session matching an enroller, user or approver in the account's current policy | `{manifests, target, envelope?, receipts?}` as unpadded base64url. The browser verifies these against the pinned bundle. 404 for inaccessible or inactive accounts. |
+| POST `/api/sso/kysignon/keyring/start` | Same-origin sign-in JSON `{keyring_pk}` with a canonical X-Wing public key. Needs `KY_KYSIGNON_KEYRING_ORG_ID`. | Authorization URL, state, nonce, redirect URI, issuer and client ID, with an HTTP-only PKCE cookie. |
+| POST `/api/sso/kysignon/keyring/exchange` | Same-origin callback JSON `{code, state}` and matching PKCE cookie | Verified issuer, subject and organization, app client ID, nonce and local user ID. Issues the normal pending SSO session. The browser keeps keyring fragments local. |
+
+`sealed` is the version 1 envelope described in [spec §10.1](SPEC.md#101-browser-vault).
+The privacy-sensitive responses use `Cache-Control: no-store`. The transaction mailbox
+also returns `lease_state` when a lease has been mirrored and `expires_at` for a live
+lease. The browser reveals a delivery only during the active lease.
 
 ## Inventory and attributes
 

@@ -1,13 +1,13 @@
 # KyGuard — Privileged Access Management Design Specification
 
-> Status: v2.4 — council closed after 5 rounds (Opus 8, Sol 7, Gemini no score); Phase 0/1A normative.
-> Product: KyGuard (`kyguard-server`, `kyguard-broker`, `kyguard-cli`).
+> Status: v2.5 draft. The council-signed v2.4 cryptographic and broker contracts carry forward. The owner specified API-first SaaS delivery and the KyIdentity keyring for browser users.
+> Product: KyGuard (browser vault, `kyguard-server`, `kyguard-broker`).
 > Foundation: `ky_server_base` and `ky-primitives`, both on default branch `master`. Claims about them cite `origin/master` paths and identifiers. The base builds with `toolchain go1.27.4` (`ky_server_base/go.mod`).
 
 How to read this document. Sections marked Phase 0 or Phase 1A are normative: an agent builds from them. Every contract has one normative definition, and other sections link to it rather than restate it. Later-phase features get one paragraph that states the requirement and its phase; their design notes are in Appendix D, which is not normative for Phase 0/1A.
 
 ## 1. Summary
-KyGuard is a self-hosted PAM and just-in-time access platform, comparable to BeyondTrust Password Safe plus Entitle, built on `ky_server_base`. The Control Plane stores, relays, schedules nudges and reports, but never holds a plaintext credential and holds no key that brokers or CLIs trust for authorization. Credentials are sealed with hybrid post-quantum encryption to on-prem Resource Brokers, to enrolled users, and optionally to the suite KyRecovery key. Every manifest is signed by Custodians offline, and brokers accept only work they can verify against that offline trust root.
+KyGuard is a SaaS PAM and just-in-time access platform with self-hosted deployment support, comparable to BeyondTrust Password Safe plus Entitle, built on `ky_server_base`. The Control Plane stores, relays, schedules nudges and reports, but never holds a plaintext credential and holds no key that brokers or CLIs trust for authorization. Credentials are sealed with hybrid post-quantum encryption to on-prem Resource Brokers, to enrolled users, and optionally to the suite KyRecovery key. Every manifest is signed by Custodians offline, and brokers accept only work they can verify against that offline trust root.
 
 Owner requirements and where they land:
 
@@ -26,24 +26,26 @@ Owner requirements and where they land:
 | Session proxy and recording | 3 | §5, D.4 |
 | JIT permissions like Entitle | 4 | §6, D.5 |
 
-Phase names used throughout: Phase 0 Foundation; Phase 1A Vault and rotation slice; Phase 1B SQL, Windows and dependencies; Phase 1C Scripting and browser crypto; Phase 2 Discovery and reporting; Phase 3 Session proxy and recording; Phase 4 JIT; Phase 5 Enterprise hardening.
+Phase names used throughout: Phase 0 Foundation; Phase 1A Vault and rotation slice; Phase 1B SQL, Windows and dependencies; Phase 1C Scripting and browser compiler; Phase 2 Discovery and reporting; Phase 3 Session proxy and recording; Phase 4 JIT; Phase 5 Enterprise hardening.
 
 ## 2. Architecture and trust boundaries
-One repository, `kyguard-server`, cloned from `ky_server_base`, ships three binaries:
+One repository, `kyguard-server`, builds the Control Plane, Resource Broker, independent browser vault, and offline Custodian utility.
 - `kyguard-server` (Control Plane): the base HTTP server, store, SSO, SCIM and backup, plus KyGuard's API, web UI and a separate broker TLS listener (§4.1). Holds ciphertext envelopes, metadata, the audit chain and the internal broker CA. Holds no manifest-signing key.
 - `kyguard-broker` (Resource Broker): a Linux systemd daemon inside the target network. Holds its own TLS, signing and encryption keys and a local journal. Connects outbound to the Control Plane. Runs the rotation schedule itself and performs rotations and checkouts.
-- `kyguard-cli`: a separately distributed, signed binary. Used for deployment init, all Custodian signing, user key enrollment, vaulting, checkout and approvals. In Phase 1A all plaintext credential handling on the user side happens here (§10).
+- Browser vault (§10.1): independently delivered static assets, using the API for key enrollment and vault operations. The browser handles user keys, signatures and plaintext credentials locally.
+- Offline Custodian signing utility (`kyguard-cli`): bootstraps the deployment and signs manifests. A general-purpose user CLI is a later API client.
 
-Connections: browser and CLI to the Control Plane over HTTPS (cookie or Bearer session); browser to the IdP over OIDC; IdP to the Control Plane over SCIM; broker to the Control Plane outbound only, over mutual TLS (§4.1); broker to targets (AD over LDAPS, Linux over SSH in 1A).
+Connections: trusted browser client to the Control Plane over HTTPS (cookie session, with the Bearer API available to automation); browser to the IdP over OIDC; IdP to the Control Plane over SCIM; broker to the Control Plane outbound only, over mutual TLS (§4.1); broker to targets (AD over LDAPS, Linux over SSH in 1A).
 
 Trust boundaries:
 
 | Component compromised | What the attacker gets | What they cannot do |
 |---|---|---|
 | Control Plane database or backup | Inventory, attributes, schedules, audit records, ciphertext | Decrypt any credential; forge any manifest, transaction or receipt |
-| Control Plane at runtime | The above, plus: deny service, withhold or delay messages, lie in reports and the web UI | Add a recipient, requester, target or broker; change a policy or schedule; decrypt credentials (the 1A web UI handles no plaintext) |
+| Control Plane at runtime | The above, plus: deny service, withhold or delay messages, lie in reports and the web UI | Add a recipient, requester, target or broker; change a policy or schedule; decrypt credentials when browser code is delivered independently (§10.1) |
 | One broker | Plaintext of credentials of accounts in its pool, in memory during rotation and checkout | Act for other pools; sign as a Custodian |
-| A user's `kyguard-cli` key file plus passphrase | Credentials that user is a recipient of, or can check out under policy | Anything beyond that user's grants |
+| A user's unlocked KyGuard browser key | Credentials that user is a recipient of, or can check out under policy | Anything beyond that user's grants |
+| Trusted browser distribution or unlocked browser | Secrets processed on that browser; a compromised KyIdentity origin can expose the app subkey | Sign as an offline Custodian |
 | KyRecovery store | Nothing; it holds capsules sealed to the recovery key | Decrypt without the custodians' Shamir shares |
 
 Honest boundary for 1A: each pool has one broker and there is no broker-to-broker channel. A compromised Control Plane cannot forge, roll back or equivocate signed objects (§3.7), but it can delay delivery of a newer manifest, such as a key revocation, until it is delivered by other means.
@@ -117,8 +119,8 @@ RecoveryKeyManifest body: recovery_key_id (enc_key_id), recovery_pubkey (b64, 12
 Rules:
 1. Custodians sign every manifest (`CustodianSetManifest`, `RecoveryKeyManifest`, `BrokerPoolManifest`, `PolicyManifest`, `KeyEnrollmentManifest`) with `kyguard-cli`, meeting the threshold M of the persisted custodian set. M = 1 of N = 1 is allowed; the web UI and `kyguard-cli init` warn about it. Brokers and `kyguard-cli` verify every manifest against the persisted `CustodianSetManifest` and nothing else.
 2. Init: `kyguard-server init` creates the internal broker CA and the broker listener's server certificate (§4.1); it creates no signing key. Custodians run `kyguard-cli init` on an offline machine with the KyRecovery public key and topology; it creates the custodian key files, the two manifests and the bundle, and prints `bootstrap_fingerprint`. The operator imports the bundle with `kyguard-server import-bundle`.
-3. Every `kyguard-cli` pins the fingerprint out of band with `kyguard-cli trust <fingerprint>` before it accepts any manifest or opens any secret, and verifies the bundle against it. It persists the verified epoch and digest high-water mark per `(type, scope.id)` before it signs or seals anything, and rejects lower epochs and same-epoch forks by the broker's rule (§3.7).
-4. Before signing, each Custodian checks identities through a channel independent of the Control Plane: for a pool manifest, each broker's `broker_id`, `sig_key_id`, `enc_key_id` and certificate SHA-256 as printed by `kyguard-broker pair`; for a `KeyEnrollmentManifest`, the `issuer`, `subject`, `principal_id`, `sig_key_id` and `enc_key_id` as printed by `kyguard-cli enroll` on the user's machine. `kyguard-cli sign` shows the decoded object: principal IDs resolved to `issuer`/`subject` from verified `KeyEnrollmentManifest`s, the `TargetDescriptor` recomputed and shown when its digest matches the policy's, and every label the Control Plane supplied marked unverified.
+3. Every `kyguard-cli` pins the fingerprint out of band with `kyguard-cli trust <fingerprint>` before it accepts any manifest or opens any secret, and verifies the bundle against it. The browser uses the fingerprint from its independently delivered configuration. Both persist the verified epoch and digest high-water mark per `(type, scope.id)` before signing or sealing, and reject lower epochs and same-epoch forks (§3.7).
+4. Before signing, each Custodian checks identities through a channel independent of the Control Plane: for a pool manifest, each broker's `broker_id`, `sig_key_id`, `enc_key_id` and certificate SHA-256 as printed by `kyguard-broker pair`; for a `KeyEnrollmentManifest`, the `issuer`, `subject`, `principal_id`, `sig_key_id` and `enc_key_id` as shown with the user’s signed enrollment draft. `kyguard-cli sign` shows the decoded object: principal IDs resolved to `issuer`/`subject` from verified `KeyEnrollmentManifest`s, the `TargetDescriptor` recomputed and shown when its digest matches the policy's, and every label the Control Plane supplied marked unverified.
 5. Custodian quorum loss: a host administrator runs `kyguard-broker custodian-repin --bootstrap-bundle <new>` on each broker and `kyguard-cli trust` on each CLI. This is audited and is the only way to replace the trust root without the old quorum.
 6. Custodian keys in 1A are Argon2id-wrapped software key files on offline machines. Hardware-held custodian keys wait for tokens that support ML-DSA.
 
@@ -234,10 +236,10 @@ Current envelope. This is the only definition. Managed account: the highest `sec
 ### 3.6 Release by checkout mode (normative)
 - `proxy_only`: rejected in Phase 1A (§3.4).
 - `ephemeral`: no user is a standing recipient. Checkout and rotation serialize on the broker's per-account journal state.
-  1. The requester signs a `vault_checkout` with `kyguard-cli`; approvers sign `D(tx)` with `kyguard-cli approve`. The Control Plane relays it.
+  1. The requester signs a `vault_checkout` in the browser. Approvers review the target, requester and lease duration, then sign `D(tx)`. The Control Plane relays it through the API.
   2. The broker runs §3.4, sends a single-use challenge, and verifies a `PossessionProof` with `purpose: "deliver"` bound to `D(tx)`. A failed proof persists nothing and opens nothing.
   3. In one journal transaction the broker re-checks expiry, the current policy, the current envelope version and that no lease or rotation is open, then burns `request_id` and opens the lease `{request_id, tx_digest: D(tx), account_id, secret_version, target_descriptor_digest, cnf_pub, enc_key_id, opened_at, expires_at, state: "active"}`. It mirrors the lease to `checkout_leases` (at most one non-closed lease per account).
-  4. Only after the lease is durable, the broker unwraps the DEK and verifies the credential once at the pinned target; on failure it delivers nothing, closes the lease and quarantines the account (§4.6). On success it wraps the DEK to `enc_key_id` using the DEK-wrap AAD with `recipient_type: "user"`, and returns the wrap through the Control Plane. It is not appended as a receipt. The CLI decrypts locally.
+  4. Only after the lease is durable, the broker unwraps the DEK and verifies the credential once at the pinned target; on failure it delivers nothing, closes the lease and quarantines the account (§4.6). On success it wraps the DEK to `enc_key_id` using the DEK-wrap AAD with `recipient_type: "user"`, and returns the wrap through the Control Plane. It is not appended as a receipt. The browser decrypts locally.
   5. While the lease is open, scheduled rotations are deferred. Check-in by the holder (a `PossessionProof` with `purpose: "checkin"` from the same `cnf_pub`) or expiry moves the lease to `rotation_pending`. Its cleanup rotation (attempts keyed by the lease `request_id`, §3.4) is then the only allowed rotation path for the account. It stays authorized after the transaction expires and continues after restart; only an attempt that appends `release` closes the lease. If the target refuses because of its minimum password age, the next attempt waits for the cleanup `next_attempt_at`, which carries across policy epochs (§4.4), and the UI and audit record show that the checked-out credential stays live until then.
 - `standing`: standing recipients hold user wraps and decrypt locally. Wraps are added only by a `release` receipt (when `auto_standing_release` is true) or by a `rewrap_user` receipt from a signed `standing_release`. Unattended membership sync is deferred (D.1).
 - Vaulted accounts have no checkout: recipients decrypt locally, and the Control Plane audits each envelope fetch.
@@ -254,7 +256,7 @@ Checks by object kind:
 3. Envelopes and receipts: checked against §3.5 (recipient set, sequence and previous head) before the broker unwraps or signs anything.
 
 ### 3.8 Golden vectors (Phase 0)
-`internal/pqcrypto/testdata/vectors/` holds JSON vectors for exactly the types built: `bootstrap`, `custodian_set`, `recovery_key`, `pool`, `policy`, `key_enrollment` (with a user self-signature and custodian signatures over one digest), `tx` (all four actions, with approvals), `envelope`, `receipt`, `target` and `pop`, plus `sig_key_id`, `enc_key_id` and both AAD encodings. Each vector gives inputs, canonical bytes, digest and expected verdict. Negative vectors: counters with leading zeros, signs, or above `2^63-1`; duplicate keys; malformed UTF-8; base64 with padding; AAD boundary-shift attempts; one of two signature halves invalid; wrong domain type; a digest that covered `signatures` or `approvals`; M−1 custodian signatures; a signature whose `signer_role` does not match its key; manifest epoch rollback and same-epoch equivocation; `proxy_only` policy; unknown `action_type`; `standing_release` outside the standing list or with a stale `receipt_head_hash`; a possession proof over another transaction's digest or with `signer_role` other than `cnf`; `enroll` from a principal outside `enroller_principal_ids`; user recipient in an initial managed envelope; recovery recipient present with escrow disabled, absent with escrow enabled, or with a `recovery_epoch` other than the persisted one; `rewrap_user` on a rotation envelope before `release`; a user-signed managed envelope with no matching `enroll`; receipt fork and truncation; `interval_seconds` of 0; a new receipt, a new envelope or a wrap by or to a revoked pool member. Positive vectors include a historical receipt by a revoked member, an `abort` (`superseded_by_reenrollment`) by the active broker on an unterminated envelope sealed to a revoked member, a user-signed enrollment candidate matching its `enroll`, and `rewrap_user` after `vault_commit`. An `abort` on a completed envelope is a negative vector. Vectors are consumed by Go tests now and by the browser build in Phase 1C.
+`internal/pqcrypto/testdata/vectors/` holds JSON vectors for exactly the types built: `bootstrap`, `custodian_set`, `recovery_key`, `pool`, `policy`, `key_enrollment` (with a user self-signature and custodian signatures over one digest), `tx` (all four actions, with approvals), `envelope`, `receipt`, `target` and `pop`, plus `sig_key_id`, `enc_key_id` and both AAD encodings. Each vector gives inputs, canonical bytes, digest and expected verdict. Negative vectors: counters with leading zeros, signs, or above `2^63-1`; duplicate keys; malformed UTF-8; base64 with padding; AAD boundary-shift attempts; one of two signature halves invalid; wrong domain type; a digest that covered `signatures` or `approvals`; M−1 custodian signatures; a signature whose `signer_role` does not match its key; manifest epoch rollback and same-epoch equivocation; `proxy_only` policy; unknown `action_type`; `standing_release` outside the standing list or with a stale `receipt_head_hash`; a possession proof over another transaction's digest or with `signer_role` other than `cnf`; `enroll` from a principal outside `enroller_principal_ids`; user recipient in an initial managed envelope; recovery recipient present with escrow disabled, absent with escrow enabled, or with a `recovery_epoch` other than the persisted one; `rewrap_user` on a rotation envelope before `release`; a user-signed managed envelope with no matching `enroll`; receipt fork and truncation; `interval_seconds` of 0; a new receipt, a new envelope or a wrap by or to a revoked pool member. Positive vectors include a historical receipt by a revoked member, an `abort` (`superseded_by_reenrollment`) by the active broker on an unterminated envelope sealed to a revoked member, a user-signed enrollment candidate matching its `enroll`, and `rewrap_user` after `vault_commit`. An `abort` on a completed envelope is a negative vector. The browser build compiles the same Go implementation that consumes these vectors.
 
 ## 4. Brokers, rotation and connectors
 ### 4.1 Broker deployment, pairing and listener (Phase 1A, normative)
@@ -328,13 +330,13 @@ Minimum password age. At enrollment the broker reads the domain's `minPwdAge` (S
 - The known minimum-age deadline carries across policy epochs, for occurrences and lease cleanup alike.
 
 ### 4.5 Enrollment and re-enrollment (Phase 1A, normative)
-`kyguard-cli vault enroll --account <id>` fills an empty vault and is the only quarantine exit. Both use the `enroll` transaction (§3.4), signed by a principal in `enroller_principal_ids` with fresh step-up. For a managed account being re-enrolled, the operator must first reset the password at the target or recover it through KyRecovery, because only the broker has ever held it.
-1. Reserve. The CLI generates the `enroll` `request_id` first and sends it with the reserve call. One Control Plane transaction, allowed only with fresh step-up and an account that is quarantined or has no open rotation, moves the account's `rotation_locks` row to `operation_id = opid(request_id, 0)` (§3.4) and reserves a new `secret_version` (§3.5). A reservation still `reserved` 15 minutes after this step expires: the Control Plane releases only that lock by `operation_id` and restores the previous holder, if any (the stuck rotation). An `accepted` reservation never expires.
-2. Seal and verify. The CLI verifies the policy and pool manifests against its pinned bundle, reads the credential, seals the candidate `managed` envelope to the active broker (and the recovery key if escrow is enabled), and signs `enroll` over its digest and version. The broker recomputes `operation_id` from the signed transaction and journals the candidate, the transaction and its acceptance (fsync). The Control Plane marks the reservation `accepted` by CAS from `reserved` on `operation_id`; the CAS fails if the reservation has expired. The broker journals `accept_ack` (fsync), burns `request_id`, journals the start of verification (fsync), and verifies the credential once at the pinned target (AD bind, or SSH login after the host-key check), reading the minimum password age. Without `accept_ack` it never binds and the attempt ends `abort` (`enrollment_failed`). After a crash with verification started and no result, the enrollment fails without a second bind.
+Managed-account enrollment fills an empty vault. Re-enrollment is the quarantine exit. Both use the `enroll` transaction (§3.4), signed by a principal in `enroller_principal_ids` with fresh step-up. For a managed account being re-enrolled, the operator must first reset the password at the target or recover it through KyRecovery, because only the broker has ever held it.
+1. Reserve. The browser generates the `enroll` `request_id` first and sends it with the reserve call. One Control Plane transaction, allowed only with fresh step-up and an account that is quarantined or has no open rotation, moves the account's `rotation_locks` row to `operation_id = opid(request_id, 0)` (§3.4) and reserves a new `secret_version` (§3.5). A reservation still `reserved` 15 minutes after this step expires: the Control Plane releases only that lock by `operation_id` and restores the previous holder, if any (the stuck rotation). An `accepted` reservation never expires.
+2. Seal and verify. The browser verifies the policy and pool manifests against its pinned bundle, reads the credential, seals the candidate `managed` envelope to the active broker (and the recovery key if escrow is enabled), and signs `enroll` over its digest and version. The broker recomputes `operation_id` from the signed transaction and journals the candidate, the transaction and its acceptance (fsync). The Control Plane marks the reservation `accepted` by CAS from `reserved` on `operation_id`; the CAS fails if the reservation has expired. The broker journals `accept_ack` (fsync), burns `request_id`, journals the start of verification (fsync), and verifies the credential once at the pinned target (AD bind, or SSH login after the host-key check), reading the minimum password age. Without `accept_ack` it never binds and the attempt ends `abort` (`enrollment_failed`). After a crash with verification started and no result, the enrollment fails without a second bind.
 3. Commit. On success, in one journal transaction the broker voids any stuck intent, signs `abort` (`superseded_by_reenrollment`) at the next sequence number of each unterminated envelope of the account (§3.5), and signs `vault_commit` for the new envelope. Completed envelopes keep their chains and are superseded by the higher `secret_version`. One Control Plane transaction then appends these receipts, advances `current_envelope_id`, and deletes the `rotation_locks` row only if it is held by the enrollment `operation_id` or by the `operation_id` of the stuck run receiving the `abort`; it never deletes any other lock. Existing receipts are kept. Once the broker has accepted an attempt it is resumable from the journal and never binds a second time; if the acknowledgement is lost, the broker re-sends the journaled receipts. A re-enrollment may close an open lease, whether its cleanup caused the quarantine or it was inherited from a revoked broker, in the same commit as the new `vault_commit`, but only after a verified reset at the pinned target. A recovered copy of the same password is not enough. Reset evidence: if the broker can unwrap the current envelope, the supplied credential must differ from it; otherwise AD `pwdLastSet` (SSH: the `chage -l` last-change date) must be later than the lease's `opened_at`. Without that evidence the lease stays open and enrollment is refused (§3.4).
 4. Failure. `abort` (`enrollment_failed`) is appended to the new envelope only and audited; the same transaction releases the enrollment's lock and restores the previous holder, if any. A stuck account stays quarantined; a healthy account's current envelope and schedule are unchanged.
 
-The enrolled envelope is current and is the baseline for the next rotation. It counts as a vault commit, not as rotation evidence. Vaulted accounts use `kyguard-cli vault put --account <id>`: the CLI seals a `vaulted` envelope to the allowed users (and the recovery key if escrow is enabled) and appends `vault_commit` itself.
+The enrolled envelope is current and is the baseline for the next rotation. It counts as a vault commit, not as rotation evidence. For vaulted accounts, the client seals a `vaulted` envelope to the allowed users (and the recovery key if escrow is enabled) and appends `vault_commit` through the API.
 
 ### 4.6 Stop after first authentication failure (Phase 1A, normative)
 The broker verifies the current credential before every rotation (the pre-mutation `P_old` bind or login) and before every checkout delivery (§3.6). A deterministic authentication failure there (AD `52e`, SSH authentication denied) stops after that one attempt, sets health `auth_failed` and quarantines the account; enrollment failures are handled by §4.5. The broker never retries a credential, because one attempt may use up the target's remaining lockout allowance. A failed `P_new` probe is handled by §4.3 and quarantines.
@@ -406,7 +408,7 @@ All main-mux routes register through one registry function `route(class, pattern
 
 `GET /api/settings` authenticates internally (`AuthenticateRequest` in `internal/api/settings_handlers.go`). In KyGuard every private field (`scim_enabled`, `db_driver`, `extra_settings` including the SCIM token) requires an active session; a pending session, by cookie or Bearer, gets only the public payload. The base's `TestSettingsExposureByRole` expectation is updated to match.
 
-### 7.6 `kyguard-cli` login
+### 7.6 Optional CLI login after the API
 `kyguard-cli login` starts the normal SSO login with a loopback port and a PKCE challenge it generated. After the callback, the Control Plane redirects the browser to `http://127.0.0.1:<port>/cb` with a one-time code valid for 60 seconds, bound to the verified login (§7.2 session binding). The CLI exchanges code and verifier at `POST /api/auth/cli/exchange` for a pending session token, then completes TOTP step-up in the terminal.
 
 ## 8. Reporting
@@ -432,7 +434,7 @@ Phase 2 adds discovery scans and CSV/JSON import (discovered accounts land Red),
 
 ## 9. Repository, data and recovery
 ### 9.1 Repository layout (Phases 0 and 1A)
-- `cmd/server` (base server plus `init`, `import-bundle`, `break-glass create|reset-totp`), `cmd/broker` (`pair`, `custodian-repin`, daemon), `cmd/cli` (`init`, `trust`, `sign`, `enroll`, `login`, `vault`, `checkout`, `approve`, `rotate`).
+- `cmd/server` (base server plus `init`, `import-bundle`, `break-glass create|reset-totp`), `cmd/broker` (`pair`, `custodian-repin`, daemon), `cmd/cli` (offline Custodian `init`, `trust`, `sign`), `cmd/browser-vault` (Go WASM for the trusted browser client).
 - New packages: `internal/pqcrypto` (§3), `internal/brokerproto` (listener, channel messages, pairing), `internal/broker` (journal, verification, scheduler, rotation machine, leases), `internal/connectors` (`ad_ldaps`, `ssh_passwd`), `internal/reporting` (§8).
 - Changed base packages: `internal/auth`, `internal/sso`, `internal/scim`, `internal/api` (§7), `internal/store` (tables, audit append, `migrationTables`), `internal/backup` (§9.4), `web` (§10).
 
@@ -442,6 +444,7 @@ Phase 2 adds discovery scans and CSV/JSON import (discovered accounts land Red),
 | Base, kept | `users` (+ `sso_issuer`, `account_type`), `groups`, `group_members`, `sessions` (+ `stage`, `stepup_at`), `audit_records` (+ `seq`, `prev_hash`, `hash`), `server_settings` and the other base tables in `migrationTables` |
 | Auth | `mfa_factors`, `totp_attempts`, `cli_login_codes` |
 | Trust | `bootstrap_bundles`, `custodian_set_manifests`, `recovery_key_manifests`, `key_enrollment_manifests` |
+| Browser vault | `browser_keys` stores the sealed user bundle and enrollment draft (§10.1) |
 | Brokers | `broker_pools`, `brokers` (+ pinned CA SHA-256), `pool_manifests`, `pairing_tokens`, `broker_jobs`, `operation_intents` (pairing, deposit, pin; §9.3) |
 | Vault | `assets`, `accounts` (+ `owner_user_id`, `current_envelope_id`, `min_password_age_seconds`), `target_descriptors`, `policy_manifests`, `policy_drafts`, `secret_envelopes`, `envelope_receipts`, `rotation_locks`, `rotation_runs`, `checkout_leases`, `access_transactions`, `approvals` |
 | Reporting | `attribute_definitions`, `attribute_values`, `audit_chain_head` |
@@ -473,15 +476,49 @@ Facts on `origin/master`: `backup.Collect` (`internal/backup/payload.go`) snapsh
 Recovery-key migration is deferred (D.7). When it returns, cutover uses `recoveryclient.RepinRecoveryKey` under the base pin lock, and `SyncRecoveryKey` needs a re-pin path, because today it refuses a local file naming another key (`ErrKeyMismatch`).
 
 ## 10. User interface
-The web UI follows the `ky_server_base` and `ky-ui` standards: React 19, TypeScript and Vite PWA, one left navigation rail, Busnes light and dark themes. Phase 1A web screens, none of which handle plaintext credentials or sign anything:
+The web UI follows the `ky_server_base` and `ky-ui` standards: React 19, TypeScript and Vite PWA, one left navigation rail, Busnes light and dark themes. Phase 1A web screens:
 1. Dashboard: traffic-light totals and percentages, health counts, quarantines, break-glass sessions, and a warning when the custodian threshold is 1 of 1.
 2. Accounts: inventory with class and health badges, attribute filters, owner, descriptor details (endpoint, CA and host-key digests), minimum password age, CSV/JSON export.
 3. Attributes: definitions for accounts and users; SCIM-sourced ones read-only.
 4. Policies: create and edit policy drafts, shown with their digest for Custodian signing in `kyguard-cli`.
 5. Brokers and jobs: pools, pairing tokens, broker fingerprints, rotation runs and their states, checkout leases.
 6. Admin: SSO, SCIM, audit log with chain verification, backup.
+7. Vault (§10.1): browser key enrollment, unlock, managed credential enrollment, temporary checkout, approval and check-in.
 
-`kyguard-cli` does everything involving plaintext, user keys or signatures in 1A: trust pinning, key enrollment, vault enroll and put, checkout and check-in, `standing_release`, approvals, manual rotation, and Custodian signing. Browser crypto (`pqcrypto.wasm`) and the in-browser TypeScript compiler arrive in Phase 1C (D.9).
+### 10.1 Browser vault
+
+1. Build the API first. The independently deployed browser client uses the same
+   signed objects and broker verification as any later user CLI. Reuse Go
+   `internal/pqcrypto` in WASM. Custodian signing and broker private keys stay
+   separate from ordinary browser keys.
+2. The browser verifies the bootstrap bundle against a fingerprint delivered
+   with its trusted configuration. Verify signed policies, target descriptors,
+   envelopes and receipt chains before using a credential. Persist manifest
+   high-water marks scoped to the deployment and view. The Control Plane
+   cannot write browser assets or configuration. See
+   [Browser vault deployment](BROWSER-VAULT.md).
+3. Generate KyGuard-specific user keys in the browser for hybrid ML-DSA-65 and
+   Ed25519 signing and X-Wing encryption. The Control Plane stores one opaque
+   private-key bundle per SSO identity, with the canonical user-self-signed
+   enrollment draft. Store the bundle and draft atomically, under an active
+   session with fresh step-up. Retries can repeat an identical creation. Public
+   key activation still requires the offline Custodian quorum.
+4. The version 1 bundle uses AES-256-GCM with a random 12-byte nonce. Its
+   plaintext is the three 32-byte seeds concatenated in ML-DSA-65, Ed25519,
+   X-Wing order. Its AAD is JCS of
+   `["kyguard/browser-key/1", D(enrollment), method, keyring_version, key_version]`.
+   `passphrase` uses a random 16-byte salt and Argon2id (64 MiB, three passes,
+   four lanes), with empty ring and key version zero in AAD. `kyidentity` uses
+   the 32-byte KyIdentity app subkey through HKDF-SHA256 with empty salt and
+   the AAD as info. Its ring and version identify the exact app subkey.
+5. Use KyIdentity's X-Wing OIDC handoff to deliver only the KyGuard app subkey.
+   The browser validates the issuer, tenant, subject, client ID, redirect,
+   authorization code, ephemeral recipient, ring and versions, and nonce.
+   The Control Plane handles PKCE and the pending SSO session. KyGuard's TOTP
+   step-up still gates its vault routes. The handoff packet stays in the URL
+   fragment until read and cleared by the browser. The browser keeps unlocked
+   keys and credentials in memory. Only the short-lived handoff seed persists
+   across the sign-in redirect.
 
 ## 11. Threat model
 Result of the single signing authority: a compromised Control Plane can deny service and lie in reports, but it cannot add a recipient, requester, target or broker. Each line below names a threat and the section that answers it.
@@ -515,18 +552,18 @@ Build checklist. Each item references its normative section; the section is the 
 - [ ] `internal/pqcrypto`: encoding, digests, `HybridSig`, key IDs, both AADs and the HPKE sender (§3.1); header and the object types of §3.2–§3.5; verification rules usable by broker and CLI (§3.7).
 - [ ] Golden vectors (§3.8).
 - [ ] `kyguard-server init` (internal CA, listener certificate) and `import-bundle`; `kyguard-cli init`, `trust` and `sign` for every built manifest type (§3.2).
-- [ ] `kyguard-cli` user key files and `KeyEnrollmentManifest` submission with self-signature, for Custodian signing (§3.2, §3.3).
+- [ ] API for sealed browser user bundles and self-signed `KeyEnrollmentManifest` drafts, with browser unlock and KyIdentity suite keyring support (§10.1).
 - [ ] Identity: `users.sso_issuer`; issuer-aware `AdoptSCIMUser`; generic OIDC routes; `max_age=0`, `auth_time`, `amr`, `acr`; MFA assertion rule; per-app admin without fallback; SCIM admin refusal; session binding and logout fences; SAML removal (§7.2).
 - [ ] `mfa_factors`, pending sessions, enrollment rule, TOTP exchange, attempt limits, per-action step-up (§7.3).
 - [ ] Break-glass create, reset and login (§7.4).
-- [ ] Route registry and classification table (§7.5); CLI login (§7.6).
+- [ ] Route registry and classification table (§7.5).
 - [ ] Chained audit append on both drivers, transaction rules, fixed inherited paths (§9.3).
 - [ ] KyGuard tables in `migrationTables`; seal gate on every entry point; restore contract (§9.4).
 
 Acceptance tests (all run with `go test -race ./...` on SQLite and on PostgreSQL through the base's `internal/testdb`):
 1. Every positive vector verifies and every negative vector is rejected with the expected error (§3.8).
 2. A manifest with only the ML-DSA or only the Ed25519 half, with M−1 custodian signatures, or signed by a key outside the custodian set is rejected; with M valid signatures it is accepted; a 1-of-1 set is accepted.
-3. `kyguard-cli` without a `trust` pin, or with a different fingerprint, refuses every manifest and opens no secret; after it has seen a manifest epoch, it refuses a lower epoch or a same-epoch fork for that `(type, scope.id)`.
+3. User and Custodian clients with an absent or different trust pin refuse manifests and secrets. Once they have seen a manifest epoch, they reject a lower epoch or a same-epoch fork for that `(type, scope.id)`. The browser refuses a keyring handoff with a changed OAuth transcript or a legacy sender marker.
 4. SSO login yields a pending session; every route classed `session` refuses it; after a valid TOTP the old token is dead and the new one works; the active session expires after 12 hours. With a pending session, by cookie and by Bearer, `GET /api/settings` returns only the public payload.
 5. Replaying the same TOTP code fails. After 5 failures the pending session is gone; after 10 failures in 15 minutes for a user, the next code fails even when correct.
 6. A token whose `amr` is only `otp` (no `mfa`, no configured `acr`) cannot enroll a factor, and an audit event is written.
@@ -573,7 +610,7 @@ Acceptance tests. Connector tests run in CI against Samba AD (LDAPS) with `min-p
 
 ### Later phases (summary)
 - Phase 1B, SQL, Windows and dependencies: Windows Service broker, Kerberos, multi-DC checks, functional accounts, MS SQL, PostgreSQL and Oracle connectors, dependency updates. §4.7, D.2.
-- Phase 1C, scripting and browser crypto: TypeScript engine, JSON/REST connector, calling scripts on targets and brokers, `pqcrypto.wasm`, browser compiler. §4.7, D.3, D.9.
+- Phase 1C, scripting and browser compiler: TypeScript engine, JSON/REST connector, calling scripts on targets and brokers, browser compiler. §4.7, D.3, D.9.
 - Phase 2, discovery and reporting: discovery, import, full attributes, report builder, schedules, PDF. §8.4, D.10.
 - Phase 3, session proxy and recording. §5, D.4.
 - Phase 4, JIT. §6, D.5.
@@ -643,8 +680,8 @@ These carry forward the v1.9 and v2.0 design for later phases, compressed. Each 
 ### D.8 External audit anchor
 - An outbox of signed `(seq, head_hash)` checkpoints delivered to a sink outside the database's trust (object storage with retention lock, SIEM, KyRecovery), so truncation of log and head together is detected.
 
-### D.9 Browser crypto (Phase 1C)
-- `pqcrypto.wasm` compiled from `internal/pqcrypto`, lazy-loaded only on views that need it, built in CI with a size gate, verified against the same golden vectors. Enables browser key setup and checkout. A compromised Control Plane can serve malicious JS, so Custodian signing stays in `kyguard-cli`.
+### D.9 Browser compiler (Phase 1C)
+- The browser TypeScript compiler follows the vault client in §10.1. A general-purpose user CLI can consume the full API once the browser workflows are built.
 
 ### D.10 Reporting extras (Phases 2 and 5)
 - Attribute entities `asset`, `dependency`, `broker`, `broker_pool`, `jit_resource`, `policy`; types `regex_string`, `multi_enum`, `boolean`, `integer`, `decimal`, `date`, `user_ref`, `group_ref`, `url`; sensitivity labels (`standard`, `restricted_hr_pii`); asset-to-account inheritance materialized in `effective_attribute_values`.

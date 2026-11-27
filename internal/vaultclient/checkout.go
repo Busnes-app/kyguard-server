@@ -1,4 +1,4 @@
-package cli
+package vaultclient
 
 import (
 	"errors"
@@ -13,7 +13,7 @@ import (
 )
 
 // Checkout is a signed vault_checkout transaction and the fresh cnf key that must sign its
-// possession proofs (§3.6 step 1). The cnf key never leaves the CLI.
+// possession proofs (§3.6 step 1). The cnf key never leaves the client.
 type Checkout struct {
 	RequestID pqcrypto.UUID
 	Tx        []byte
@@ -26,11 +26,11 @@ type Checkout struct {
 func NewTransaction(tr *pqcrypto.Trust, a pqcrypto.Action, principal pqcrypto.UUID, key *pqcrypto.SigningKey, now time.Time) (*Checkout, error) {
 	pol, pd := tr.Policy(a.AccountID)
 	if pol == nil || pol.AccountKind != pqcrypto.KindManaged {
-		return nil, errors.New("kyguard-cli: no verified managed policy for the account")
+		return nil, errors.New("kyguard: no verified managed policy for the account")
 	}
 	pool := tr.Pool(pol.PoolID)
 	if pool == nil || pool.Active() == nil {
-		return nil, errors.New("kyguard-cli: the account's pool has no active broker")
+		return nil, errors.New("kyguard: the account's pool has no active broker")
 	}
 	id, err := uuid.NewV7()
 	if err != nil {

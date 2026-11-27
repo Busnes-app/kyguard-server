@@ -546,3 +546,20 @@ Numbered separately: these came from the parallel crypto stack.
     Saving and deleting a draft need a step-up within five minutes. Fetching a draft, posting
     signatures, and `GET /api/principals` and `GET /api/trust` need none: the signatures are
     what authorize a policy, as for `POST /api/manifests` (16a).
+
+
+## Browser vault and suite keyring
+
+213. §2, §7.6, §10.1 (SaaS sequencing). Build the vault API and the independently
+     delivered browser client in the initial vault release. A user CLI follows
+     the API. The existing offline Custodian tool remains a separate signing role.
+214. §10.1 (shared secret store). KyIdentity's app subkey wraps KyGuard's own user
+     seeds through HKDF. KyGuard stores only the encrypted user bundle and the
+     enrollment draft, scoped to the SSO account. The app subkey never leaves the
+     browser and never serves as a Custodian key. A separate passphrase remains
+     available when creating a key. The initial bundle is write-once and exact
+     retries are idempotent.
+215. §10.1 (trusted browser origin). Use the independently administered HTTPS edge
+     and deployment fingerprint in [Browser vault](BROWSER-VAULT.md). The optional
+     keyring handoff pins the KyIdentity organization even on single-tenant
+     instances, where OIDC omits that claim.

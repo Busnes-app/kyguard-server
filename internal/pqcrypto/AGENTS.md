@@ -7,7 +7,7 @@ JSON field types, RFC 8785 JCS (`canonical/`), the domain digest `D(obj)`,
 DEK-wrap AADs, the HPKE DEK wrap, the AES-256-GCM payload and `opid`. §3.2–§3.5 and §3.7:
 the signed header, the bundle and manifests (`manifests.go`, `trust.go`), transactions and
 possession proofs (`tx.go`), envelopes (`envelope.go`) and receipts (`receipt.go`). Used by
-the Control Plane, broker and CLI.
+the Control Plane, broker, offline utility and browser WASM client.
 
 ## Ownership
 Owns every byte KyGuard signs, hashes or seals. The spec is normative; this package
@@ -34,7 +34,7 @@ implements it and `docs/DECISIONS.md` records where the spec left a choice.
   (`world_test.go`) and are consumed against `context.json` only. Generators state each
   verdict themselves; the consumers (`vectors_test.go`, `contracts*_test.go`) run the real
   code and must not share generator logic.
-  Phase 0 vectors are Go-only; the browser build consumes them from Phase 1C.
+  The browser compiles the same implementation verified by the Go vectors.
 
 ## Work Guidance
 - A wire change is a vector change: regenerate, review the JSON diff, and add a negative
