@@ -11,7 +11,8 @@ Owns user interface components, service worker caching, PWA installation manifes
   a pinned bootstrap fingerprint. Use deployment-wide manifest watermarks across account
   views and tabs before signing or sealing. Retain verified digests for replay after
   Custodian rotation. Explicit vault lock clears the WASM keyring
-  handoff. Refresh vault key information before unlock and after a failed key upload.
+  handoff. Accept only browser-dispatched messages with an empty origin in the dedicated
+  vault worker. Refresh vault key information before unlock and after a failed key upload.
   For keyring setup and edge isolation, follow [Browser vault](../docs/BROWSER-VAULT.md).
 - Status colors use the shared palettes. Browser regressions measure every current named light palette against page and panel surfaces. Filled `.btn-danger` labels use the page color for named palettes except the Nord pair, which keeps `--button-text`; `browser/danger-button.spec.mjs` checks rest, hover and focus on a labelled diagnostic button in the real page.
 - Web themes default to Busnes light/dark following the OS until a browser-local choice is saved.

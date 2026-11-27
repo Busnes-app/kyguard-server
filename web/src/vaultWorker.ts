@@ -18,6 +18,9 @@ async function load(): Promise<void> {
 }
 
 self.onmessage = async (event: MessageEvent<{ id: number; input: object }>) => {
+  // The browser dispatches dedicated-worker messages with an empty origin.
+  if (!event.isTrusted || event.origin !== '') return;
+
   const { id, input } = event.data;
   try {
     runtime ??= load();

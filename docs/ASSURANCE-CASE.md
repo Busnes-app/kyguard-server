@@ -69,7 +69,8 @@ Out of scope: an attacker who runs code on the host or holds both the database a
    manifest epochs and digests across account views before signing or sealing.
    After Custodian rotation it replays only previously verified digests from
    retired sets.
-   Explicit vault lock clears the user's key and the KyIdentity app subkey.
+   The dedicated vault worker accepts browser-dispatched messages on its own
+   channel. Explicit vault lock clears the user's key and the KyIdentity app subkey.
    Custodian signing stays offline. The enrolled user's own bundle is scoped to
    the authenticated issuer and subject, and its AEAD commits to the signed
    enrollment. See [Browser vault](BROWSER-VAULT.md).

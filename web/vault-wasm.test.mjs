@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
+import { runInNewContext } from 'node:vm';
 
 const fixture = async (path) => JSON.parse(await readFile(new URL(path, import.meta.url), 'utf8'));
 const assets = new URL('./vault-dist/assets/', import.meta.url);
@@ -17,6 +18,17 @@ function call(action, input = {}) {
   if (result.error) throw new Error(result.error);
   return result.value;
 }
+
+test('the compiled vault worker ignores messages outside its native channel', async () => {
+  const name = (await readdir(assets)).find((file) => /^vaultWorker-.*\.js$/.test(file));
+  assert.ok(name, 'the vault build includes the worker');
+  const self = { postMessage: () => assert.fail('An untrusted message reached the vault runtime') };
+  runInNewContext(await readFile(new URL(name, assets), 'utf8'), { self });
+
+  const data = { id: 1, input: { action: 'lock' } };
+  await self.onmessage({ isTrusted: false, origin: '', data });
+  await self.onmessage({ isTrusted: true, origin: 'https://other.example', data });
+});
 
 test('the browser WASM uses the KyIdentity handoff to seal and unlock a KyGuard user key', async () => {
   const vector = await fixture('../internal/vaultclient/testdata/kyidentity-handoff.json');
