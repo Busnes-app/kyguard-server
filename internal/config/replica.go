@@ -27,7 +27,7 @@ func sharedFields(c *Config) [][2]string {
 	if c.SCIM.Enabled { // a disabled SCIM token is minted per process and means nothing
 		scimToken = c.SCIM.BearerToken
 	}
-	return [][2]string{
+	fields := [][2]string{
 		{"KY_APP_NAME", c.Server.AppName},
 		{"KY_APP_URL", c.Server.AppURL},
 		{"KY_ENV", c.Server.Environment},
@@ -58,6 +58,13 @@ func sharedFields(c *Config) [][2]string {
 		{"KY_BROKER_HOSTNAME", c.Broker.Hostname},
 		{"KY_MIN_BROKER_VERSION", c.Broker.MinVersion},
 	}
+	if c.Server.BrowserVault {
+		fields = append(fields, [2]string{"KY_BROWSER_VAULT", b(c.Server.BrowserVault)})
+	}
+	if c.SSO.KySignOnKeyringOrg != "" {
+		fields = append(fields, [2]string{"KY_KYSIGNON_KEYRING_ORG_ID", c.SSO.KySignOnKeyringOrg})
+	}
+	return fields
 }
 
 // ReplicaFingerprint maps each shared field name to HMAC-SHA256 under the encryption key, so

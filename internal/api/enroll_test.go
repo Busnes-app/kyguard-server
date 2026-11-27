@@ -12,10 +12,10 @@ import (
 	"github.com/Busnes-app/ky-primitives/recoverykey"
 
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
-	"github.com/Busnes-app/kyguard-server/internal/cli"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto/pqtest"
 	"github.com/Busnes-app/kyguard-server/internal/store"
+	"github.com/Busnes-app/kyguard-server/internal/vaultclient"
 )
 
 func TestEnrollmentRoutes(t *testing.T) {
@@ -52,7 +52,7 @@ func TestEnrollmentRoutes(t *testing.T) {
 		tr.Accept(m.Manifest)
 	}
 	reserve := func(who *pqtest.Principal, id pqcrypto.UUID) []byte {
-		r, err := cli.SignReservation(tr, acct, id, who.ID, who.Sig, time.Now())
+		r, err := vaultclient.SignReservation(tr, acct, id, who.ID, who.Sig, time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -65,7 +65,7 @@ func TestEnrollmentRoutes(t *testing.T) {
 		t.Fatalf("anonymous: %d", w.Code)
 	}
 	// Security review of #15: a session that is not an enroller takes no lock.
-	forged, _ := cli.SignReservation(tr, acct, reqID, alice.ID, bob.Sig, time.Now()) // claims alice, signed by bob
+	forged, _ := vaultclient.SignReservation(tr, acct, reqID, alice.ID, bob.Sig, time.Now()) // claims alice, signed by bob
 	forged.SigKeyID, _ = alice.Sig.Public().SigKeyID()
 	forgedBody, _ := json.Marshal(forged)
 	for name, body := range map[string][]byte{
@@ -114,7 +114,7 @@ func TestEnrollmentRoutes(t *testing.T) {
 		t.Fatalf("state %s", s)
 	}
 
-	good, err := cli.SealEnrollment(tr, acct, reqID, 1, alice.ID, alice.Sig, []byte("pw"), time.Now())
+	good, err := vaultclient.SealEnrollment(tr, acct, reqID, 1, alice.ID, alice.Sig, []byte("pw"), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

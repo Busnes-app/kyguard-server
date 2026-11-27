@@ -12,10 +12,10 @@ import (
 	"github.com/Busnes-app/kyguard-server/internal/broker"
 	"github.com/Busnes-app/kyguard-server/internal/broker/brokerrig"
 	"github.com/Busnes-app/kyguard-server/internal/brokerproto"
-	"github.com/Busnes-app/kyguard-server/internal/cli"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto/pqtest"
 	"github.com/Busnes-app/kyguard-server/internal/store"
+	"github.com/Busnes-app/kyguard-server/internal/vaultclient"
 )
 
 // checkoutRig: an ephemeral policy, alice may check out (no approvals), bob is enrolled
@@ -60,10 +60,10 @@ func (c *checkoutRig) trust() *pqcrypto.Trust {
 }
 
 // tx signs an action as who and stores it on the Control Plane, as the submit route does.
-func (c *checkoutRig) tx(who *pqtest.Principal, a pqcrypto.Action) *cli.Checkout {
+func (c *checkoutRig) tx(who *pqtest.Principal, a pqcrypto.Action) *vaultclient.Checkout {
 	c.T.Helper()
 	a.AccountID = c.pol.AccountID
-	co, err := cli.NewTransaction(c.trust(), a, who.ID, who.Sig, c.now)
+	co, err := vaultclient.NewTransaction(c.trust(), a, who.ID, who.Sig, c.now)
 	if err != nil {
 		c.T.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func (c *checkoutRig) tx(who *pqtest.Principal, a pqcrypto.Action) *cli.Checkout
 	return co
 }
 
-func (c *checkoutRig) checkoutTx(ttl int64) *cli.Checkout {
+func (c *checkoutRig) checkoutTx(ttl int64) *vaultclient.Checkout {
 	return c.tx(c.alice, pqcrypto.Action{ActionType: pqcrypto.ActionVaultCheckout, SecretVersion: c.account(c.m).HighestCopied(),
 		EncKeyID: pqcrypto.HexID(c.alice.Enc.Public().ID()), CheckoutTTLSeconds: ttl})
 }
@@ -106,7 +106,7 @@ func (c *checkoutRig) delivery(id pqcrypto.UUID) (*pqcrypto.Recipient, string) {
 }
 
 // open runs a checkout to delivery and returns the transaction.
-func (c *checkoutRig) open(ttl int64) *cli.Checkout {
+func (c *checkoutRig) open(ttl int64) *vaultclient.Checkout {
 	c.T.Helper()
 	co := c.checkoutTx(ttl)
 	ctx := context.Background()
@@ -136,11 +136,11 @@ func TestCheckoutDeliversAWrapOnlyTheRequesterOpens(t *testing.T) {
 	if w == nil || res != "ok" {
 		t.Fatalf("no delivery: %s", res)
 	}
-	pw, err := cli.OpenDelivery(c.trust(), c.currentEnvelope(), *w, c.alice.Enc)
+	pw, err := vaultclient.OpenDelivery(c.trust(), c.currentEnvelope(), *w, c.alice.Enc)
 	if err != nil || string(pw) != initialPassword {
 		t.Fatalf("open: %q %v", pw, err)
 	}
-	if _, err := cli.OpenDelivery(c.trust(), c.currentEnvelope(), *w, c.bob.Enc); err == nil {
+	if _, err := vaultclient.OpenDelivery(c.trust(), c.currentEnvelope(), *w, c.bob.Enc); err == nil {
 		t.Fatal("another key opened the wrap")
 	}
 	if l, err := c.cp.Store.Vault().GetLease(context.Background(), string(co.RequestID)); err != nil || l.State != broker.LeaseActive {
@@ -966,7 +966,7 @@ func TestAnAcceptedProofDropsAQueuedRefusal(t *testing.T) {
 	c := newCheckoutRig(t)
 	ctx := context.Background()
 	b, a := c.checkoutTx(600), c.checkoutTx(600)
-	for _, co := range []*cli.Checkout{b, a} {
+	for _, co := range []*vaultclient.Checkout{b, a} {
 		if err := c.m.Tx(ctx, co.Tx); err != nil {
 			t.Fatal(err)
 		}

@@ -546,3 +546,35 @@ Numbered separately: these came from the parallel crypto stack.
     Saving and deleting a draft need a step-up within five minutes. Fetching a draft, posting
     signatures, and `GET /api/principals` and `GET /api/trust` need none: the signatures are
     what authorize a policy, as for `POST /api/manifests` (16a).
+
+
+## Browser vault and suite keyring
+
+213. §2, §7.6, §10.1 (SaaS sequencing). Build the vault API and the independently
+     delivered browser client in the initial vault release. A user CLI follows
+     the API. The existing offline Custodian tool remains a separate signing role.
+214. §10.1 (shared secret store). KyIdentity's app subkey wraps KyGuard's own user
+     seeds through HKDF. KyGuard stores only the encrypted user bundle and the
+     enrollment draft, scoped to the SSO account. The app subkey never leaves the
+     browser and never serves as a Custodian key. A separate passphrase remains
+     available when creating a key. The initial bundle is write-once and exact
+     retries are idempotent.
+215. §10.1 (trusted browser origin). Use the independently administered HTTPS edge
+     and deployment fingerprint in [Browser vault](BROWSER-VAULT.md). The optional
+     keyring handoff pins the KyIdentity organization even on single-tenant
+     instances, where OIDC omits that claim.
+216. §10.1 (browser trust across views). Persist the highest verified epoch and
+     digest for each manifest scope by deployment. Require known view scopes on
+     subsequent reads of that view and check shared scopes against the deployment's
+     observed history when syncing or acting. An explicit vault lock discards the
+     KyIdentity app subkey and requires a fresh handoff for keyring unlock.
+217. §3.2, §10.1 (browser replay after Custodian rotation). Retain verified
+     manifest digests alongside the deployment's high-water marks. When a
+     browser has observed a newer Custodian set, replay under an earlier set
+     requires a digest previously verified by that browser. Newly seen
+     manifests require the last observed Custodian authority or its verified
+     successor.
+218. §7.4, §10.1 (vault origin CAPTCHA). Break-glass sign-in uses the built-in
+     same-origin proof-of-work challenge. With the vault enabled, accept the
+     `pow` and `none` CAPTCHA settings and reject other values at startup.
+     Keep CAPTCHA scripts from third parties outside the vault origin.

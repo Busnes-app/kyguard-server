@@ -335,6 +335,8 @@ func (s *Server) routes() {
 	// SSO
 	s.route(ClassPublic, "/api/sso/kysignon/login", f(s.handleSSOLogin("kysignon")))
 	s.route(ClassPublic, "/api/sso/kysignon/callback", f(s.handleSSOCallback("kysignon")))
+	s.route(ClassPublic, "POST /api/sso/kysignon/keyring/start", f(s.handleKeyringStart))
+	s.route(ClassPublic, "POST /api/sso/kysignon/keyring/exchange", f(s.handleKeyringExchange))
 	s.route(ClassPublic, "/api/sso/oidc/login", f(s.handleSSOLogin("oidc")))
 	s.route(ClassPublic, "/api/sso/oidc/callback", f(s.handleSSOCallback("oidc")))
 	s.route(ClassMachine, "POST /api/sso/kysignon/backchannel-logout", f(s.handleKySignOnBackchannelLogout))
@@ -373,6 +375,7 @@ func (s *Server) routes() {
 	s.inventoryRoutes()
 	s.reportRoutes()
 	s.draftRoutes()
+	s.browserVaultRoutes()
 
 	s.route(ClassPublic, "/saml/", http.NotFoundHandler())
 
@@ -489,7 +492,7 @@ func csrfExempt(path string) bool {
 }
 
 func isSignIn(path string) bool {
-	return path == "/api/auth/login"
+	return path == "/api/auth/login" || path == "/api/sso/kysignon/keyring/start" || path == "/api/sso/kysignon/keyring/exchange"
 }
 
 // foreignOrigin reports a present Origin that is neither the host the request was sent to nor

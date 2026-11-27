@@ -32,8 +32,8 @@ verification rules are `internal/pqcrypto`'s; this package must not re-implement
 - Key files are written with `keyfile.Store` (0600, never replaced) and read with
   `keyfile.ReadPrivate`. Seeds are AES-256-GCM sealed under Argon2id
   (`password.DefaultParams`); the clear header (kind, ID, key IDs, KDF) is the AAD.
-- `Client` is the only way to the Control Plane. `kyguard-cli login` (§7.6, owned by the
-  auth work) supplies the session-backed implementation; until then commands take files.
+- The initial user workflows are browser-first. Offline Custodian commands use files.
+  Build an online user client after the vault API is complete (§7.6, §10.1).
 
 ## Verification
 - `go test -race ./internal/cli/...`

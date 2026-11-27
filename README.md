@@ -4,13 +4,13 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/Busnes-app/kyguard-server/badge)](https://scorecard.dev/viewer/?uri=github.com/Busnes-app/kyguard-server)
 
 KyGuard is a self-hosted privileged access management (PAM) and just-in-time access platform
-for the Busnes.app suite. This repository ships the Control Plane (`kyguard-server`); the
-Resource Broker (`kyguard-broker`) and `kyguard-cli` follow. It is built on `ky_server_base`:
+for the Busnes.app suite. This repository builds the Control Plane (`kyguard-server`), Linux Resource Broker
+(`kyguard-broker`) and offline Custodian tooling. The browser is the SaaS user client. It is built on `ky_server_base`:
 Go backend, embedded React PWA, SQLite or PostgreSQL, federated sign-in (KySignOn, OIDC),
 SCIM provisioning, and disaster recovery through the suite's KyRecovery.
 
-The design is [docs/SPEC.md](docs/SPEC.md) (v2.4). Only its Phase 0 and Phase 1A sections are
-being built; until they land, much of what the spec describes does not exist yet.
+The [design spec](docs/SPEC.md) defines the Phase 0 foundation and Phase 1A vault and rotation slice.
+See [Browser vault](docs/BROWSER-VAULT.md) for independent web deployment and KyIdentity keyring setup.
 
 ## Quick start
 

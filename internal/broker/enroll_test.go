@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/Busnes-app/kyguard-server/internal/broker"
-	"github.com/Busnes-app/kyguard-server/internal/cli"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto"
 	"github.com/Busnes-app/kyguard-server/internal/pqcrypto/pqtest"
 	"github.com/Busnes-app/kyguard-server/internal/store"
+	"github.com/Busnes-app/kyguard-server/internal/vaultclient"
 )
 
 // enrollRig is a rig whose policy names alice as the only enroller.
@@ -51,7 +51,7 @@ func (r *enrollRig) cliTrust() *pqcrypto.Trust {
 
 // submit plays the CLI and the Control Plane up to the relay: reserve (with the given
 // clock), seal and sign, store the candidate. It returns what the broker receives.
-func (r *enrollRig) submit(who *pqtest.Principal, password string, now time.Time) (*cli.Enrollment, pqcrypto.UUID) {
+func (r *enrollRig) submit(who *pqtest.Principal, password string, now time.Time) (*vaultclient.Enrollment, pqcrypto.UUID) {
 	r.T.Helper()
 	ctx := context.Background()
 	reqID := pqtest.UUID()
@@ -60,7 +60,7 @@ func (r *enrollRig) submit(who *pqtest.Principal, password string, now time.Time
 	if err != nil {
 		r.T.Fatal(err)
 	}
-	e, err := cli.SealEnrollment(r.cliTrust(), r.pol.AccountID, reqID, pqcrypto.Counter(v), who.ID, who.Sig, []byte(password), time.Now())
+	e, err := vaultclient.SealEnrollment(r.cliTrust(), r.pol.AccountID, reqID, pqcrypto.Counter(v), who.ID, who.Sig, []byte(password), time.Now())
 	if err != nil {
 		r.T.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func (r *enrollRig) submit(who *pqtest.Principal, password string, now time.Time
 	return e, op
 }
 
-func (r *enrollRig) enroll(m *broker.Machine, password string) (*cli.Enrollment, error) {
+func (r *enrollRig) enroll(m *broker.Machine, password string) (*vaultclient.Enrollment, error) {
 	e, _ := r.submit(r.alice, password, time.Now().UTC())
 	return e, m.Enroll(context.Background(), e.Tx, e.Envelope)
 }
@@ -160,7 +160,7 @@ func TestEnrollmentRefusedBeforeAnyBind(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The CLI refuses to sign for bob; a forged request signed by bob is refused by the broker.
-	if _, err := cli.SealEnrollment(r.cliTrust(), r.pol.AccountID, pqtest.UUID(), 1, bob.ID, bob.Sig, []byte("x"), time.Now()); !errors.Is(err, cli.ErrNotEnroller) {
+	if _, err := vaultclient.SealEnrollment(r.cliTrust(), r.pol.AccountID, pqtest.UUID(), 1, bob.ID, bob.Sig, []byte("x"), time.Now()); !errors.Is(err, vaultclient.ErrNotEnroller) {
 		t.Fatalf("cli: %v", err)
 	}
 	e, _ := r.submit(r.alice, initialPassword, time.Now().UTC())
@@ -401,7 +401,7 @@ func TestEnrollmentAndRotationExcludeEachOther(t *testing.T) {
 
 // submitOver reserves on the Control Plane even though a rotation lock is held, as a
 // Control Plane that ignores its own rule would, to test the broker's check.
-func (r *enrollRig) submitOver(who *pqtest.Principal, password string) (*cli.Enrollment, pqcrypto.UUID) {
+func (r *enrollRig) submitOver(who *pqtest.Principal, password string) (*vaultclient.Enrollment, pqcrypto.UUID) {
 	r.T.Helper()
 	ctx := context.Background()
 	if err := r.cp.Store.Vault().SetHealth(ctx, string(r.pol.AccountID), broker.HealthQuarantined, "lie"); err != nil {

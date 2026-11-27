@@ -212,6 +212,7 @@ func strongOIDCContext(ctx context.Context) context.Context {
 func claimsFromIDToken(idToken *oidc.IDToken) (*IdentityClaims, error) {
 	var raw struct {
 		Sub               string          `json:"sub"`
+		Org               any             `json:"org_id"`
 		SID               string          `json:"sid"`
 		Email             string          `json:"email"`
 		Name              string          `json:"name"`
@@ -249,6 +250,7 @@ func claimsFromIDToken(idToken *oidc.IDToken) (*IdentityClaims, error) {
 		}
 		authTime = time.Unix(secs, 0).UTC()
 	}
-	return &IdentityClaims{Subject: raw.Sub, Email: raw.Email, Name: raw.Name, PreferredUsername: username, Role: raw.Role, Roles: roles, SessionID: raw.SID, IssuedAt: idToken.IssuedAt,
+	org, _ := raw.Org.(string)
+	return &IdentityClaims{Subject: raw.Sub, Organization: org, HasOrganization: raw.Org != nil, Email: raw.Email, Name: raw.Name, PreferredUsername: username, Role: raw.Role, Roles: roles, SessionID: raw.SID, IssuedAt: idToken.IssuedAt,
 		Issuer: idToken.Issuer, AuthTime: authTime, AMR: raw.AMR, ACR: raw.ACR}, nil
 }

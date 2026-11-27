@@ -32,3 +32,6 @@ web/playwright-report/
 coverage.out
 .env.*
 !.env.example
+
+# Separately deployed browser vault
+/web/vault-dist/

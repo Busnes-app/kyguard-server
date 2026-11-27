@@ -182,7 +182,7 @@ var migrationTables = []string{
 	"bootstrap_bundles", "trust_manifests", "broker_pools", "brokers", "pairing_tokens", "operation_intents",
 	"assets", "accounts", "target_descriptors", "secret_envelopes", "envelope_receipts", "rotation_locks", "rotation_runs",
 	"access_transactions", "broker_outbox", "checkout_leases",
-	"attribute_definitions", "attribute_values", "policy_drafts",
+	"attribute_definitions", "attribute_values", "policy_drafts", "browser_keys",
 }
 
 type migrationColumn struct{ name, kind string }

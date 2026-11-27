@@ -59,6 +59,24 @@ Out of scope: an attacker who runs code on the host or holds both the database a
    (`ky-primitives/recoveryclient`); the key is pinned write-once, and pairing over plain HTTP is
    refused ([Disaster recovery](DISASTER-RECOVERY.md#why-tls-matters-here)).
 
+6. **Browser vault → Control Plane and KyIdentity.** The independent browser edge
+   owns the executable client and pins the deployment fingerprint. The Control
+   Plane serves signed objects and sealed user bundles. It cannot supply executable
+   content to the trusted client. KyIdentity's browser and origin are trusted to
+   handle the suite root and app subkey. Its X-Wing fragment binds the issuer,
+   tenant, subject, client, ring and version to the original OAuth interaction.
+   The browser verifies signed policies and receipts. It checks previously seen
+   manifest epochs and digests across account views before signing or sealing.
+   After Custodian rotation it replays only previously verified digests from
+   retired sets.
+   The dedicated vault worker accepts browser-dispatched messages on its own
+   channel. The vault origin serves its own scripts, including the proof-of-work
+   challenge for break-glass sign-in. Explicit vault lock clears the user's key
+   and the KyIdentity app subkey.
+   Custodian signing stays offline. The enrolled user's own bundle is scoped to
+   the authenticated issuer and subject, and its AEAD commits to the signed
+   enrollment. See [Browser vault](BROWSER-VAULT.md).
+
 ## Secure design principles applied
 
 - **Least privilege.** Privileged routes are wrapped in `requireAdmin` where they are registered,

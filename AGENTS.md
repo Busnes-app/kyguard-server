@@ -1,7 +1,7 @@
 # KyGuard
 
 KyGuard is a privileged access management platform built on `ky_server_base`. The normative
-design is [docs/SPEC.md](docs/SPEC.md) (v2.4, signed off by the council).
+design is [docs/SPEC.md](docs/SPEC.md) (v2.4 council baseline with the owner’s SaaS browser-vault update).
 
 - Scope: build only the spec's Phase 0 and Phase 1A sections. Later phases get a paragraph
   in the spec and nothing in code. Appendix D is non-normative: build nothing from it.
@@ -96,6 +96,11 @@ Default section order:
 - KyIdentity directory synchronization uses its SCIM connector; the incompatible webhook is retired. The legacy HMAC-secret config remains accepted with a startup warning. KyGuard admin comes only from the per-app `roles` claim, recomputed at every sign-in; SCIM never grants it (spec §7.2). Account identity is `(issuer, subject)`. SCIM username adoption refuses a different nonempty `externalId` with 409.
 - No bootstrap admin and no `init-admin`: break-glass administrators (at most five) are created and their TOTP reset only on the host (`kyguard-server break-glass create|reset-totp`, spec §7.4).
 
+- KyGuard SaaS is API-first with browser vault workflows in Phase 1A and an optional user
+  CLI after the API. Reuse KyIdentity's suite keyring app subkey for browser unlock.
+  Deploy the credential-handling UI independently of the Control Plane and keep Custodian
+  signatures offline. [docs/BROWSER-VAULT.md](docs/BROWSER-VAULT.md) owns deployment.
+
 When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md
 
 - REUSE: `REUSE.toml` labels every file; `LICENSES/` holds the texts. Vendored fonts keep
@@ -143,6 +148,7 @@ overlay merges with synthetic inputs and starts no containers.
 - [internal/broker/AGENTS.md](internal/broker/AGENTS.md): `kyguard-broker`: key file, journal, pairing, daemon (spec §4).
 - [internal/connectors/AGENTS.md](internal/connectors/AGENTS.md): Target connectors (`ad_ldaps`, `ssh_passwd`, spec §4.4) and their Docker test targets.
 - [internal/cptrust/AGENTS.md](internal/cptrust/AGENTS.md): Control Plane manifest admission against the imported bundle (spec §3.2, §3.7).
+- [internal/vaultclient/AGENTS.md](internal/vaultclient/AGENTS.md): Browser vault cryptography and KyIdentity handoff.
 - [internal/cli/AGENTS.md](internal/cli/AGENTS.md): `kyguard-cli` commands, key files and the persisted trust pin (spec §3.2).
 - [internal/auth/AGENTS.md](internal/auth/AGENTS.md): Authentication, sessions, local TOTP step-up, client addresses and CAPTCHA.
 - [internal/sso/AGENTS.md](internal/sso/AGENTS.md): Single Sign-On federation (KySignOn, generic OIDC).

@@ -11,6 +11,32 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 
 ## Current source
 
+### Changes
+
+- Added a browser vault for SSO users. KyGuard stores encrypted user bundles and public
+  enrollment drafts. The browser creates and unlocks keys, seals managed credentials,
+  and signs requests for checkout, approvals and check-in. The vault receives the
+  signed broker-pool history needed to verify credentials sealed under earlier policies.
+  Unlock picks up newly approved enrollments, and the vault recovers a saved key if
+  the upload response is lost. After Custodian rotation, the browser refuses
+  unfamiliar manifests signed by a retired set. The vault worker accepts only
+  browser-dispatched messages on its dedicated channel.
+- Added the KyIdentity X-Wing app-subkey handoff as a browser unlock method. Passphrase
+  unlock is also available when creating a key. Custodian signing remains offline.
+- Added a separate static browser build and an HTTPS edge example so the Control Plane
+  can serve the API without controlling the browser code that handles private keys.
+
+### Upgrade impact
+
+- Migration 302 adds an empty encrypted browser-key table on SQLite and PostgreSQL.
+  Enable browser vault explicitly after deploying its trusted assets and bootstrap
+  fingerprint. The vault requires `KY_CAPTCHA_PROVIDER=pow` (the default) or
+  `none`. KyIdentity users also need the registered callback and organization ID.
+  Enabling the feature on existing replicas changes the shared configuration fingerprint.
+  See [Browser vault](docs/BROWSER-VAULT.md).
+
+## eb6899b6722975e13ac8a39343eaa305f1fa1512
+
 ### Security
 
 - Internal broker CA, listener leaf, and broker client mTLS credentials now default to

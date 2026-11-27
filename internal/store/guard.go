@@ -9,6 +9,8 @@ import (
 
 // GuardStore holds KyGuard's Control Plane trust and broker state (spec §4.1, §9.2).
 type GuardStore interface {
+	BrowserKey(ctx context.Context, u *User) (*BrowserKey, error)
+	PutBrowserKey(ctx context.Context, u *User, k BrowserKey, audit *AuditRecord) error
 	// Bundle returns the imported bootstrap bundle; ErrNotFound before import.
 	Bundle(ctx context.Context) (*BootstrapBundle, error)
 	// ImportBundle stores the bundle once; ErrAlreadyExists if another one is stored.
