@@ -563,3 +563,8 @@ Numbered separately: these came from the parallel crypto stack.
      and deployment fingerprint in [Browser vault](BROWSER-VAULT.md). The optional
      keyring handoff pins the KyIdentity organization even on single-tenant
      instances, where OIDC omits that claim.
+216. §10.1 (browser trust across views). Persist the highest verified epoch and
+     digest for each manifest scope by deployment. Require known view scopes on
+     subsequent reads of that view and check shared scopes against the deployment's
+     observed history when syncing or acting. An explicit vault lock discards the
+     KyIdentity app subkey and requires a fresh handoff for keyring unlock.

@@ -28,6 +28,7 @@ type snapshot struct {
 	Bundle      pqcrypto.B64         `json:"bundle"`
 	Manifests   []pqcrypto.B64       `json:"manifests"`
 	Heads       map[string]watermark `json:"heads"`
+	Observed    map[string]watermark `json:"observed"`
 }
 
 type accountContext struct {
@@ -40,6 +41,7 @@ type accountContext struct {
 type request struct {
 	Action      string                      `json:"action"`
 	Trust       snapshot                    `json:"trust"`
+	Observed    map[string]watermark        `json:"observed"`
 	Context     *accountContext             `json:"context"`
 	User        string                      `json:"user_id"`
 	Issuer      string                      `json:"issuer"`
@@ -63,6 +65,7 @@ type request struct {
 
 type worker struct {
 	trust         *pqcrypto.Trust
+	heads         map[string]watermark
 	key           *vaultclient.UserKey
 	suiteKey      []byte
 	suiteUser     string
@@ -119,12 +122,19 @@ func (v *worker) handle(r request) (any, error) {
 		return nil, nil
 	case "sync":
 		return v.sync(r.Trust, r.Context)
-	case "lock":
+	case "lock", "close-key":
 		v.key, v.checkout, v.leaseEnvelope = nil, nil, nil
+		if r.Action == "lock" {
+			clear(v.suiteKey)
+			v.suiteKey, v.suiteUser, v.handoff = nil, "", nil
+		}
 		return nil, nil
 	}
 	if v.trust == nil {
 		return nil, errors.New("verify the deployment trust before using the vault")
+	}
+	if err := checkWatermarks(v.heads, r.Observed, false); err != nil {
+		return nil, err
 	}
 	switch r.Action {
 	case "new-key":
@@ -171,11 +181,11 @@ func (v *worker) sync(s snapshot, account *accountContext) (any, error) {
 	for _, rec := range tr.Records() {
 		heads[rec.Type+"/"+string(rec.ScopeID)] = watermark{rec.Epoch, rec.Digest.Hex()}
 	}
-	for k, previous := range s.Heads {
-		now := heads[k]
-		if now.Epoch < previous.Epoch || (now.Epoch == previous.Epoch && now.Digest != previous.Digest) {
-			return nil, errors.New("KyGuard returned older or conflicting signed trust data")
-		}
+	if err := checkWatermarks(heads, s.Heads, true); err != nil {
+		return nil, err
+	}
+	if err := checkWatermarks(heads, s.Observed, false); err != nil {
+		return nil, err
 	}
 	out := map[string]any{"heads": heads}
 	var chain *pqcrypto.Chain
@@ -214,8 +224,23 @@ func (v *worker) sync(s snapshot, account *accountContext) (any, error) {
 			chain.Envelope.Policy.TargetDescriptorDigest == policy.TargetDescriptorDigest && slices.Contains(policy.AllowedUserPrincipalIDs, v.key.Principal)
 		out["can_approve"] = enrolled && slices.Contains(policy.AllowedApproverPrincipalIDs, v.key.Principal)
 	}
-	v.trust, v.account, v.current = tr, account, chain
+	v.trust, v.heads, v.account, v.current = tr, heads, account, chain
 	return out, nil
+}
+
+// A view must retain the scopes it has shown before. Other views can omit unrelated
+// scopes, but any scope they do show must agree with what the deployment has seen.
+func checkWatermarks(heads, previous map[string]watermark, requireAll bool) error {
+	for scope, seen := range previous {
+		current, present := heads[scope]
+		if !present && !requireAll {
+			continue
+		}
+		if current.Epoch < seen.Epoch || (current.Epoch == seen.Epoch && current.Digest != seen.Digest) {
+			return errors.New("KyGuard returned older or conflicting signed trust data")
+		}
+	}
+	return nil
 }
 
 func (v *worker) wrappingSecret(r request, e pqcrypto.KeyEnvelope) ([]byte, error) {

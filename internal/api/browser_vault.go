@@ -161,6 +161,7 @@ func (s *Server) handleBrowserVaultContext(w http.ResponseWriter, r *http.Reques
 		descriptor = policy.TargetDescriptorDigest
 		var allowed bool
 		principals := map[pqcrypto.UUID]bool{}
+		pools := map[pqcrypto.UUID]bool{}
 		for _, list := range [][]pqcrypto.UUID{policy.AllowedUserPrincipalIDs, policy.EnrollerPrincipalIDs, policy.AllowedApproverPrincipalIDs} {
 			for _, p := range list {
 				if m := tr.Enrollment(p); m != nil && m.Issuer == user.SSOIssuer && m.Subject == user.SSOSubject {
@@ -172,21 +173,23 @@ func (s *Server) handleBrowserVaultContext(w http.ResponseWriter, r *http.Reques
 			return store.ErrNotFound
 		}
 		// Include the signed history needed to verify a still-current older envelope.
-		for _, rec := range tr.Records() {
+		records := tr.Records()
+		for _, rec := range records {
 			if p, ok := rec.Manifest.(*pqcrypto.PolicyManifest); ok && rec.ScopeID == account {
+				pools[p.PoolID] = true
 				for _, principal := range slices.Concat(p.AllowedUserPrincipalIDs, p.EnrollerPrincipalIDs, p.AllowedApproverPrincipalIDs, p.StandingRecipientPrincipalIDs) {
 					principals[principal] = true
 				}
 			}
 		}
-		for _, rec := range tr.Records() {
+		for _, rec := range records {
 			switch rec.Type {
 			case pqcrypto.TypePolicy:
 				if rec.ScopeID != account {
 					continue
 				}
 			case pqcrypto.TypePool:
-				if rec.ScopeID != policy.PoolID {
+				if !pools[rec.ScopeID] {
 					continue
 				}
 			case pqcrypto.TypeKeyEnrollment:

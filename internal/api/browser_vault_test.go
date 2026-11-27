@@ -109,6 +109,80 @@ func TestEncryptedBrowserKeyBelongsToItsSSOAccount(t *testing.T) {
 	}
 }
 
+func TestBrowserVaultIncludesPoolsNamedByHistoricalPolicies(t *testing.T) {
+	_, st, cfg := setupTestServer(t)
+	cfg.Server.BrowserVault = true
+	srv := api.NewServer(cfg, st)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	d := pqtest.New(t)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(st.Guard().ImportBundle(ctx, &store.BootstrapBundle{
+		DeploymentID: string(d.ID), Fingerprint: string(d.Fingerprint), Bundle: d.Bundle, ImportedAt: now,
+	}, ""))
+	principal := pqtest.NewPrincipal(t)
+	u := &store.User{ID: "alice", Username: "alice", Role: "user", Status: "active", AccountType: store.AccountSSO,
+		SSOProvider: "oidc", SSOIssuer: "https://idp.example.test", SSOSubject: "sub-" + string(principal.ID)}
+	must(st.Users().CreateUser(ctx, u))
+	token := crypto.RandomHex(32)
+	must(st.Sessions().CreateSession(ctx, &store.Session{
+		UserID: u.ID, TokenHash: crypto.SHA256Hex([]byte(token)), SSOIssuer: u.SSOIssuer,
+		Stage: store.StageActive, StepupAt: &now, CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+	}, ""))
+	request := func(method, path string, body []byte) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(method, path, bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		return w
+	}
+	submit := func(raw []byte) {
+		t.Helper()
+		if w := request("POST", "/api/manifests", raw); w.Code != http.StatusCreated {
+			t.Fatalf("manifest: %d %s", w.Code, w.Body)
+		}
+	}
+	before, after, other := pqtest.UUID(), pqtest.UUID(), pqtest.UUID()
+	account, asset := pqtest.UUID(), pqtest.UUID()
+	must(st.Guard().CreatePool(ctx, &store.BrokerPool{ID: string(before), Name: "old", CreatedAt: now}, nil))
+	must(st.Vault().CreateAsset(ctx, &store.Asset{ID: string(asset), Name: "host"}))
+	must(st.Vault().CreateAccount(ctx, &store.Account{ID: string(account), AssetID: string(asset), Name: "svc",
+		AccountKind: pqcrypto.KindManaged, PoolID: string(before)}))
+	target, digest := d.SSHTarget(t, account, asset, "host.example.test", 22, "svc", pqcrypto.HexID(strings.Repeat("ab", 32)))
+	must(st.Vault().PutTargetDescriptor(ctx, string(digest), string(account), target))
+	submit(d.Enrollment(t, principal, 1))
+	for _, id := range []pqcrypto.UUID{before, after, other} {
+		submit(d.Pool(t, id, 1, []pqcrypto.BrokerMember{}, nil))
+	}
+	for i, id := range []pqcrypto.UUID{before, after} {
+		policy := d.ManagedPolicy(account, id, pqcrypto.Counter(i+1), digest)
+		policy.AllowedUserPrincipalIDs = []pqcrypto.UUID{principal.ID}
+		submit(d.Signed(t, policy))
+	}
+
+	w := request("GET", "/api/accounts/"+string(account)+"/vault-context", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("context: %d %s", w.Code, w.Body)
+	}
+	var out struct{ Manifests []pqcrypto.B64 }
+	must(json.Unmarshal(w.Body.Bytes(), &out))
+	tr := d.Trust(t)
+	for _, raw := range out.Manifests {
+		_, err := tr.Accept(raw)
+		must(err)
+	}
+	if tr.Lookup(pqcrypto.TypePool, before) == nil || tr.Lookup(pqcrypto.TypePool, after) == nil ||
+		tr.Lookup(pqcrypto.TypePool, other) != nil {
+		t.Fatal("browser context must include only the pools referenced by this account's policies")
+	}
+}
+
 func TestKeyringExchangePreservesOIDCChecksAndIssuesPendingSession(t *testing.T) {
 	_, st, cfg := setupTestServer(t)
 	f := newFakeKySignOn(t)

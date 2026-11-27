@@ -64,9 +64,10 @@ handoff. A user with no available app subkey can create a passphrase-protected k
 KyIdentity keeps the app-subkey envelope and handles its trusted browsers,
 passkeys and Emergency Kit. KyGuard receives no suite root key, app subkey or
 vault passphrase. The browser opens the handoff locally, keeps the app subkey in
-memory, and clears the callback fragment before exchanging the code. Sign in
-again with the keyring after reloading the page. Coordinate any KyIdentity
-**app subkey rotation** before revoking the old version. The current browser
+memory, and clears the callback fragment before exchanging the code. Reloading
+the page or choosing **Lock vault** clears the app subkey. Sign in with the
+keyring again to unlock. Coordinate any KyIdentity **app subkey rotation**
+before revoking the old version. The current browser
 vault keys use one wrapping method fixed at enrollment and require the original
 app subkey version or passphrase. Changing the login password or TOTP does not
 recover that bundle.

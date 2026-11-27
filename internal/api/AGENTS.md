@@ -8,7 +8,8 @@ Owns HTTP routing, request parsing, session cookie validation, CORS headers, and
 
 ## Local Contracts
 - Browser vault routes protect each sealed bundle by the active SSO identity and require fresh
-  step-up for uploads. Signed account context requires a principal listed in that policy.
+  step-up for uploads. Signed account context requires a principal listed in the current policy
+  and includes the broker-pool history referenced by that account’s signed policies.
   The KyIdentity handoff reuses OIDC verification and always issues a pending session.
 - PostgreSQL uses shared security-window reservations and CAPTCHA spending; never fall
   back to local allowances on storage errors. SQLite keeps its existing in-memory limits.

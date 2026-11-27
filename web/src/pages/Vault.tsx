@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useScorecard } from '../reporting';
 import {
-  canonicalBytes, canonicalText, keyringAvailable, lockVault, startKeyring, syncVault, vaultRequest, vaultWorker,
+  canonicalBytes, canonicalText, closeVaultKey, keyringAvailable, lockVault, startKeyring, syncVault, vaultRequest, verifiedVaultWorker,
   type KeyEnvelope, type KeyUpload, type VaultConfig, type VaultContext, type VaultKeyInfo,
 } from '../vault';
 
@@ -62,7 +62,7 @@ export function Vault({ config, userID }: { config: VaultConfig; userID: string 
   const path = `/api/accounts/${encodeURIComponent(account)}`;
   const hasSuiteKey = keyringAvailable(userID);
 
-  useEffect(() => lockVault, []);
+  useEffect(() => closeVaultKey, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -109,7 +109,7 @@ export function Vault({ config, userID }: { config: VaultConfig; userID: string 
     const trust = await syncVault(config, info);
     if (!info.sealed) {
       if (method === 'passphrase' && secret !== confirmation) throw new Error('The passphrases differ.');
-      const upload = await vaultWorker<KeyUpload>('new-key', keyArgs);
+      const upload = await verifiedVaultWorker<KeyUpload>(config, 'new-key', keyArgs);
       await vaultRequest('/api/user/vault-key', 'PUT', upload);
       setInfo({ ...info, ...upload });
       setStatus('Your key is stored. Unlock it to download the enrollment request for a Custodian.');
@@ -124,7 +124,7 @@ export function Vault({ config, userID }: { config: VaultConfig; userID: string 
     if (!key || typeof key.sig_key_id !== 'string' || typeof key.enc_key_id !== 'string') {
       throw new Error('Your enrollment fingerprints are missing.');
     }
-    await vaultWorker('unlock', { ...keyArgs, sealed: info.sealed, enrollment: info.enrollment });
+    await verifiedVaultWorker(config, 'unlock', { ...keyArgs, sealed: info.sealed, enrollment: info.enrollment });
     setEnrolledKey({ principal_id: draft.principal_id, sig_key_id: key.sig_key_id, enc_key_id: key.enc_key_id });
     setUnlocked(true);
     setApproved(!!trust.heads[`key_enrollment/${draft.principal_id}`]);
@@ -156,9 +156,9 @@ export function Vault({ config, userID }: { config: VaultConfig; userID: string 
     setPassword('');
     await run(async () => {
       const view = await refreshTarget();
-      const reservation = await vaultWorker<{ request_id: string }>('reserve');
+      const reservation = await verifiedVaultWorker<{ request_id: string }>(config, 'reserve', {});
       const version = await vaultRequest<{ secret_version: string }>(`${path}/enrollments`, 'POST', reservation);
-      const payload = await vaultWorker<{ tx: string; envelope: string }>('enroll', { reservation: reservation.request_id, version: version.secret_version, password: credential });
+      const payload = await verifiedVaultWorker<{ tx: string; envelope: string }>(config, 'enroll', { reservation: reservation.request_id, version: version.secret_version, password: credential });
       if (view.approvals) {
         setPendingEnrollment({ request_id: reservation.request_id, ...payload });
         setStatus('Send the enrollment request file to an authorized approver.');
@@ -179,7 +179,7 @@ export function Vault({ config, userID }: { config: VaultConfig; userID: string 
     e.preventDefault();
     await run(async () => {
       const view = await refreshTarget();
-      const tx = await vaultWorker<Pick<Checkout, 'request_id' | 'tx'>>('checkout', { ttl });
+      const tx = await verifiedVaultWorker<Pick<Checkout, 'request_id' | 'tx'>>(config, 'checkout', { ttl });
       setCheckout({ ...tx, stage: 'draft', approved: view.approvals === 0 });
       if (view.approvals) setStatus('Send the request file to an authorized approver and load the approved copy.');
     });
@@ -207,14 +207,14 @@ export function Vault({ config, userID }: { config: VaultConfig; userID: string 
     const purpose = checkout.stage === 'checkin' ? 'checkin' : 'deliver';
     const expires = Date.parse(mail.expires_at ?? '');
     if (purpose === 'deliver' && mail.delivery && expires > Date.now()) {
-      const credential = await vaultWorker<string>('open-delivery', { wrap: mail.delivery });
+      const credential = await verifiedVaultWorker<string>(config, 'open-delivery', { wrap: mail.delivery });
       if (expires <= Date.now()) throw new Error('The checkout lease expired.');
       setDelivery({ password: credential, expires });
       setStatus('The credential is ready. Check it in when you finish.');
       return;
     }
     if (mail.challenge && mail.purpose === purpose) {
-      const proof = await vaultWorker<string>('proof', { challenge: mail.challenge, purpose });
+      const proof = await verifiedVaultWorker<string>(config, 'proof', { challenge: mail.challenge, purpose });
       await vaultRequest(`${txPath}/proof`, 'POST', { proof });
       setStatus('Proof sent to the broker. Refresh when it has answered.');
       return;
@@ -275,7 +275,7 @@ export function Vault({ config, userID }: { config: VaultConfig; userID: string 
           )}
           {unlocked && (
             <button className="btn-secondary" type="button" disabled={busy || !!checkout || !!pendingEnrollment} onClick={() => void run(async () => {
-              await vaultWorker('lock');
+              await lockVault();
               setUnlocked(false);
               setContext(undefined);
               setAccount('');
@@ -313,7 +313,7 @@ export function Vault({ config, userID }: { config: VaultConfig; userID: string 
                       const next = await vaultRequest<VaultKeyInfo>('/api/user/vault-key');
                       setInfo(next);
                       await syncVault(config, next);
-                      await vaultWorker('lock');
+                      closeVaultKey();
                       setUnlocked(false);
                       setStatus('Enrollment submitted. Unlock to check approval.');
                     });
@@ -362,7 +362,7 @@ export function Vault({ config, userID }: { config: VaultConfig; userID: string 
                   e.target.value = '';
                   if (file) void run(async () => {
                     await refreshTarget();
-                    const tx = await vaultWorker<string>('attach-approval', {
+                    const tx = await verifiedVaultWorker<string>(config, 'attach-approval', {
                       tx: canonicalBytes(await fileText(file)), original: pendingEnrollment.tx,
                     });
                     await submitEnrollment(pendingEnrollment.request_id, { tx, envelope: pendingEnrollment.envelope });
@@ -401,7 +401,7 @@ export function Vault({ config, userID }: { config: VaultConfig; userID: string 
                 if (file) void run(async () => {
                   await refreshTarget();
                   const tx = canonicalBytes(await fileText(file));
-                  const review = await vaultWorker<ApprovalReview>('review-approval', { tx });
+                  const review = await verifiedVaultWorker<ApprovalReview>(config, 'review-approval', { tx });
                   setApproval({ tx, review });
                 });
               }} />
@@ -413,7 +413,7 @@ export function Vault({ config, userID }: { config: VaultConfig; userID: string 
               <p>{approval.review.action === 'enroll' ? 'Enroll a managed credential.' : `Lease requested for ${approval.review.ttl} seconds.`}</p>
               <button className="btn-primary" type="button" disabled={busy} onClick={() => void run(async () => {
                 await refreshTarget();
-                const signed = await vaultWorker<string>('approve', { tx: approval.tx });
+                const signed = await verifiedVaultWorker<string>(config, 'approve', { tx: approval.tx });
                 download('kyguard-approved-request.json', signed);
                 setApproval(undefined);
                 setStatus('Approval signed. Return the downloaded copy to the requester.');
@@ -435,7 +435,7 @@ export function Vault({ config, userID }: { config: VaultConfig; userID: string 
                       e.target.value = '';
                       if (file) void run(async () => {
                         await refreshTarget();
-                        const tx = await vaultWorker<string>('attach-approval', { tx: canonicalBytes(await fileText(file)) });
+                        const tx = await verifiedVaultWorker<string>(config, 'attach-approval', { tx: canonicalBytes(await fileText(file)) });
                         setCheckout({ ...checkout, tx, approved: true });
                       });
                     }} />

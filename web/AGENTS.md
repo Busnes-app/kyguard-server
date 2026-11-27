@@ -8,8 +8,9 @@ Owns user interface components, service worker caching, PWA installation manifes
 
 ## Local Contracts
 - The SaaS Vault uses the independently deployed `make build-browser-vault` output and
-  a pinned bootstrap fingerprint. The WASM worker holds user secrets in memory. For
-  keyring setup and edge isolation, follow [Browser vault](../docs/BROWSER-VAULT.md).
+  a pinned bootstrap fingerprint. Use deployment-wide manifest watermarks across account
+  views and tabs before signing or sealing. Explicit vault lock clears the WASM keyring
+  handoff. For keyring setup and edge isolation, follow [Browser vault](../docs/BROWSER-VAULT.md).
 - Status colors use the shared palettes. Browser regressions measure every current named light palette against page and panel surfaces. Filled `.btn-danger` labels use the page color for named palettes except the Nord pair, which keeps `--button-text`; `browser/danger-button.spec.mjs` checks rest, hover and focus on a labelled diagnostic button in the real page.
 - Web themes default to Busnes light/dark following the OS until a browser-local choice is saved.
 - A signed-in user with `must_change_password` sees only password replacement and sign-out. Replacement uses `secureFetch`, returns to login after session revocation, and never exposes the normal navigation before completion. A break-glass account (`account_type` `break_glass`) can open the same form from the header's key button at any time; that form has Cancel instead of Sign out. SSO accounts get no button.

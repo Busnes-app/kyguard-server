@@ -47,6 +47,10 @@ test('the browser WASM uses the KyIdentity handoff to seal and unlock a KyGuard 
   assert.throws(() => call('unlock', { ...identity, user_id: 'other-user', ...bundle }), /sign in with the KyIdentity keyring/);
   call('unlock', { ...identity, ...bundle });
   call('lock');
+  assert.throws(() => call('unlock', { ...identity, ...bundle }), /sign in with the KyIdentity keyring/);
+  call('keyring-open', { user_id: identity.user_id, seed: vector.seed, handoff: vector.handoff });
+  call('unlock', { ...identity, ...bundle });
+  call('lock');
 });
 
 test('the browser WASM also unlocks with a separate passphrase', async () => {
@@ -60,4 +64,21 @@ test('the browser WASM also unlocks with a separate passphrase', async () => {
   assert.throws(() => call('unlock', { ...input, ...bundle, passphrase: 'wrong passphrase' }), /could not be unlocked/);
   call('unlock', { ...input, ...bundle });
   call('lock');
+});
+
+test('the browser applies shared pool history across separate account views', async () => {
+  const ctx = await fixture('../internal/pqcrypto/testdata/vectors/context.json');
+  const common = ctx.manifests.filter(m => m.type === 'key_enrollment' || m.type === 'pool');
+  const [accountA, accountB] = ctx.manifests.filter(m => m.type === 'policy' && m.account_kind === 'managed');
+  const newer = { fingerprint: ctx.fingerprint, bundle: encode(ctx.bundle), manifests: [...common, accountA].map(encode) };
+  const older = { ...newer, manifests: [...common.filter(m => m.type !== 'pool' || m.epoch === '1'), accountB].map(encode) };
+  const observed = call('sync', { trust: newer }).heads;
+  const pool = 'pool/' + accountA.pool_id;
+  assert.equal(observed[pool].epoch, '2');
+  assert.throws(() => call('sync', { trust: { ...older, observed } }), /older or conflicting/);
+  const current = call('sync', { trust: { ...newer, manifests: [...common, accountB].map(encode), observed } }).heads;
+  assert.equal(current[pool].epoch, '2');
+  assert.equal(current['policy/'+accountA.account_id], undefined);
+  call('sync', { trust: older });
+  assert.throws(() => call('reserve', { observed }), /older or conflicting/);
 });

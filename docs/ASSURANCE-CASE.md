@@ -65,7 +65,9 @@ Out of scope: an attacker who runs code on the host or holds both the database a
    content to the trusted client. KyIdentity's browser and origin are trusted to
    handle the suite root and app subkey. Its X-Wing fragment binds the issuer,
    tenant, subject, client, ring and version to the original OAuth interaction.
-   A browser verifies signed policies and receipts before using a credential.
+   The browser verifies signed policies and receipts. It checks previously seen
+   manifest epochs and digests across account views before signing or sealing.
+   Explicit vault lock clears the user's key and the KyIdentity app subkey.
    Custodian signing stays offline. The enrolled user's own bundle is scoped to
    the authenticated issuer and subject, and its AEAD commits to the signed
    enrollment. See [Browser vault](BROWSER-VAULT.md).

@@ -61,7 +61,7 @@ export function resetVault() {
   keyringUser = undefined;
 }
 
-export function vaultWorker<T>(action: string, args: object = {}): Promise<T> {
+function vaultWorker<T>(action: string, args: object = {}): Promise<T> {
   if (!worker) {
     worker = new Worker(new URL('./vaultWorker.ts', import.meta.url));
     worker.onmessage = (event: MessageEvent<{ id: number; output: { error?: string; value: unknown } }>) => {
@@ -82,8 +82,17 @@ export function vaultWorker<T>(action: string, args: object = {}): Promise<T> {
   });
 }
 
-export function lockVault() {
-  if (worker) void vaultWorker('lock').catch(() => {});
+export function closeVaultKey() {
+  if (worker) void vaultWorker('close-key').catch(() => {});
+}
+
+export async function lockVault() {
+  try {
+    if (worker) await vaultWorker('lock').catch(() => {});
+  } finally {
+    resetVault();
+    sessionStorage.removeItem(pendingKey);
+  }
 }
 
 export async function vaultRequest<T>(path: string, method = 'GET', body?: object): Promise<T> {
@@ -198,23 +207,34 @@ export async function finishKeyring(): Promise<string> {
   return '';
 }
 
+function deploymentTrustKey(config: VaultConfig): string {
+  return `kyguard:trust:${config.fingerprint}:deployment`;
+}
+
+function loadWatermarks(key: string): Record<string, unknown> {
+  const saved: unknown = JSON.parse(localStorage.getItem(key) ?? '{}');
+  if (!record(saved)) throw new Error('Browser trust state is invalid.');
+  return saved;
+}
+
+export function verifiedVaultWorker<T>(config: VaultConfig, action: string, args: object): Promise<T> {
+  const key = deploymentTrustKey(config);
+  return navigator.locks.request(key, () => vaultWorker<T>(action, { ...args, observed: loadWatermarks(key) }));
+}
+
 export async function syncVault(config: VaultConfig, key: VaultKeyInfo, account?: string): Promise<VaultContext> {
   const ctx = account ? await vaultRequest<AccountContext>(`/api/accounts/${encodeURIComponent(account)}/vault-context`) : undefined;
-  const storageKey = `kyguard:trust:${config.fingerprint}:${account ?? JSON.stringify([key.issuer, key.subject])}`;
-  const globalKey = `kyguard:trust:${config.fingerprint}:deployment`;
+  const viewKey = `kyguard:trust:${config.fingerprint}:${account ?? JSON.stringify([key.issuer, key.subject])}`;
+  const globalKey = deploymentTrustKey(config);
   return navigator.locks.request(globalKey, async () => {
-    const saved: unknown = JSON.parse(localStorage.getItem(storageKey) ?? '{}');
-    const global: unknown = JSON.parse(localStorage.getItem(globalKey) ?? '{}');
-    if (!record(saved) || !record(global)) throw new Error('Browser trust state is invalid.');
-    const heads = { ...saved, ...global };
+    const heads = loadWatermarks(viewKey);
+    const observed = loadWatermarks(globalKey);
     const result = await vaultWorker<VaultContext>('sync', {
-      trust: { fingerprint: config.fingerprint, bundle: key.bundle, manifests: ctx?.manifests ?? key.manifests, heads },
+      trust: { fingerprint: config.fingerprint, bundle: key.bundle, manifests: ctx?.manifests ?? key.manifests, heads, observed },
       context: ctx ? { ...ctx, account } : undefined,
     });
-    const globalHeads = Object.fromEntries(Object.entries(result.heads)
-      .filter(([name]) => name.startsWith('custodian_set/') || name.startsWith('recovery_key/')));
-    localStorage.setItem(globalKey, JSON.stringify(globalHeads));
-    localStorage.setItem(storageKey, JSON.stringify(result.heads));
+    localStorage.setItem(globalKey, JSON.stringify({ ...observed, ...result.heads }));
+    localStorage.setItem(viewKey, JSON.stringify(result.heads));
     return result;
   });
 }
