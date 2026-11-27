@@ -3,7 +3,8 @@ package brokerproto_test
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
+	"crypto"
+	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -58,13 +59,16 @@ func (f *fixture) token(srv *httptest.Server, ttl time.Duration) *brokerproto.To
 }
 
 type brokerKeys struct {
-	tls ed25519.PrivateKey
+	tls crypto.Signer
 	sig *pqcrypto.SigningKey
 	enc recoverykey.PrivateKey
 }
 
 func newKeys(t *testing.T) *brokerKeys {
-	_, k, _ := ed25519.GenerateKey(rand.Reader)
+	k, err := mldsa.GenerateKey(mldsa.MLDSA65())
+	if err != nil {
+		t.Fatal(err)
+	}
 	sig, err := pqcrypto.GenerateSigningKey()
 	if err != nil {
 		t.Fatal(err)
@@ -331,7 +335,7 @@ func TestVersionAtLeast(t *testing.T) {
 	}
 }
 
-func forgeCert(t *testing.T, ca *brokerproto.CA, id pqcrypto.UUID, key ed25519.PrivateKey) tls.Certificate {
+func forgeCert(t *testing.T, ca *brokerproto.CA, id pqcrypto.UUID, key crypto.Signer) tls.Certificate {
 	t.Helper()
 	csr, _ := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: "x"}}, key)
 	der, err := ca.IssueBroker(csr, id)

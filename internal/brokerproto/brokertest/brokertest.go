@@ -5,7 +5,8 @@ package brokertest
 
 import (
 	"context"
-	"crypto/ed25519"
+	"crypto"
+	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/tls"
 	"net/http/httptest"
@@ -105,7 +106,7 @@ func (c *CP) AdmitPool(epoch pqcrypto.Counter, members ...pqcrypto.BrokerMember)
 // Broker is a paired test broker driven directly over the channel.
 type Broker struct {
 	ID     pqcrypto.UUID
-	TLS    ed25519.PrivateKey
+	TLS    crypto.Signer
 	Sig    *pqcrypto.SigningKey
 	Enc    recoverykey.PrivateKey
 	Paired *brokerproto.Paired
@@ -116,7 +117,10 @@ type Broker struct {
 // lists it.
 func (c *CP) PairBroker() *Broker {
 	c.T.Helper()
-	_, k, _ := ed25519.GenerateKey(rand.Reader)
+	k, err := mldsa.GenerateKey(mldsa.MLDSA65())
+	if err != nil {
+		c.T.Fatal(err)
+	}
 	sig, err := pqcrypto.GenerateSigningKey()
 	if err != nil {
 		c.T.Fatal(err)
