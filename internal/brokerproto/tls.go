@@ -35,8 +35,8 @@ var ErrPinnedCA = errors.New("brokerproto: listener certificate does not chain t
 func ClientTLS(caSHA256 pqcrypto.HexID, hostname string, client *tls.Certificate) *tls.Config {
 	// pinVerified: InsecureSkipVerify only turns off the system-root chain check, which
 	// VerifyConnection replaces with verifyListener (chain to the pinned CA, hostname,
-	// serverAuth). Every handshake runs it; TestClientTLSPinsTheCA and
-	// TestBrokerRefusesAnotherCA fail if it is weakened.
+	// serverAuth). Every handshake runs it; TestClientTLSAlwaysInstallsThePinCheck,
+	// TestClientTLSPinsTheCA and TestBrokerRefusesAnotherCA fail if it is weakened.
 	pinVerified := pqtls.HybridOnly(&tls.Config{
 		ServerName:         hostname,
 		InsecureSkipVerify: true, //nolint:gosec // replaced by VerifyConnection
