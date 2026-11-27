@@ -5,6 +5,7 @@ package brokerproto
 import (
 	"crypto"
 	"crypto/ed25519"
+	"crypto/mldsa"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
@@ -34,6 +35,8 @@ const (
 	CACertFile = "broker-ca.crt"
 )
 
+const caSeedSize = mldsa.PrivateKeySize // 32 bytes; matches legacy ed25519.SeedSize
+
 // Certificate lifetimes. The listener leaf is regenerated at every start (§9.4).
 const (
 	caLifetime       = 20 * 365 * 24 * time.Hour
@@ -48,7 +51,7 @@ var ErrCAMismatch = errors.New("brokerproto: broker CA key does not match its ce
 // listener; it never authorizes work (§2).
 type CA struct {
 	Cert *x509.Certificate
-	key  ed25519.PrivateKey
+	key  crypto.Signer
 }
 
 // SHA256 is the hex SHA-256 of the CA certificate, the value pairing tokens and brokers pin.
@@ -60,17 +63,21 @@ func CertSHA256(der []byte) pqcrypto.HexID {
 	return pqcrypto.HexID(hex.EncodeToString(s[:]))
 }
 
-// CreateCA makes the CA in dir. It refuses to replace an existing key or certificate.
+// CreateCA makes an ML-DSA-65 CA in dir. It refuses to replace an existing key or certificate.
 func CreateCA(dir string) (*CA, error) {
 	certPath := filepath.Join(dir, CACertFile)
 	if _, err := os.Stat(certPath); err == nil {
 		return nil, fmt.Errorf("brokerproto: %s already exists", certPath)
 	}
-	seed := make([]byte, ed25519.SeedSize)
+	seed := make([]byte, caSeedSize)
 	if _, err := rand.Read(seed); err != nil {
 		return nil, err
 	}
-	key := ed25519.NewKeyFromSeed(seed)
+	defer clear(seed)
+	key, err := mldsa.NewPrivateKey(mldsa.MLDSA65(), seed)
+	if err != nil {
+		return nil, err
+	}
 	tmpl := &x509.Certificate{
 		SerialNumber:          serial(),
 		Subject:               pkix.Name{CommonName: "KyGuard internal broker CA"},
@@ -118,14 +125,14 @@ func writeCert(certPath string, der []byte) (err error) {
 	return f.Sync()
 }
 
-// LoadCA reads the CA from dir and checks that the key matches the certificate.
+// LoadCA reads an ML-DSA-65 (or legacy Ed25519) CA from dir and checks that the key
+// matches the certificate.
 func LoadCA(dir string) (*CA, error) {
-	seed, err := keyfile.Load(filepath.Join(dir, CAKeyFile), ed25519.SeedSize)
+	seed, err := keyfile.Load(filepath.Join(dir, CAKeyFile), caSeedSize)
 	if err != nil {
 		return nil, err
 	}
-	key := ed25519.NewKeyFromSeed(seed)
-	clear(seed)
+	defer clear(seed)
 	raw, err := os.ReadFile(filepath.Join(dir, CACertFile))
 	if err != nil {
 		return nil, err
@@ -134,11 +141,28 @@ func LoadCA(dir string) (*CA, error) {
 	if err != nil {
 		return nil, err
 	}
-	pub, ok := cert.PublicKey.(ed25519.PublicKey)
-	if !ok || !pub.Equal(key.Public()) || !cert.IsCA {
+	if !cert.IsCA {
 		return nil, ErrCAMismatch
 	}
-	return &CA{Cert: cert, key: key}, nil
+	switch pub := cert.PublicKey.(type) {
+	case *mldsa.PublicKey:
+		if pub.Parameters() != mldsa.MLDSA65() {
+			return nil, ErrCAMismatch
+		}
+		key, err := mldsa.NewPrivateKey(mldsa.MLDSA65(), seed)
+		if err != nil || !pub.Equal(key.Public()) {
+			return nil, ErrCAMismatch
+		}
+		return &CA{Cert: cert, key: key}, nil
+	case ed25519.PublicKey:
+		key := ed25519.NewKeyFromSeed(seed)
+		if !pub.Equal(key.Public()) {
+			return nil, ErrCAMismatch
+		}
+		return &CA{Cert: cert, key: key}, nil
+	default:
+		return nil, ErrCAMismatch
+	}
 }
 
 // ParseCertPEM parses exactly one PEM certificate.
@@ -158,13 +182,14 @@ func serial() *big.Int {
 	return n
 }
 
-// ListenerCert issues a fresh leaf for the broker listener with hostname as its only SAN.
-// The chain carries the CA so a pairing broker can find the certificate it pinned by hash.
+// ListenerCert issues a fresh ML-DSA-65 leaf for the broker listener with hostname as its
+// only SAN. The chain carries the CA so a pairing broker can find the certificate it
+// pinned by hash.
 func (ca *CA) ListenerCert(hostname string) (tls.Certificate, error) {
 	if hostname == "" {
 		return tls.Certificate{}, errors.New("brokerproto: KY_BROKER_HOSTNAME is required")
 	}
-	pub, key, err := ed25519.GenerateKey(rand.Reader)
+	key, err := mldsa.GenerateKey(mldsa.MLDSA65())
 	if err != nil {
 		return tls.Certificate{}, err
 	}
@@ -177,7 +202,7 @@ func (ca *CA) ListenerCert(hostname string) (tls.Certificate, error) {
 	} else {
 		tmpl.DNSNames = []string{hostname}
 	}
-	der, err := ca.issue(tmpl, pub, listenerLifetime)
+	der, err := ca.issue(tmpl, key.Public(), listenerLifetime)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
@@ -185,7 +210,8 @@ func (ca *CA) ListenerCert(hostname string) (tls.Certificate, error) {
 }
 
 // IssueBroker signs a broker's CSR with brokerID bound into the certificate as the URI SAN
-// urn:uuid:<broker_id> (§4.1 pairing step 3). Only Ed25519 keys are accepted.
+// urn:uuid:<broker_id> (§4.1 pairing step 3). ML-DSA-65 keys (default) and legacy Ed25519
+// keys are accepted.
 func (ca *CA) IssueBroker(csrDER []byte, brokerID pqcrypto.UUID) ([]byte, error) {
 	csr, err := x509.ParseCertificateRequest(csrDER)
 	if err != nil {
@@ -194,9 +220,17 @@ func (ca *CA) IssueBroker(csrDER []byte, brokerID pqcrypto.UUID) ([]byte, error)
 	if err := csr.CheckSignature(); err != nil {
 		return nil, err
 	}
-	pub, ok := csr.PublicKey.(ed25519.PublicKey)
-	if !ok {
-		return nil, errors.New("brokerproto: broker TLS key must be Ed25519")
+	var pub crypto.PublicKey
+	switch k := csr.PublicKey.(type) {
+	case *mldsa.PublicKey:
+		if k.Parameters() != mldsa.MLDSA65() {
+			return nil, errors.New("brokerproto: broker TLS key must be ML-DSA-65 or legacy Ed25519")
+		}
+		pub = k
+	case ed25519.PublicKey:
+		pub = k
+	default:
+		return nil, errors.New("brokerproto: broker TLS key must be ML-DSA-65 or legacy Ed25519")
 	}
 	if !brokerID.Valid() {
 		return nil, errors.New("brokerproto: invalid broker_id")

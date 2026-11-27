@@ -3,7 +3,7 @@ package brokerproto
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
+	"crypto"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -33,7 +33,7 @@ type Paired struct {
 // Pair is the broker side of §4.1 pairing steps 2 and 3. It pins the CA hash from the token
 // and the listener hostname from its URL, sends the CSR and public keys, then checks the
 // returned certificate and verifies the bundle against the fingerprint the operator typed.
-func Pair(ctx context.Context, tok *Token, fingerprint pqcrypto.HexID, tlsKey ed25519.PrivateKey, sigPub pqcrypto.HybridPub, encPub []byte) (*Paired, error) {
+func Pair(ctx context.Context, tok *Token, fingerprint pqcrypto.HexID, tlsKey crypto.Signer, sigPub pqcrypto.HybridPub, encPub []byte) (*Paired, error) {
 	u, err := url.Parse(tok.URL)
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" {
 		return nil, ErrToken
