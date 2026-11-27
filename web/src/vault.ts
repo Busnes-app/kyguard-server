@@ -217,9 +217,19 @@ function loadWatermarks(key: string): Record<string, unknown> {
   return saved;
 }
 
+function loadDeploymentTrust(key: string): { heads: Record<string, unknown>; verified: string[] } {
+  const state = loadWatermarks(key);
+  if (!('heads' in state)) return { heads: state, verified: [] };
+  if (!record(state.heads) || !Array.isArray(state.verified) ||
+      !state.verified.every((digest: unknown) => typeof digest === 'string' && /^[a-f0-9]{64}$/.test(digest))) {
+    throw new Error('Browser trust state is invalid.');
+  }
+  return { heads: state.heads, verified: state.verified };
+}
+
 export function verifiedVaultWorker<T>(config: VaultConfig, action: string, args: object): Promise<T> {
   const key = deploymentTrustKey(config);
-  return navigator.locks.request(key, () => vaultWorker<T>(action, { ...args, observed: loadWatermarks(key) }));
+  return navigator.locks.request(key, () => vaultWorker<T>(action, { ...args, observed: loadDeploymentTrust(key).heads }));
 }
 
 export async function syncVault(config: VaultConfig, key: VaultKeyInfo, account?: string): Promise<VaultContext> {
@@ -228,12 +238,15 @@ export async function syncVault(config: VaultConfig, key: VaultKeyInfo, account?
   const globalKey = deploymentTrustKey(config);
   return navigator.locks.request(globalKey, async () => {
     const heads = loadWatermarks(viewKey);
-    const observed = loadWatermarks(globalKey);
-    const result = await vaultWorker<VaultContext>('sync', {
-      trust: { fingerprint: config.fingerprint, bundle: key.bundle, manifests: ctx?.manifests ?? key.manifests, heads, observed },
+    const { heads: observed, verified } = loadDeploymentTrust(globalKey);
+    const result = await vaultWorker<VaultContext & { verified: string[] }>('sync', {
+      trust: { fingerprint: config.fingerprint, bundle: key.bundle, manifests: ctx?.manifests ?? key.manifests, heads, observed, verified },
       context: ctx ? { ...ctx, account } : undefined,
     });
-    localStorage.setItem(globalKey, JSON.stringify({ ...observed, ...result.heads }));
+    localStorage.setItem(globalKey, JSON.stringify({
+      heads: { ...observed, ...result.heads },
+      verified: [...new Set([...verified, ...result.verified])],
+    }));
     localStorage.setItem(viewKey, JSON.stringify(result.heads));
     return result;
   });

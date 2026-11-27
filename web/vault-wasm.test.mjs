@@ -82,3 +82,26 @@ test('the browser applies shared pool history across separate account views', as
   call('sync', { trust: older });
   assert.throws(() => call('reserve', { observed }), /older or conflicting/);
 });
+
+test('after Custodian rotation the browser accepts only known history from the retired quorum', async () => {
+  const ctx = await fixture('../internal/pqcrypto/testdata/vectors/context.json');
+  const [rotation] = await fixture('../internal/pqcrypto/testdata/vectors/custodian_set.json');
+  const [pool] = await fixture('../internal/pqcrypto/testdata/vectors/pool.json');
+  const [originalPool, retiredQuorumUpdate] = ctx.manifests.filter(m => m.type === 'pool');
+  const trust = { fingerprint: ctx.fingerprint, bundle: encode(ctx.bundle) };
+  const { heads: observed, verified } = call('sync', {
+    trust: { ...trust, manifests: [originalPool, rotation.object].map(encode) },
+  });
+  const replay = (manifests) => call('sync', {
+    trust: { ...trust, observed, verified, manifests: manifests.map(encode) },
+  });
+
+  assert.throws(() => replay([originalPool, retiredQuorumUpdate, rotation.object]), /retired Custodian/);
+  const recovered = call('sync', {
+    trust: { ...trust, observed, manifests: [originalPool, rotation.object].map(encode) },
+  });
+  assert.equal(recovered.heads['pool/' + originalPool.pool_id].epoch, '1');
+
+  const current = replay([originalPool, rotation.object, pool.object]);
+  assert.equal(current.heads['pool/' + originalPool.pool_id].epoch, '3');
+});

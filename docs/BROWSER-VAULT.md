@@ -72,6 +72,14 @@ vault keys use one wrapping method fixed at enrollment and require the original
 app subkey version or passphrase. Changing the login password or TOTP does not
 recover that bundle.
 
+## Custodian rotation
+
+The browser remembers verified manifest digests. After it sees a new Custodian
+set, it accepts history signed by a retired set only if it has already verified
+that history. A browser encountering unfamiliar history from a retired set
+blocks vault operations for the affected view. Introducing unfamiliar history
+after rotation requires authorization from the current Custodian set.
+
 ## Enroll and check out
 
 1. In **Vault**, create and unlock the browser key. Download its self-signed

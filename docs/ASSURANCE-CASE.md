@@ -67,6 +67,8 @@ Out of scope: an attacker who runs code on the host or holds both the database a
    tenant, subject, client, ring and version to the original OAuth interaction.
    The browser verifies signed policies and receipts. It checks previously seen
    manifest epochs and digests across account views before signing or sealing.
+   After Custodian rotation it replays only previously verified digests from
+   retired sets.
    Explicit vault lock clears the user's key and the KyIdentity app subkey.
    Custodian signing stays offline. The enrolled user's own bundle is scoped to
    the authenticated issuer and subject, and its AEAD commits to the signed

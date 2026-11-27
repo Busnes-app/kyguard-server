@@ -29,6 +29,7 @@ type snapshot struct {
 	Manifests   []pqcrypto.B64       `json:"manifests"`
 	Heads       map[string]watermark `json:"heads"`
 	Observed    map[string]watermark `json:"observed"`
+	Verified    []pqcrypto.HexID     `json:"verified"`
 }
 
 type accountContext struct {
@@ -172,14 +173,35 @@ func (v *worker) sync(s snapshot, account *accountContext) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	heads := map[string]watermark{}
-	for _, raw := range s.Manifests {
-		if _, err := tr.Accept(raw); err != nil {
-			return nil, err
+	authority := s.Observed[pqcrypto.TypeCustodianSet+"/"+string(tr.DeploymentID())].Epoch
+	known := make(map[pqcrypto.HexID]bool, len(s.Verified))
+	for _, digest := range s.Verified {
+		known[digest] = true
+	}
+	for _, marks := range []map[string]watermark{s.Heads, s.Observed} {
+		for _, mark := range marks {
+			known[mark.Digest] = true
 		}
 	}
-	for _, rec := range tr.Records() {
-		heads[rec.Type+"/"+string(rec.ScopeID)] = watermark{rec.Epoch, rec.Digest.Hex()}
+	for _, raw := range s.Manifests {
+		signingEpoch := tr.CustodianSet().Epoch
+		rec, err := tr.Accept(raw)
+		if err != nil {
+			return nil, err
+		}
+		// A signed history may replay already verified contents from an earlier set.
+		// It cannot introduce a new manifest that relies on that set's authority.
+		if signingEpoch < authority && !known[rec.Digest.Hex()] {
+			return nil, errors.New("KyGuard returned an unknown manifest signed by a retired Custodian set")
+		}
+	}
+	records := tr.Records()
+	heads := make(map[string]watermark, len(records))
+	verified := make([]pqcrypto.HexID, 0, len(records))
+	for _, rec := range records {
+		digest := rec.Digest.Hex()
+		heads[rec.Type+"/"+string(rec.ScopeID)] = watermark{rec.Epoch, digest}
+		verified = append(verified, digest)
 	}
 	if err := checkWatermarks(heads, s.Heads, true); err != nil {
 		return nil, err
@@ -187,7 +209,7 @@ func (v *worker) sync(s snapshot, account *accountContext) (any, error) {
 	if err := checkWatermarks(heads, s.Observed, false); err != nil {
 		return nil, err
 	}
-	out := map[string]any{"heads": heads}
+	out := map[string]any{"heads": heads, "verified": verified}
 	var chain *pqcrypto.Chain
 	if account != nil {
 		policy, _ := tr.Policy(account.Account)

@@ -28,6 +28,8 @@ interface Mailbox {
   lease_state?: string;
 }
 
+const vaultKeyPath = '/api/user/vault-key';
+
 function download(name: string, encoded: string) {
   const url = URL.createObjectURL(new Blob([canonicalText(encoded)], { type: 'application/json' }));
   const a = document.createElement('a');
@@ -66,7 +68,7 @@ export function Vault({ config, userID }: { config: VaultConfig; userID: string 
 
   useEffect(() => {
     let cancelled = false;
-    void vaultRequest<VaultKeyInfo>('/api/user/vault-key').then((data) => {
+    void vaultRequest<VaultKeyInfo>(vaultKeyPath).then((data) => {
       if (!cancelled) setInfo(data);
     }).catch((err: Error) => {
       if (!cancelled) setError(err.message);
@@ -105,18 +107,30 @@ export function Vault({ config, userID }: { config: VaultConfig; userID: string 
     const secret = passphrase;
     setPassphrase('');
     setConfirmation('');
-    const keyArgs = { user_id: userID, issuer: info.issuer, subject: info.subject, method, passphrase: secret };
-    const trust = await syncVault(config, info);
-    if (!info.sealed) {
-      if (method === 'passphrase' && secret !== confirmation) throw new Error('The passphrases differ.');
-      const upload = await verifiedVaultWorker<KeyUpload>(config, 'new-key', keyArgs);
-      await vaultRequest('/api/user/vault-key', 'PUT', upload);
-      setInfo({ ...info, ...upload });
-      setStatus('Your key is stored. Unlock it to download the enrollment request for a Custodian.');
+    const current = await vaultRequest<VaultKeyInfo>(vaultKeyPath);
+    setInfo(current);
+    if (current.sealed?.method !== info.sealed?.method) {
+      setStatus(current.sealed ? 'Your key is stored. Unlock it to continue.' : 'Create a vault key to continue.');
       return;
     }
-    if (!info.enrollment) throw new Error('Your signed enrollment is missing.');
-    const draft: unknown = JSON.parse(canonicalText(info.enrollment));
+    const keyArgs = { user_id: userID, issuer: current.issuer, subject: current.subject, method, passphrase: secret };
+    const trust = await syncVault(config, current);
+    if (!current.sealed) {
+      if (method === 'passphrase' && secret !== confirmation) throw new Error('The passphrases differ.');
+      const upload = await verifiedVaultWorker<KeyUpload>(config, 'new-key', keyArgs);
+      try {
+        await vaultRequest(vaultKeyPath, 'PUT', upload);
+        setInfo({ ...current, ...upload });
+      } catch (error) {
+        const saved = await vaultRequest<VaultKeyInfo>(vaultKeyPath).catch(() => undefined);
+        if (!saved?.sealed || !saved.enrollment) throw error;
+        setInfo(saved);
+      }
+      setStatus('Your key is stored. Unlock it to continue.');
+      return;
+    }
+    if (!current.enrollment) throw new Error('Your signed enrollment is missing.');
+    const draft: unknown = JSON.parse(canonicalText(current.enrollment));
     if (!draft || typeof draft !== 'object' || !('principal_id' in draft) || typeof draft.principal_id !== 'string') {
       throw new Error('Your signed enrollment is invalid.');
     }
@@ -124,7 +138,7 @@ export function Vault({ config, userID }: { config: VaultConfig; userID: string 
     if (!key || typeof key.sig_key_id !== 'string' || typeof key.enc_key_id !== 'string') {
       throw new Error('Your enrollment fingerprints are missing.');
     }
-    await verifiedVaultWorker(config, 'unlock', { ...keyArgs, sealed: info.sealed, enrollment: info.enrollment });
+    await verifiedVaultWorker(config, 'unlock', { ...keyArgs, sealed: current.sealed, enrollment: current.enrollment });
     setEnrolledKey({ principal_id: draft.principal_id, sig_key_id: key.sig_key_id, enc_key_id: key.enc_key_id });
     setUnlocked(true);
     setApproved(!!trust.heads[`key_enrollment/${draft.principal_id}`]);
@@ -310,7 +324,7 @@ export function Vault({ config, userID }: { config: VaultConfig; userID: string 
                     if (file) void run(async () => {
                       const signed = await fileText(file);
                       await vaultRequest('/api/manifests', 'POST', JSON.parse(signed));
-                      const next = await vaultRequest<VaultKeyInfo>('/api/user/vault-key');
+                      const next = await vaultRequest<VaultKeyInfo>(vaultKeyPath);
                       setInfo(next);
                       await syncVault(config, next);
                       closeVaultKey();

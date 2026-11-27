@@ -568,3 +568,9 @@ Numbered separately: these came from the parallel crypto stack.
      subsequent reads of that view and check shared scopes against the deployment's
      observed history when syncing or acting. An explicit vault lock discards the
      KyIdentity app subkey and requires a fresh handoff for keyring unlock.
+217. §3.2, §10.1 (browser replay after Custodian rotation). Retain verified
+     manifest digests alongside the deployment's high-water marks. When a
+     browser has observed a newer Custodian set, replay under an earlier set
+     requires a digest previously verified by that browser. Newly seen
+     manifests require the last observed Custodian authority or its verified
+     successor.

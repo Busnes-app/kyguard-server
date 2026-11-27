@@ -17,6 +17,9 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
   enrollment drafts. The browser creates and unlocks keys, seals managed credentials,
   and signs requests for checkout, approvals and check-in. The vault receives the
   signed broker-pool history needed to verify credentials sealed under earlier policies.
+  Unlock picks up newly approved enrollments, and the vault recovers a saved key if
+  the upload response is lost. After Custodian rotation, the browser refuses
+  unfamiliar manifests signed by a retired set.
 - Added the KyIdentity X-Wing app-subkey handoff as a browser unlock method. Passphrase
   unlock is also available when creating a key. Custodian signing remains offline.
 - Added a separate static browser build and an HTTPS edge example so the Control Plane
