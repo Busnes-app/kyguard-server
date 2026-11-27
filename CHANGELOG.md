@@ -13,6 +13,10 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 
 ### Security
 
+- OIDC relying-party verification now supports RFC 9964 `ML-DSA-65` (`kty:"AKP"`) ID tokens
+  and back-channel logout tokens alongside classical RSA, ECDSA, and EdDSA algorithms via
+  Go 1.27, `go-jose/v4 v4.1.9`, `ky-primitives v0.12.0`, and a context-aware singleflight
+  `remoteJWKSKeySet` over `strongJWKSTransport` (zero breaking changes for RS256 issuers).
 - The SSH connector offers only `mlkem768x25519-sha256`, curve25519 and NIST ECDH key exchanges
   and refuses a target that offers only SHA-1 (`diffie-hellman-group14-sha1`) or other finite-field
   Diffie-Hellman exchanges (DECISIONS 80). Targets need OpenSSH 5.7 or later.
