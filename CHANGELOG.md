@@ -30,7 +30,8 @@ History before the KyGuard import is `ky-server-base` at `fed0fb3` and its own `
 
 - Migration 302 adds an empty encrypted browser-key table on SQLite and PostgreSQL.
   Enable browser vault explicitly after deploying its trusted assets and bootstrap
-  fingerprint. KyIdentity users also need the registered callback and organization ID.
+  fingerprint. The vault requires `KY_CAPTCHA_PROVIDER=pow` (the default) or
+  `none`. KyIdentity users also need the registered callback and organization ID.
   Enabling the feature on existing replicas changes the shared configuration fingerprint.
   See [Browser vault](docs/BROWSER-VAULT.md).
 

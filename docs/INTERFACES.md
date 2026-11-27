@@ -472,7 +472,7 @@ reader in the binary. The shipped `docker-compose.yml` passes its `.env` to the 
 |---|---|---|
 | `KY_HOST` | `0.0.0.0` | HTTP listener address; use network/proxy controls in production |
 | `KY_PORT` / `PORT` | `8080` | Integer listener port; KY_PORT wins |
-| `KY_BROWSER_VAULT` | `false` | Enable the [independently deployed browser vault](BROWSER-VAULT.md) on HTTPS. |
+| `KY_BROWSER_VAULT` | `false` | Enable the [independently deployed browser vault](BROWSER-VAULT.md) on HTTPS with `KY_CAPTCHA_PROVIDER=pow` or `none`. |
 | `KY_KYSIGNON_KEYRING_ORG_ID` | empty | Enable the KyIdentity keyring handoff for this opaque organization ID. |
 | `KY_APP_URL` | `http://localhost:<port>` | External application origin, redirects and SCIM base URL. Set it to the public URL: behind a proxy that rewrites `Host`, a browser sign-in whose `Origin` matches neither is refused as cross-site |
 | `KY_APP_NAME` | `KyGuard` | Application and capsule service identity; preserve it for restore |
@@ -503,7 +503,7 @@ reader in the binary. The shipped `docker-compose.yml` passes its `.env` to the 
 | `KY_SCIM_ENABLED` | `true` | Enable authenticated provisioning |
 | `KY_SCIM_TOKEN` | Fresh random 24-byte hex on each SQLite load | Provisioning bearer credential; required explicitly with PostgreSQL when SCIM is enabled, identical across replicas |
 | `KY_SCIM_ISSUER` | `KY_KYSIGNON_ISSUER` | SSO issuer of SCIM-created accounts; a sign-in from it adopts them by `(issuer, externalId)` |
-| `KY_CAPTCHA_PROVIDER` | `pow` | Login PoW check; `none` disables it; other provider verification is not wired |
+| `KY_CAPTCHA_PROVIDER` | `pow` | Enforce the built-in login proof-of-work challenge with `pow`. Use `none` to disable enforcement. Vault startup rejects other values. |
 | `KY_CAPTCHA_SITE_KEY`, `KY_CAPTCHA_SECRET_KEY` | Empty | Reserved provider configuration; not used by the current PoW verifier |
 | `KY_CAPTCHA_POW_DIFFICULTY` | `500000` | Maximum puzzle candidate number; nonpositive values fall back to the default. The default solves in about one second (median) in a desktop browser |
 | `KY_BACKUP_DIR` | Empty | Optional local sealed-capsule destination |

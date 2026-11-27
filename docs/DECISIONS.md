@@ -574,3 +574,7 @@ Numbered separately: these came from the parallel crypto stack.
      requires a digest previously verified by that browser. Newly seen
      manifests require the last observed Custodian authority or its verified
      successor.
+218. §7.4, §10.1 (vault origin CAPTCHA). Break-glass sign-in uses the built-in
+     same-origin proof-of-work challenge. With the vault enabled, accept the
+     `pow` and `none` CAPTCHA settings and reject other values at startup.
+     Keep CAPTCHA scripts from third parties outside the vault origin.

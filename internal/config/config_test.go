@@ -80,6 +80,40 @@ func TestConfigLoadFromEnvOverrides(t *testing.T) {
 	}
 }
 
+func TestBrowserVaultCaptchaConfiguration(t *testing.T) {
+	t.Setenv("KY_APP_URL", "https://guard.example.test")
+	t.Setenv("KY_BROWSER_VAULT", "true")
+	tests := []struct {
+		name     string
+		setting  string
+		provider string
+	}{
+		{name: "default", provider: "pow"},
+		{name: "first-party challenge", setting: "pow", provider: "pow"},
+		{name: "enforcement disabled", setting: "none", provider: "none"},
+		{name: "external provider", setting: "turnstile"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("KY_DATA_DIR", t.TempDir())
+			t.Setenv("KY_CAPTCHA_PROVIDER", test.setting)
+			cfg, err := config.LoadFromEnv()
+			if test.provider == "" {
+				if err == nil || !strings.Contains(err.Error(), "KY_CAPTCHA_PROVIDER") {
+					t.Fatalf("expected CAPTCHA configuration error, got %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Captcha.Provider != test.provider {
+				t.Fatalf("expected %q, got %q", test.provider, cfg.Captcha.Provider)
+			}
+		})
+	}
+}
+
 func TestEncryptionKeyPersistsAcrossLoads(t *testing.T) {
 	t.Setenv("KY_DATA_DIR", t.TempDir())
 	t.Setenv("KY_ENCRYPTION_KEY", "")

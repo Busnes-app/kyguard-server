@@ -27,7 +27,11 @@ required regardless of the selection.
 3. Set `KY_APP_URL` to the same public HTTPS origin and `KY_BROWSER_VAULT=true`
    on KyGuard. Set `KY_TRUSTED_PROXIES` to the edge's address for client-IP limits.
    On PostgreSQL follow [replica configuration changes](REPLICAS.md) before
-   enabling the feature on every replica.
+   enabling the feature on every replica. Keep `KY_CAPTCHA_PROVIDER=pow` (the
+   default) to enforce the built-in, same-origin proof-of-work challenge for
+   break-glass sign-in. Use `none` only to disable server CAPTCHA enforcement.
+   Vault startup rejects other provider values. The vault edge serves only
+   first-party scripts.
 4. On the independent edge, place `.well-known/kyguard-vault.json` inside
    `/srv/kyguard-vault`. Set `fingerprint` to the bootstrap bundle fingerprint
    checked with Custodians through an independent channel. For a passphrase-only
